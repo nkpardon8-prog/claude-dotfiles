@@ -129,6 +129,20 @@ class Fleet(unittest.TestCase):
         self.assertEqual(rd_fleet.problems(d), [])
         self.assertIn("shards", rd_fleet.FIELDS)
 
+    def test_wt_lanes_is_an_optional_small_int_default_3(self):
+        for bad in (0, 9, "3", True, 2.5):
+            self.bad(lambda d, v=bad: d.update(wt_lanes=v), "wt_lanes")
+        path = os.path.join(self.tmp, "f.json")
+        d = copy.deepcopy(self.doc)
+        d["wt_lanes"] = 5
+        with open(path, "w") as f:
+            json.dump(d, f)
+        self.assertEqual(rd_fleet.problems(d), [])
+        self.assertEqual(rd_fleet.wt_lanes({"fleet_path": path}), 5)
+        self.assertEqual(rd_fleet.wt_lanes({"fleet_path": os.path.join(self.tmp, "nope.json")}), 3)
+        with open(os.path.join(rd_common.HERE, "fleet.json")) as f:
+            self.assertEqual(json.load(f).get("wt_lanes"), 3)                 # the shipped value, explicit
+
     def test_load_missing_or_broken_raises(self):
         with self.assertRaises(rd_fleet.FleetError):
             rd_fleet.load({"fleet_path": os.path.join(self.tmp, "nope.json")})

@@ -547,6 +547,21 @@ class HedgeUnit(unittest.TestCase):
         self.assertEqual(hg.out_stream.getvalue(), b"[shard 1/2 fast hedge] fast-done\n")
 
 
+    def test_a_hedge_on_worktree_lane_1_uses_lane_1s_namespace(self):
+        hg = self.hedge()
+        seen = []
+
+        def fake_attempt(h, wt, argv, *a):
+            seen.append(a[-1].wt12)                                       # the duplicate's Lane
+            return "busy", "x"
+        with mock.patch.dict(rd_run.WT, {"held": {1: -1}}), mock.patch.object(rd_run, "attempt", fake_attempt):
+            hg.run_dup(fake_host("fast", 10))
+        want = rd_run.lane_mirror_id("0" * 12, 1, 0)                      # worktree lane 1, process lane 0
+        self.assertEqual(seen, [want])
+        self.assertNotEqual(want, "0" * 12)
+        self.assertNotIn(want, [rd_run.lane_mirror_id("0" * 12, 0, n) for n in range(8)])   # never lane 0's
+
+
 FAKE_VITEST = r'''#!/bin/sh
 s=none
 for a in "$@"; do case "$a" in --shard=*) s="${a#--shard=}";; esac; done
@@ -658,12 +673,11 @@ class SchedE2E(test_run.RunBase):
         self.assertEqual((r3.returncode, r4.returncode), (1, 1))
         self.assertIn("splitting", r3.stderr)
         self.assertIn("cached result", r4.stderr)
-        # a shard that had to run on this machine: never saved
+        # shards no worker took (they end 75 in a shared run, never run here): never saved
         test_run.wfile(os.path.join(self.wt, "new.txt"), "changed\n")
         for _ in range(2):
             r = self.rrun("vitest", "run", RRUN_CACHE="1", RRUN_SHARD="2", FAKE_SSH_RUNDOWN_HOSTS="w1,w2")
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("running this shard on this machine", r.stderr)
+            self.assertEqual(r.returncode, 75, r.stderr)
             self.assertNotIn("cached result", r.stderr)
 
     def test_no_shards_worker_gets_whole_jobs_only(self):
@@ -688,11 +702,13 @@ class SchedE2E(test_run.RunBase):
         self.assertIn("- trying w1", r.stderr)
         self.assertIn("[shard 3/3 w1] fake vitest shard 3/3 on home-w1\n", r.stdout)
         self.assertIn("Tests  12 passed (12)", r.stdout)
-        # every worker gone before GO: each shard runs on this machine (a normal job may)
+        # every worker gone before GO: a run holding its worktree shared never runs a shard on this
+        # machine (its hold never changes mid-run, Phase C1): the shards end infra 75, never run here
         r = self.rrun("vitest", "run", RRUN_SHARD="2", FAKE_SSH_RUNDOWN_HOSTS="w1,w2")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("running this shard on this machine", r.stderr)
-        self.assertIn("[shard 1/2 local] fake vitest shard 1/2 on home\n", r.stdout)
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("a shard runs on this machine only in a run that holds the worktree alone", r.stderr)
+        self.assertNotIn("running this shard on this machine", r.stderr)
+        self.assertNotIn("on home\n", r.stdout)
 
     def test_hedge_duplicate_on_a_freed_fast_worker_wins(self):
         for w in ("w1", "w2"):                                            # no seeded vitest evidence here

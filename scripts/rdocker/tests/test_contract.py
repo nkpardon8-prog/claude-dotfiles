@@ -107,10 +107,12 @@ class Emitted(test_run.RunBase):
         # 0 / 1: the command's own
         scenario(0, "pass", self.rrun("/bin/sh", "-c", "true"))
         scenario(1, "fail", self.rrun("/bin/sh", "-c", "exit 1"))
-        # 72: this worktree's lock held past the wait
+        # 72: every lane of this worktree held past the wait
         self.write_cfg(rr_wt_wait_min=0.02)
         wt = rd_run.resolve_worktree(self.wt)
-        self.hold(os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % wt["wt12"]))
+        for k in range(3):
+            self.hold(os.path.join(self.home, ".local", "state", "rdocker",
+                                   "rrun-%s%s.lock" % (wt["wt12"], ".%d" % k if k else "")))
         scenario(72, "infra", self.rrun("/bin/sh", "-c", "true"))
         self.doCleanups()
         # 73: every slot busy past rr_wait_min
@@ -333,12 +335,12 @@ class Version(unittest.TestCase):
             self.assertEqual(f.read().strip(), str(rd_common.POOL_VERSION))
         with open(os.path.join(t.home, "rr", "log", "runs.log")) as f:
             log = f.read()
-        self.assertRegex(log, r" pv=%d node=(\d+|-)\n" % rd_common.POOL_VERSION)
+        self.assertRegex(log, r" pv=%d node=(\d+|-) lock_s=[\d.]+ slot_s=[\d.]+\n" % rd_common.POOL_VERSION)
         self.assertRegex(log, r" setup=warm pred_s=\S+ client=\S+ pv=")
         route = os.path.join(t.home, ".local", "state", "rdocker", "route.log")
         with open(route) as f:
             last = f.read().strip().splitlines()[-1]
-        self.assertRegex(last, r"\tcache_s=[\d.]+ plan_s=[\d.]+ push_s=[\d.]+ overlay_s=[\d.]+ remote_s=[\d.]+ "
+        self.assertRegex(last, r"\tlock_s=[\d.]+ cache_s=[\d.]+ plan_s=[\d.]+ push_s=[\d.]+ overlay_s=[\d.]+ slot_s=[\d.]+ remote_s=[\d.]+ "
                                r"start_s=[\d.]+ client=")
         import rd_warm
         self.assertEqual(os.path.realpath(rd_warm.parse_route([last.replace(last[:19], time.strftime(

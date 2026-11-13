@@ -144,5 +144,6 @@
       "enabled": true
     }
   ],
+  "wt_lanes": 3,
   "pool_node_major": 25
 }

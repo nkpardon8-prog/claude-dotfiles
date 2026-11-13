@@ -214,6 +214,24 @@ class RunBase(unittest.TestCase):
         return subprocess.Popen([RRUN] + list(argv), cwd=self.wt, env=self.env(**env),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
+    def hold_lanes(self, n=3):
+        """flock every worktree lane (3 = fleet.json wt_lanes' default; no fleet here) -> the fds."""
+        rr = rd_run.resolve_worktree(self.wt)
+        st = os.path.join(self.home, ".local", "state", "rdocker")
+        os.makedirs(st, exist_ok=True)
+        fds = []
+        for k in range(n):
+            fd = os.open(os.path.join(st, "rrun-%s%s.lock" % (rr["wt12"], ".%d" % k if k else "")),
+                         os.O_RDWR | os.O_CREAT)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            fds.append(fd)
+        return fds
+
+    @staticmethod
+    def drop(fds):
+        for fd in fds:
+            os.close(fd)
+
     def mirror(self):
         w = os.path.join(self.home, "rr", "w2")
         names = [n for n in os.listdir(w) if not n.startswith(".")]
@@ -513,7 +531,7 @@ class RunTest(RunBase):
         self.assertIn("ControlMaster=no", att[0])
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log")).splitlines()
         self.assertRegex(runs[-1], r"outcome=rc=6 .*\trun=[0-9a-f-]{36} owner=\S+ cls=normal "
-                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=\S+$")
+                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=\S+ lock_s=[\d.]+ slot_s=[\d.]+$")
 
     def test_runner_header_carries_a_uuid4_run_id_and_the_180s_tolerance(self):
         class H:
@@ -587,24 +605,20 @@ class RunTest(RunBase):
         self.assertEqual(self.read(errf).count("waiting for a slot on the Mac mini"), 1)
 
     def test_worktree_lock_serialises(self):
-        rr = rd_run.resolve_worktree(self.wt)
-        lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fds = self.hold_lanes()                              # every lane busy: it waits
         marker = os.path.join(self.d, "ran")
         errf = os.path.join(self.d, "err")
         with open(errf, "w") as ef:
             p = subprocess.Popen([RRUN, "/bin/sh", "-c", "touch %s" % marker], cwd=self.wt,
                                  env=self.env(), stdout=subprocess.DEVNULL, stderr=ef)
         end = time.time() + 30
-        while "another rrun from this worktree is running" not in self.read(errf):
+        while "waiting for this worktree" not in self.read(errf):
             self.assertLess(time.time(), end, "rrun never reported waiting for the worktree lock")
             time.sleep(0.05)
         time.sleep(0.5)
         self.assertFalse(os.path.exists(marker))
         self.assertIsNone(p.poll())
-        os.close(fd)
+        self.drop(fds)
         self.assertEqual(p.wait(30), 0)
         self.assertTrue(os.path.exists(marker))
 
@@ -707,20 +721,20 @@ class HangsAndOwners(RunBase):
         self.write_cfg(rr_wt_wait_min=0.03, rr_status_every_s=0.5)
         rr = rd_run.resolve_worktree(self.wt)
         lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fds = self.hold_lanes()
         try:
             t0 = time.time()
             r = self.rrun("/bin/sh", "-c", "echo ran")
             self.assertEqual(r.returncode, 72, r.stderr)
             self.assertLess(time.time() - t0, 20)
             self.assertNotIn("ran", r.stdout)
-            self.assertIn("still holds its lock after 2 s", r.stderr)
+            self.assertIn("other rruns from this worktree kept all 3 of its lanes after 2 s", r.stderr)
             self.assertIn("exit 72", r.stderr)
             self.assertTrue(os.path.exists(lock))                     # never unlinked
+            self.assertRegex(self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log")),
+                             r"none +rrun .* rc=72 .*\tlock_s=[\d.]+")   # the lane wait is in route.log
         finally:
-            os.close(fd)
+            self.drop(fds)
         self.assertEqual(rd_run.wt_wait_s({}, {"cls": "db"}, {}), 90 * 60)  # default: the job's own cap
 
     def test_busy_worker_re_plans_instead_of_sitting_30_min(self):
@@ -759,19 +773,15 @@ class HangsAndOwners(RunBase):
 
     def test_worktree_lock_wait_repeats_with_the_holder(self):
         self.write_cfg(rr_status_every_s=0.5)
-        rr = rd_run.resolve_worktree(self.wt)
-        lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fds = self.hold_lanes()
         errf = os.path.join(self.d, "err")
         with open(errf, "w") as ef:
             p = subprocess.Popen([RRUN, "true"], cwd=self.wt, env=self.env(), stdout=subprocess.DEVNULL, stderr=ef)
         end = time.time() + 30
-        while "still waiting for the other rrun from this worktree" not in self.read(errf):
+        while "still waiting for this worktree" not in self.read(errf):
             self.assertLess(time.time(), end, self.read(errf))
             time.sleep(0.05)
-        os.close(fd)
+        self.drop(fds)
         self.assertEqual(p.wait(30), 0)
 
 
@@ -884,6 +894,375 @@ class ReattachStates(RunBase):
         self.assertEqual((kind, val), ("done", 77))                     # needs-human: fleet.json
         self.assertEqual(val.klass, "needs-human")
         self.assertEqual(len(tried), 1)                                 # never the stale list again
+
+
+LANE_HOLDER = r"""
+import os, sys, time
+sys.path.insert(0, %r)
+import rdmods
+rd_run = rdmods.owner("rrun")
+wt12, mode, wait, out, release, fleet = sys.argv[1:7]
+cfg = {"rr_status_every_s": 0.3, "fleet_path": fleet}
+try:
+    got = rd_run.take_wt_lanes(wt12, float(wait), cfg, exclusive=mode in ("ex", "shard-ex"))
+except rd_run.WorktreeBusy as e:
+    open(out, "w").write("busy %%s" %% e)
+    os._exit(72)
+if mode in ("shard-sh", "shard-ex"):     # a sharded run's local shard: its marker command, under the run's gate
+    job = {"cls": "normal", "never_local": False}
+    ctx = rd_run.Ctx(cfg, {"wt12": wt12}, {}, rd_run.Timing(False), time.monotonic(), job,
+                     rd_run.rd_pool.Plan([], True), (), [])
+    t = time.time()
+    sink = rd_run.Sink(rd_run.std_stream("stdout"))
+    rc = rd_run.run_local_shard(ctx, ["/bin/sh", "-c", "touch %%s.ran; while [ ! -e %%s ]; do sleep 0.05; done"
+                                      %% (out, release)], sink, sink, "no worker took it")
+    open(out + ".span", "w").write("%%f %%f" %% (t, time.time()))
+    open(out, "w").write("got %%s rc=%%d mode=%%s" %% (got, int(rc), rd_run.WT["mode"]))
+    while not os.path.exists(release + ".end"):
+        time.sleep(0.05)
+    os._exit(0)
+open(out, "w").write("got %%s" %% got)
+while not os.path.exists(release):
+    time.sleep(0.05)
+os._exit(0)          # skip rdmods' atexit checks: they judge this child's temp HOME, not the suite
+""" % os.path.dirname(os.path.abspath(__file__))
+
+
+class WorktreeLanes(RunBase):
+    """Phase C1 (2026-11-13): up to fleet.json wt_lanes (3) rruns of one worktree run at once, each with
+    its own worker mirror and push ref; a 4th waits and says why; a run that writes into the worktree
+    holds the gate exclusive; nothing shared is corrupted."""
+
+    def setUp(self):
+        super().setUp()
+        # 6 slots on the fake worker: only the worktree lanes limit these runs
+        self.write_cfg(rr_slots=6, rr_slots_base=6, rr_status_every_s=0.5)
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/main", "HEAD")   # a shared base ref
+        self.wt12 = rd_run.resolve_worktree(self.wt)["wt12"]
+
+    def wait_for(self, cond, what, secs=40):
+        end = time.time() + secs
+        while not cond():
+            self.assertLess(time.time(), end, what)
+            time.sleep(0.05)
+
+    def job(self, i, errf):
+        """An rrun that marks its start, drops a file in its checkout, waits for `go`, then lists the
+        marks its checkout holds (a shared checkout would show another job's) and the overlay file."""
+        cmd = ("touch %(d)s/start-%(i)s; echo %(i)s > mark-%(i)s; while [ ! -e %(d)s/go ]; do sleep 0.05; done; "
+               "echo marks: $(ls mark-* | tr '\\n' ' '); echo overlay: $(cat new.txt)" % {"d": self.d, "i": i})
+        with open(errf, "w") as ef:
+            return subprocess.Popen([RRUN, "/bin/sh", "-c", cmd], cwd=self.wt, env=self.env(),
+                                    stdout=subprocess.PIPE, stderr=ef, text=True)
+
+    def started(self, i):
+        return os.path.exists(os.path.join(self.d, "start-%s" % i))
+
+    def test_three_run_at_once_a_fourth_waits_and_says_why_nothing_shared_breaks(self):
+        wfile(os.path.join(self.wt, "new.txt"), "untracked-v1\n")           # shipped by every overlay
+        errs = [os.path.join(self.d, "err-%d" % i) for i in range(4)]
+        ps = [self.job(i, errs[i]) for i in range(3)]
+        self.wait_for(lambda: all(self.started(i) for i in range(3)), "3 jobs never ran at once")
+        p4 = self.job(3, errs[3])
+        self.wait_for(lambda: "waiting for this worktree" in self.read(errs[3]),
+                      "the 4th never said it waits")
+        time.sleep(1.0)
+        self.assertFalse(self.started(3))                                   # it really waits
+        err4 = self.read(errs[3])
+        self.assertIn("this worktree runs at most 3 rrun jobs at once (fleet.json wt_lanes); 3 running", err4)
+        self.assertRegex(err4, r"; waited \d+ s \(/bin/sh -c 'touch")      # how long + names the holders
+        self.assertIn("on mini, running", err4)
+        self.assertIn("gives up after", err4)
+        open(os.path.join(self.d, "go"), "w").close()
+        outs = []
+        for i, p in enumerate(ps + [p4]):
+            out, _ = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, self.read(errs[i]))
+            self.assertIn("rrun: pass (exit 0 on mini", self.read(errs[i]))   # never a local fallback
+            self.assertNotIn("git push", self.read(errs[i]))                  # no push failed (ref locks)
+            outs.append(out)
+        for i in range(3):                                                  # own checkout each: own mark only
+            self.assertIn("marks: mark-%d\n" % i, outs[i])
+            self.assertIn("overlay: untracked-v1\n", outs[i])
+        # the 4th ran on a freed lane: its checkout is one of the three, cleaned for it (git clean)
+        self.assertIn("marks: mark-3\n", outs[3])
+        # three mirrors, three refs: lane 0 = the worktree's own, lanes 1-2 their own ids
+        ids = [rd_run.lane_mirror_id(self.wt12, k) for k in range(3)]
+        self.assertEqual(ids[0], self.wt12)
+        self.assertEqual(len(set(ids)), 3)
+        w2 = os.path.join(self.home, "rr", "w2")
+        slug = rd_run.resolve_worktree(self.wt)["slug"]
+        self.assertEqual(sorted(n for n in os.listdir(w2) if not n.startswith(".")),
+                         sorted("%s-%s" % (slug, x) for x in ids))
+        bare = os.path.join(self.home, "rr", "git", slug + ".git")
+        head = self.git("-C", self.wt, "rev-parse", "HEAD").strip()
+        refs = self.git("-C", bare, "for-each-ref", "--format=%(refname) %(objectname)", "refs/").split("\n")
+        for x in ids:
+            self.assertIn("refs/rrun/%s %s" % (x, head), refs)
+        self.assertIn("refs/remotes/origin/main %s" % head, refs)           # the shared base ref, intact
+        self.assertEqual(self.git("-C", bare, "fsck", "--no-progress"), "")
+        # both waits, apart: route.log lock_s / slot_s (client), runs.log lock_s / slot_s (worker)
+        route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
+        locks = [float(x) for x in __import__("re").findall(r"\tlock_s=([\d.]+)", route)]
+        self.assertEqual(len(locks), 4, route)
+        self.assertGreaterEqual(max(locks), 1.0)                            # the 4th's lane wait
+        self.assertEqual(len(__import__("re").findall(r" slot_s=[\d.]+", route)), 4, route)
+        runs = self.read(os.path.join(self.home, "rr", "log", "runs.log"))
+        self.assertEqual(len(__import__("re").findall(r" node=\S+ lock_s=[\d.]+ slot_s=[\d.]+\n", runs)), 4, runs)
+
+    def holder(self, mode="one", wait=30, tag="h", fleet="/nonexistent"):
+        out, release = os.path.join(self.d, "out-" + tag), os.path.join(self.d, "rel-" + tag)
+        p = subprocess.Popen([sys.executable, "-c", LANE_HOLDER, self.wt12, mode, str(wait), out, release, fleet],
+                             env=self.env(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        return p, out, release
+
+    def got(self, out):
+        return os.path.exists(out) and self.read(out).startswith("got")
+
+    def test_gate_a_writer_waits_for_running_jobs_and_jobs_wait_for_a_writer(self):
+        j, j_out, j_rel = self.holder("one", tag="j")                       # a pool job runs
+        self.wait_for(lambda: self.got(j_out), "job never started")
+        w, w_out, w_rel = self.holder("ex", tag="w")                        # a writer comes
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(w_out))                             # waits for the job
+        open(j_rel, "w").close()
+        self.wait_for(lambda: self.got(w_out), "the writer never got the worktree")
+        self.assertEqual(self.read(w_out), "got [0]")
+        k, k_out, k_rel = self.holder("one", tag="k")                       # lanes 1-2 free, but a writer runs
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(k_out))
+        self.assertIn("another rrun is writing into this worktree",       # says why it waits
+                      self.read_err_until(k, "another rrun is writing into this worktree"))
+        open(w_rel, "w").close()
+        self.wait_for(lambda: self.got(k_out), "the job never ran after the writer")
+        open(k_rel, "w").close()
+        for p in (j, w, k):
+            self.assertEqual(p.wait(10), 0)
+        # a writer that never gets in: exit 72 path (WorktreeBusy), bounded
+        j, j_out, j_rel = self.holder("one", tag="j2")
+        self.wait_for(lambda: self.got(j_out), "job never started")
+        w, w_out, _ = self.holder("ex", wait=1.5, tag="w2")
+        self.assertEqual(w.wait(20), 72)
+        self.assertIn("other rruns from this worktree kept running after 2 s", self.read(w_out))
+        open(j_rel, "w").close()
+
+    def read_err_until(self, p, text, secs=10):
+        buf, end = "", time.time() + secs
+        os.set_blocking(p.stderr.fileno(), False)
+        while text not in buf and time.time() < end:
+            chunk = p.stderr.read()
+            buf += chunk or ""
+            time.sleep(0.1)
+        return buf
+
+    def test_a_wt_lanes_change_while_running_never_breaks_exclusivity(self):
+        three = os.path.join(self.d, "fleet3.json")
+        one = os.path.join(self.d, "fleet1.json")
+        with open(os.path.join(rdmods.STAGE, "fleet.json")) as f:
+            doc = json.load(f)
+        for path, n in ((three, 3), (one, 1)):
+            with open(path, "w") as f:
+                json.dump(dict(doc, wt_lanes=n), f)
+        hs = [self.holder("one", tag="l%d" % i, fleet=three) for i in range(3)]
+        for _p, out, _r in hs:
+            self.wait_for(lambda out=out: self.got(out), "a lane holder never started")
+        lane2 = next(h for h in hs if self.read(h[1]) == "got [2]")
+        for h in hs:
+            if h is not lane2:
+                open(h[2], "w").close()                                       # only lane 2 still runs
+        # fleet.json now says 1 lane: a writer still waits for the run on lane 2 (the gate, not lane count)
+        w, w_out, w_rel = self.holder("ex", tag="w", fleet=one)
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(w_out))
+        # ...and a 1-lane job may run on lane 0 meanwhile (lane 2 is outside its range, not a conflict)
+        j, j_out, j_rel = self.holder("one", tag="j", fleet=one)
+        self.wait_for(lambda: self.got(j_out), "a 1-lane job never ran")
+        self.assertEqual(self.read(j_out), "got [0]")
+        open(lane2[2], "w").close()
+        open(j_rel, "w").close()
+        self.wait_for(lambda: self.got(w_out), "the writer never got in")
+        open(w_rel, "w").close()
+        # raised back to 3 while a writer runs: a 3-lane job still waits for it
+        w, w_out, w_rel = self.holder("ex", tag="w3", fleet=one)
+        self.wait_for(lambda: self.got(w_out), "writer never started")
+        j, j_out, j_rel = self.holder("one", tag="j3", fleet=three)
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(j_out))
+        open(w_rel, "w").close()
+        self.wait_for(lambda: self.got(j_out), "the job never ran after the writer")
+        open(j_rel, "w").close()
+
+    def gate_free_for_sh(self):
+        st = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.gate" % self.wt12)
+        fd = os.open(st, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
+    def test_a_shared_sharded_run_never_runs_a_shard_locally(self):
+        p, out, rel = self.holder("shard-sh", tag="s")
+        self.wait_for(lambda: os.path.exists(out), "the shard never ended")
+        self.assertRegex(self.read(out), r"^got \[0\] rc=75 mode=sh$")      # infra, and the gate never moved
+        self.assertFalse(os.path.exists(out + ".ran"))                      # the command never ran here
+        open(rel + ".end", "w").close()
+        self.assertEqual(p.wait(10), 0)
+
+    def test_an_exclusive_sharded_run_keeps_ex_through_its_local_shard_and_after(self):
+        p, out, rel = self.holder("shard-ex", tag="x")
+        self.wait_for(lambda: os.path.exists(out + ".ran"), "the local shard never ran")
+        self.assertFalse(self.gate_free_for_sh())                           # EX while the shard runs
+        open(rel, "w").close()
+        self.wait_for(lambda: os.path.exists(out), "the shard never ended")
+        self.assertEqual(self.read(out), "got [0] rc=0 mode=ex")
+        self.assertFalse(self.gate_free_for_sh())                           # still EX after it: copy-back next
+        open(rel + ".end", "w").close()
+        self.assertEqual(p.wait(10), 0)
+        self.assertTrue(self.gate_free_for_sh())
+
+    def test_two_exclusive_runs_local_shards_never_overlap(self):
+        a, a_out, a_rel = self.holder("shard-ex", tag="sa")
+        b, b_out, b_rel = self.holder("shard-ex", tag="sb")
+        self.wait_for(lambda: os.path.exists(a_out + ".ran") or os.path.exists(b_out + ".ran"), "no shard ran")
+        time.sleep(1.5)
+        first, second = ((a_out, a_rel), (b_out, b_rel)) if os.path.exists(a_out + ".ran") else \
+            ((b_out, b_rel), (a_out, a_rel))
+        self.assertFalse(os.path.exists(second[0] + ".ran"))                # the other waits for the gate
+        open(first[1], "w").close()
+        open(first[1] + ".end", "w").close()
+        self.wait_for(lambda: os.path.exists(second[0] + ".ran"), "the second local shard never ran")
+        open(second[1], "w").close()
+        open(second[1] + ".end", "w").close()
+        self.assertEqual((a.wait(10), b.wait(10)), (0, 0))
+        s1 = [float(x) for x in self.read(first[0] + ".span").split()]
+        s2 = [float(x) for x in self.read(second[0] + ".span").split()]
+        self.assertLessEqual(s1[1], s2[0])                                  # one after the other
+
+    def test_no_path_changes_the_gate_mode_mid_run(self):
+        """The mode is set once per run (take_wt_lanes) and cleared only on release: a held gate cannot be
+        taken again, and no other code assigns the mode or converts a gate flock."""
+        import re
+        src = open(os.path.join(rdmods.STAGE, "rd_run.py")).read()
+        body = {}
+        for m in re.finditer(r"^def (\w+)\(.*?(?=^def |^class |\Z)", src, re.S | re.M):
+            body[m.group(1)] = m.group(0)
+        setters = sorted(n for n, b in body.items() if re.search(r'WT\["mode"\]\s*=(?!=)|WT\.update\(.*\bmode=', b))
+        self.assertEqual(setters, ["release_wt_lanes", "take_wt_lanes"])
+        gate_flocks = sorted(n for n, b in body.items() if re.search(r"flock\((gate|WT\[\"gate\"\])", b))
+        self.assertEqual(gate_flocks, [])                                   # only via _flock_nb, in take_wt_lanes
+        self.assertEqual(sorted(n for n, b in body.items() if "_flock_nb(gate" in b), ["take_wt_lanes"])
+        p, out, rel = self.holder("one", tag="t")
+        self.wait_for(lambda: self.got(out), "holder never started")
+        open(rel, "w").close()
+        p.wait(10)
+        code = ("import sys; sys.path.insert(0, %r); import rdmods, os; r = rdmods.owner('rrun')\n"
+                "c = {'fleet_path': '/nonexistent'}; r.take_wt_lanes('%s', 5, c)\n"
+                "try:\n    r.take_wt_lanes('%s', 5, c, exclusive=True); print('converted', flush=True)\n"
+                "except RuntimeError as e:\n    print('refused', r.WT['mode'], flush=True)\nos._exit(0)\n"
+                % (os.path.dirname(os.path.abspath(__file__)), self.wt12, self.wt12))
+        r = subprocess.run([sys.executable, "-c", code], env=self.env(), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stdout.strip(), "refused sh", r.stderr)
+
+    def test_build_with_outputs_and_local_fallback_hold_the_worktree_alone(self):
+        h, h_out, h_rel = self.holder("one", tag="d")                       # another rrun on lane 0
+        self.wait_for(lambda: os.path.exists(h_out), "holder never started")
+        # a run whose push fails falls back to this machine, in the worktree: it must wait for lane 0
+        errf = os.path.join(self.d, "err-local")
+        marker = os.path.join(self.d, "ran-local")
+        with open(errf, "w") as ef:
+            p = subprocess.Popen([RRUN, "/bin/sh", "-c", 'touch %s; echo "mode=$RDOCKER_MODE"' % marker],
+                                 cwd=self.wt, env=self.env(RRUN_GIT_URL=os.path.join(self.d, "nope", "x.git")),
+                                 stdout=subprocess.PIPE, stderr=ef, text=True)
+        self.wait_for(lambda: "this run writes into the worktree" in self.read(errf), "the local run never waited")
+        time.sleep(0.5)
+        self.assertFalse(os.path.exists(marker))
+        open(h_rel, "w").close()
+        out, _ = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, "mode=local\n"), self.read(errf))
+        self.assertEqual(h.wait(10), 0)
+        # a build that copies outputs back (--outputs) runs alone from the start
+        h, h_out, h_rel = self.holder("one", tag="e")
+        self.wait_for(lambda: os.path.exists(h_out), "holder never started")
+        errf = os.path.join(self.d, "err-build")
+        with open(errf, "w") as ef:
+            p = subprocess.Popen([RRUN, "--outputs", "dist", "/bin/sh", "-c", "mkdir -p dist && echo b > dist/a.txt"],
+                                 cwd=self.wt, env=self.env(), stdout=subprocess.PIPE, stderr=ef, text=True)
+        self.wait_for(lambda: "this run writes into the worktree" in self.read(errf), "the build never waited")
+        self.assertFalse(os.path.exists(os.path.join(self.wt, "dist")))
+        open(h_rel, "w").close()
+        p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, self.read(errf))
+        self.assertEqual(self.read(os.path.join(self.wt, "dist", "a.txt")), "b\n")
+
+    def test_a_slot_wait_is_logged_as_slot_s_not_lock_s(self):
+        import re
+        import threading
+        self.write_cfg(rr_slots=1, rr_slots_base=1, rr_status_every_s=0.5)
+        slots = os.path.join(self.home, "rr", "slots")
+        os.makedirs(slots)
+        fd = os.open(os.path.join(slots, "0"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)                                      # another job holds the slot
+        t = threading.Timer(2.5, os.close, [fd])
+        t.start()
+        r = self.rrun("/bin/sh", "-c", "echo ran")
+        t.join()
+        self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
+        route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
+        # the slot was held 2.5 s from launch; the runner's wait starts after the push + overlay
+        self.assertGreaterEqual(float(re.search(r" slot_s=([\d.]+)", route).group(1)), 1.0, route)
+        self.assertLess(float(re.search(r"\tlock_s=([\d.]+)", route).group(1)), 1.0, route)
+        runs = self.read(os.path.join(self.home, "rr", "log", "runs.log"))
+        m = re.search(r" wait_s=([\d.]+) .* lock_s=([\d.]+) slot_s=([\d.]+)\n", runs)
+        self.assertGreaterEqual(float(m.group(3)), 1.0, runs)
+        self.assertLess(float(m.group(2)), 1.0, runs)
+        self.assertGreaterEqual(float(m.group(1)), float(m.group(3)))      # wait_s keeps its meaning (both)
+
+    def test_a_push_lock_timeout_fails_the_attempt_and_never_pushes(self):
+        from unittest import mock
+        wt = rd_run.resolve_worktree(self.wt)
+        cfg = {"host": "mini", "rr_root": "rr", "rr_push_timeout_s": 1, "rr_base_branches": []}
+        lk = rd_run.push_lock("mini", 30).__enter__()                       # another push holds it
+        real = subprocess.run
+        calls = []
+
+        def spy(args, *a, **kw):
+            calls.append(list(args))
+            return real(args, *a, **kw)
+        try:
+            with mock.patch.object(rd_run.subprocess, "run", spy):
+                with self.assertRaises(rd_run.RunError) as cm:
+                    rd_run.push(cfg, wt)
+        finally:
+            lk.__exit__(None, None, None)
+        self.assertIn("another push to mini from this Mac did not finish in 1 s", str(cm.exception))
+        self.assertFalse([c for c in calls if "push" in c])                 # git push never ran
+
+    def test_lane_ids_never_collide(self):
+        ids = [rd_run.lane_mirror_id(self.wt12, k, n) for k in range(8) for n in range(8)]
+        self.assertEqual(len(set(ids)), 64)
+        self.assertTrue(all(__import__("re").match(r"^[0-9a-f]{12}$", x) for x in ids))
+        self.assertEqual(rd_run.lane_mirror_id(self.wt12, 0, 2), rd_run.short_hash("%s:lane2" % self.wt12, 12))
+
+    def test_a_push_waits_for_another_processes_push_to_that_worker(self):
+        """push_lock is cross-process: while another process pushes to this worker, ours waits."""
+        st = os.path.join(self.home, ".local", "state", "rdocker")
+        os.makedirs(st, exist_ok=True)
+        name = os.path.basename(rd_run.push_lock(rd_common.DEFAULTS["host"]).path)   # push-<host>.lock
+        fd = os.open(os.path.join(st, name), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)                                      # "another rrun is pushing"
+        p = self.popen("/bin/sh", "-c", "echo ran")
+        time.sleep(2.0)
+        log = self.read(self.sshlog) if os.path.exists(self.sshlog) else ""
+        self.assertNotIn("receive-pack", log)                               # it has not pushed
+        self.assertIsNone(p.poll())
+        os.close(fd)
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, "ran\n"), err)
+        self.assertIn("receive-pack", self.read(self.sshlog))
 
 
 if __name__ == "__main__":

@@ -59,7 +59,10 @@ RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in 
 # ~/rr/pool_version to this; a client that finds a higher one there (PROBE) updates its dotfiles
 # (git pull --ff-only) and re-executes itself once before running anything (rd_run.check_version).
 POOL_VERSION = 1
-# rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
+# rrun-<wt12>.lock (+ rrun-<wt12>.<k>.lock) in STATE_DIR: the worktree lanes - at most fleet.json wt_lanes
+# rrun runs of one laptop worktree at once; rrun-<wt12>.gate: shared by every pool run, exclusive for a run
+# that writes into the worktree (rd_run.take_wt_lanes);
+# push-<host>.lock: one git push per worker at a time from this Mac (rd_run.push_lock)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
 UNITS_DIR = os.path.join(HERE, "units")          # launch agent templates installed by rd_setup
@@ -139,7 +142,7 @@ DEFAULTS = {
     "rr_exit_grace_s": 10,             # after the command's main process exits, its leftovers get this long
     "rr_silent_min": 1,                # "no output for N min" on stderr after this, then every 5x it;
                                        # never kills (RRUN_SILENT_MIN; 0 = off)
-    "rr_status_every_s": 60,           # a run waiting for a slot / the worktree lock says so this often
+    "rr_status_every_s": 60,           # a run waiting for a slot / a worktree lane says so this often
     "rr_slot_wait_s": 120,             # wait this long for a slot on one worker, then re-plan (all of it
                                        # bounded by rr_wait_min, then exit 73)
     "rr_push_timeout_s": 300,          # a git push to a worker that takes longer = that worker is out

@@ -32,8 +32,10 @@ never starts Docker (not on the home machine, not anywhere) and no command ever 
 allowlisted env files (rr_env_allow) rrun would add - the overlay is only what git shows as changed
 or untracked-and-not-ignored, as for any rrun; no route.log rrun line (a warm is not usage, so
 discovery never feeds itself).
-A repo whose worktree has an rrun in flight (rrun-<wt12>.lock held) is skipped; an rrun started
-during a warm waits for it, as for any rrun from the same worktree.
+A repo whose worktree lane 0 is held (rrun-<wt12>.lock: an rrun in flight on lane 0, the mirror a warm
+prepares) is skipped; an rrun started during a warm takes another lane of its worktree (rd_run
+take_wt_lanes), or waits for lane 0 when it writes into the worktree (the gate exclusive + lane 0). Its push shares rd_run.push_lock with
+every rrun push from this Mac (the base-branch refs are the same).
 
 Loop: a pass every rr_warm_interval_s; in between, a cheap `ssh true` per worker every
 rr_warm_tick_s, and a worker that went down -> up starts a pass at once ("just came online").

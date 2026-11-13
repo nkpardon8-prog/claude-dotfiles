@@ -347,6 +347,7 @@ sub read_header {
     delete $h{pred_s} if defined $h{pred_s} && $h{pred_s} !~ /^\d{1,7}(\.\d+)?$/;
     delete $h{client} if defined $h{client} && $h{client} !~ /^[0-9a-f]{7,40}$/;
     delete $h{pool_version} if defined $h{pool_version} && $h{pool_version} !~ /^\d{1,6}$/;
+    delete $h{lock_s} if defined $h{lock_s} && $h{lock_s} !~ /^\d{1,7}(\.\d+)?$/;    # runs.log lock_s (C0)
     check_policy($h{repo_policy}) if defined $h{repo_policy};
     fail("bad pg_lane", 65) if $h{pg_lane} && !defined $h{repo_policy};
     $h{tar_len} //= 0;
@@ -817,6 +818,7 @@ sub take_slot {
                 ($lock_fh, $who, $slot_t) = ($fh, "$dir/$i.who", int(time));
                 write_slot_files();
                 leave_waiters();
+                status(sprintf 'SLOT %.1f', time - $t_wait0);    # the client's route.log slot_s
                 return;
             }
             push @held, $i;
@@ -829,7 +831,7 @@ sub take_slot {
             status(wait_line($dir, $n, $gate ? '' : $heavy_ok ? 'mem' : 'heavy', \@held));
         }
         my $left = $deadline - time;
-        if ($left <= 0) { status('BUSY'); fail(undef, 73) }
+        if ($left <= 0) { status(sprintf 'SLOT %.1f', time - $t_wait0); status('BUSY'); fail(undef, 73) }
         my $nap = $left < 5 ? $left : 5;
         $nap = $every if $every < $nap;
         pump($nap);    # EOF or Ctrl-C while we wait = the user gave up
@@ -1867,6 +1869,9 @@ sub finish {
 # "setup=warm|clone|cold|- pred_s=<s|-> client=<sha|-> pv=<pool_version|->", then (2026-11-12)
 # "node=<major|->": the node major on the run's PATH (`node -v`, the one the NODE status reports), `-`
 # when no slot was taken or node is missing. rd-steward compares it with fleet.json's pool_node_major.
+# Then (2026-11-13, Phase C0) "lock_s=<s|-> slot_s=<s>": the two waits inside wait_s, apart - lock_s = the
+# client's wait for a worktree lane on its Mac (header lock_s; `-` from an older client), slot_s = this
+# runner's own wait for a slot (the same slot wait wait_s adds; a mirror-lock wait is in prepare_s).
 # Truthful labels (2026-11-11; every reader - rd_pool's PROBE, rd-doctor, rd-steward, the reporter -
 # accepts them): before GO, a client that left is `abandoned-setup` (it gave up or was killed during
 # the prepare or the slot wait), or `moved` when it said MOVE first (a deliberate re-plan elsewhere);
@@ -1907,9 +1912,11 @@ sub log_fields {
     my $slot_wait = defined $t_wait0 ? ($t_slot // $now) - $t_wait0 : 0;
     (my $owner = $owner_id // '-') =~ tr/ \t/__/;
     my $setup = $setup_kind // (defined $t_ready ? 'warm' : '-');
-    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s",
+    my $lock_s = defined $h{lock_s} ? sprintf('%.1f', $h{lock_s}) : '-';
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s lock_s=%s slot_s=%.1f",
         $run_id // '-', $owner, $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait,
-        exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-', $node_major // '-';
+        exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-', $node_major // '-',
+        $lock_s, $slot_wait;
 }
 
 # Version guarantee (layer 2): $ROOT/pool_version holds the highest pool_version any client that ran

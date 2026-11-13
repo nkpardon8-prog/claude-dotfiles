@@ -3,8 +3,14 @@
 Laptop side of the rrun plan (Revision 3/3.1); the mini side is rr_runner.pl, which this module
 SENDS with every run (nothing trusted is kept on the mini). One run:
   1 resolve the git worktree of cwd: repo slug (from the git common dir), wt12, relcwd, HEAD sha
-  2 flock STATE_DIR/rrun-<wt12>.lock      (one run at a time per laptop worktree)
-  3 git push HEAD -> ~/<rr_root>/git/<slug>.git refs/rrun/<wt12> over the rr-%C ssh master; the
+  2 hold the worktree (take_wt_lanes): the gate STATE_DIR/rrun-<wt12>.gate shared + the first free lane
+    k = flock STATE_DIR/rrun-<wt12>[.<k>].lock, so up to fleet.json wt_lanes (3) runs of one laptop
+    worktree go at once, each with its own worker mirror and push ref (lane_mirror_id); more poll for a
+    lane (exit 72 past the wait). Builds with copy-back and every local run (fallback exec, local shard)
+    write into the worktree: they hold the gate exclusive and run alone. The mode is chosen once per run;
+    a shared run never runs a shard locally (exit 75 for that shard instead)
+  3 git push HEAD -> ~/<rr_root>/git/<slug>.git refs/rrun/<lane id> over the rr-%C ssh master (one push
+    per worker at a time from this Mac: push_lock, cross-process - the base refs are shared); the
     remote receive-pack creates the bare repo the first time. Push fails => the mini is out =>
     run locally (RDOCKER_MODE=local), unless RRUN_STRICT=1 (exit 75: infra, never ran)
   4 overlay tar = tracked files changed vs HEAD + untracked (not ignored) + allowlisted env files
@@ -42,14 +48,14 @@ eta; the first to finish wins, the other is stopped. A second concurrent run of 
 uses its own lane mirror (Lane), so runs never share a checkout.
 Builds (`npm run build` in a package dir mapped by rr_outputs) copy their outputs back: after a
 successful run a second ssh streams `tar` of the outputs from the worker's mirror, extracted into
-the worktree (staged, then renamed into place) while the worktree lock is still held.
+the worktree (staged, then renamed into place) while the worktree's gate is still held exclusive.
 Hangs / waits (2026-11-11): the runner relays the command's output through its own pipes, so when the
 main process exits the leftovers get rr_exit_grace_s, then the group is TERMed / KILLed and the run
 ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>) ends a run
 with exit 124; silence only prints "no output for N min" with the last test file the output named
 (rr_silent_min; RRUN_SILENT_MIN). A slot
 wait on one worker lasts rr_slot_wait_s, then host_loop re-plans (rr_wait_min in all -> 73); the
-worktree lock waits at most the job's cap (-> 72). Slot / lock waits print a line every
+worktree-lane wait is at most the job's cap (-> 72). Slot / lane waits print a line every
 rr_status_every_s. Every job carries owner_info() (session id / parent pid, /line caption, host):
 `rrun --jobs` / `--mine` list them from every worker's slots/<i>.own.
 Fast start: route.log gets every job's client stage timings (Timing / STAGES: cache plan push overlay
@@ -65,7 +71,9 @@ RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns th
 Cache (rd_cache): a one-shot tsc / eslint / vitest / jest run or a known test / typecheck / lint npm
 script whose shipped code + command match a recent run replays that run's output and exit code
 (passes 24 h, failures 20 min); RRUN_CACHE=0 always runs (and saves the fresh result). Looked up
-under the worktree lock, so a second identical run waiting on the first gets its result. Then the
+after a worktree lane is taken: a run that waited for a lane gets the result of one that finished
+meanwhile (two identical runs on two lanes at once both miss this tier; the pool tier's singleflight
+below still makes the second wait for the first when the pool key is set). Then the
 pool tier (rd_cache, home worker): looked up through the placement probe; an identical run in flight
 elsewhere is waited for (wait_inflight) and replayed; a result is shared after it is printed
 (share_after). RRUN_CACHE=0 skips the pool tier entirely.
@@ -108,10 +116,10 @@ EXIT_MAY_HAVE_RUN = 76         # infra: it started, then its result was lost (li
 EXIT_CONFIG = 77               # needs-human: no worker may take it (fleet.json)
 EXIT_BUSY = 73                 # infra: every worker stayed busy (never ran)
 PUSH_TIMEOUT_S = 300            # rr_push_timeout_s: a git push that hangs longer = that worker is out
-EXIT_WT_BUSY = 72              # another rrun from this worktree held its lock past our wait
+EXIT_WT_BUSY = 72              # this worktree stayed busy (lanes / its gate) past our wait
 EXIT_TIMEOUT = 124             # like timeout(1): the command ran past its wall-clock cap and was killed
 EXIT_CODES = {                 # code -> (class, meaning): the one table the docs and the test follow
-    EXIT_WT_BUSY: ("infra", "another rrun from this worktree held its lock past the wait; never ran"),
+    EXIT_WT_BUSY: ("infra", "this worktree stayed busy (its lanes, or a run writing into it) past the wait; never ran"),
     EXIT_BUSY: ("infra", "every worker stayed busy; never ran"),
     EXIT_NEVER_RAN: ("infra", "never ran: no worker reachable / lost before the start / RRUN_STRICT"),
     EXIT_MAY_HAVE_RUN: ("infra", "may have run: the link or the result was lost after the start"),
@@ -174,7 +182,7 @@ TIMEOUT_MARGIN_S = 90
 EXIT_BACKSTOP_S = 45
 NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-HELD_LOCKS = []                # worktree lock fds: made inheritable only for a local-fallback exec
+HELD_LOCKS = []                # worktree lane fds: made inheritable only for a local-fallback exec
 LIVE, LIVE_LOCK = set(), threading.Lock()   # running Sessions (shard mode forwards signals to them)
 STOP_SIG = [0]                 # shard mode: the first INT/TERM/HUP (later sessions start stopped)
 ABORT_KILL_S = 15              # an aborted session's ssh is killed if still there after this
@@ -209,8 +217,11 @@ def note(msg):
 
 
 def git_out(args, cwd, check=True):
-    """-> stdout bytes of `git <args>` in cwd (RunError when check and git fails)."""
-    p = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True)
+    """-> stdout bytes of `git <args>` in cwd (RunError when check and git fails). Read-only: with
+    GIT_OPTIONAL_LOCKS=0 git never takes the worktree's index.lock to refresh the index, so concurrent
+    rruns of one worktree (lanes) and the agent's own `git add` / `commit` never trip on each other."""
+    p = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True,
+                       env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"))
     if check and p.returncode != 0:
         raise RunError("git %s: %s" % (args[0], p.stderr.decode("utf-8", "replace").strip()[-300:]))
     return p.stdout
@@ -279,46 +290,195 @@ def resolve_worktree(cwd):
             "wt12": short_hash(os.path.realpath(top), 12)}
 
 
-def wt_lock_path(wt12):
-    return os.path.join(rd_common.STATE_DIR, "rrun-%s.lock" % wt12)
+def wt_lock_path(wt12, k=0):
+    """Worktree lane k's lock file. Lane 0 keeps the pre-lanes name rrun-<wt12>.lock (rd_warm waits on /
+    skips it; an older client still running during a rollout locks only that one)."""
+    return os.path.join(rd_common.STATE_DIR, "rrun-%s.lock" % wt12 if k == 0 else "rrun-%s.%d.lock" % (wt12, k))
+
+
+
+
+def lane_mirror_id(wt12, k, n=0):
+    """The worker mirror / push-ref id (12 hex, the shape rd_janitor reaps: mirror <slug>-<id> and its
+    ref refs/rrun/<id>) of worktree lane k (concurrent rruns of one worktree, take_wt_lanes) and process
+    lane n (a second run of this process on one worker: a shard, a hedge; take_lane). (0, 0) is the
+    worktree's own mirror; (0, n) keeps the pre-lanes shard shape. Every pair gets its own id, so no two
+    runs ever share a checkout, an env list or a ref."""
+    if k == 0:
+        return wt12 if n == 0 else short_hash("%s:lane%d" % (wt12, n), 12)
+    return short_hash("%s:wt%d" % (wt12, k) if n == 0 else "%s:wt%d:lane%d" % (wt12, k, n), 12)
 
 
 class WorktreeBusy(Exception):
-    """Another rrun from this worktree kept the worktree lock past our wait (exit EXIT_WT_BUSY)."""
+    """Other rruns from this worktree kept its lanes past our wait (exit EXIT_WT_BUSY)."""
 
 
-def take_wt_lock(wt12, wait_s=None, cfg=None):
-    """flock rrun-<wt12>.lock for the whole run. The fd is not inheritable, so the ssh master that
-    git's ssh may fork (ControlPersist) never holds it; run_local makes it inheritable for exec.
-    Waits at most wait_s (None = forever), saying who holds it every rr_status_every_s; then raises
-    WorktreeBusy. The lock file is never unlinked (a waiter would lock a deleted inode)."""
+# This process's hold on its worktree (one rrun per process; shard threads share it): wt12, the gate fd and
+# its mode (None = not held / "sh" / "ex"), the lane fds {k: fd}, the lane count, the wait budget and config.
+# The mode is set ONLY by take_wt_lanes, once per run, and never converted while held: no downgrade, no
+# in-place upgrade, no "temporarily unlocked" state while work is in flight. A sharded run in "sh" never runs
+# a shard on this machine (run_local_shard); the one hand-over is own_worktree (see there).
+WT = {"wt12": None, "gate": None, "mode": None, "held": {}, "n": 1, "wait_s": None, "cfg": None}
+_WT_LOCK = threading.RLock()
+
+
+def wt_gate_path(wt12):
+    """The worktree's gate: every pool job holds it shared (LOCK_SH) for its whole run; a run that writes
+    into the worktree (a build that copies outputs back, any local fallback) holds it exclusive. Separate
+    from the lanes, so exclusivity never depends on fleet.json wt_lanes (which may change mid-run)."""
+    return os.path.join(rd_common.STATE_DIR, "rrun-%s.gate" % wt12)
+
+
+def _flock_nb(fd, how):
     import fcntl
-    rd_common.ensure_dirs()
-    fd = os.open(wt_lock_path(wt12), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, how | fcntl.LOCK_NB)
+        return True
     except OSError:
-        note("another rrun from this worktree is running%s; waiting for it to finish%s..."
-             % (wt_holder(wt12), " (at most %s)" % fmt_wait(wait_s) if wait_s else ""))
-        every = float((cfg or rd_common.load_cfg()).get("rr_status_every_s", 60) or 60)
-        t0 = last = time.monotonic()
-        while True:
-            time.sleep(0.25)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                pass
-            if wait_s is not None and time.monotonic() - t0 >= wait_s:
-                os.close(fd)
-                raise WorktreeBusy("another rrun from this worktree still holds its lock after %s%s"
-                                   % (fmt_wait(wait_s), wt_holder(wt12)))
-            if time.monotonic() - last >= every:
-                last = time.monotonic()
-                note("still waiting for the other rrun from this worktree (%s so far)%s"
-                     % (fmt_wait(last - t0), wt_holder(wt12)))
+        return False
+
+
+def _hold(fd):
     HELD_LOCKS.append(fd)
     return fd
+
+
+def _drop(fd):
+    if fd in HELD_LOCKS:
+        HELD_LOCKS.remove(fd)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def lanes_busy(wt12, n):
+    """How many of the worktree's n lanes are held right now (a probe: take and drop each free one)."""
+    import fcntl
+    busy = 0
+    for k in range(n):
+        fd = os.open(wt_lock_path(wt12, k), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if _flock_nb(fd, fcntl.LOCK_EX):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                busy += 1
+        finally:
+            os.close(fd)
+    return busy
+
+
+def _wait_line(wt12, n, exclusive, writer, waited):
+    if exclusive:
+        why = "this run writes into the worktree (a build copying outputs back, or a run on this machine), so " \
+              "it waits until no other rrun from this worktree runs"
+    elif writer:
+        why = "another rrun is writing into this worktree (a build copying outputs back, or a run on this " \
+              "machine) and runs alone"
+    else:
+        why = "this worktree runs at most %d rrun job%s at once (fleet.json wt_lanes); %d running" % (
+            n, "" if n == 1 else "s", lanes_busy(wt12, n))
+    return "%s; waited %s%s" % (why, fmt_wait(waited), wt_holder(wt12))
+
+
+def take_wt_lanes(wt12, wait_s=None, cfg=None, exclusive=False):
+    """Hold this worktree for one run. A pool job: the gate shared + the first free lane of fleet.json
+    wt_lanes (default 3) - nonblocking flocks, polled with backoff (0.1 s up to 1 s), so up to that many
+    runs of one worktree go at once, each with its own worker mirror and push ref (lane_mirror_id). An
+    exclusive run (it writes into the worktree): the gate exclusive + lane 0 (the lock rd_warm and an older
+    client take; its mirror is the one used). A waiting run says why, how many run and how long it has
+    waited, every rr_status_every_s (quiet for the first second). No queue: a writer can be starved by a
+    stream of jobs - bounded by wait_s, then WorktreeBusy (exit 72). Locks die with the process; lock files
+    are never unlinked (a waiter would lock a deleted inode). The fds are not inheritable (git's ssh may
+    fork a ControlPersist master); run_local makes them inheritable for its exec. -> the lanes held."""
+    import fcntl
+    import rd_fleet
+    cfg = cfg or rd_common.load_cfg()
+    n = rd_fleet.wt_lanes(cfg)
+    rd_common.ensure_dirs()
+    with _WT_LOCK:
+        if WT["mode"] is not None:       # a held gate is never converted (see WT)
+            raise RuntimeError("take_wt_lanes: this process already holds its worktree (%s)" % WT["mode"])
+        WT.update(wt12=wt12, n=n, wait_s=wait_s, cfg=cfg)
+    every = float(cfg.get("rr_status_every_s", 60) or 60)
+    t0 = time.monotonic()
+    said, nap = None, 0.1
+    while True:
+        gate = os.open(wt_gate_path(wt12), os.O_RDWR | os.O_CREAT, 0o600)
+        writer = False
+        if _flock_nb(gate, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH):
+            lanes = [0] if exclusive else range(n)
+            for k in lanes:
+                fd = os.open(wt_lock_path(wt12, k), os.O_RDWR | os.O_CREAT, 0o600)
+                if _flock_nb(fd, fcntl.LOCK_EX):
+                    with _WT_LOCK:
+                        WT.update(gate=_hold(gate), mode="ex" if exclusive else "sh")
+                        WT["held"][k] = _hold(fd)
+                    return sorted(WT["held"])
+                os.close(fd)
+        else:
+            writer = not exclusive
+        os.close(gate)                   # never wait while holding the gate: a writer must get in
+        now = time.monotonic()
+        if wait_s is not None and now - t0 >= wait_s:
+            raise WorktreeBusy("%s after %s%s" % (
+                "other rruns from this worktree kept running" if exclusive else
+                "a run writing into this worktree kept it" if writer else
+                "other rruns from this worktree kept all %d of its lanes" % n, fmt_wait(wait_s), wt_holder(wt12)))
+        if (said is None and now - t0 >= 1.0) or (said is not None and now - said >= every):
+            note("%s for this worktree: %s; gives up after %s (exit 72)" % (
+                "waiting" if said is None else "still waiting", _wait_line(wt12, n, exclusive, writer, now - t0),
+                fmt_wait(wait_s) if wait_s else "never"))
+            said = now
+        time.sleep(nap)
+        nap = min(1.0, nap * 1.5)
+
+
+def release_wt_lanes():
+    """Drop this process's gate and lanes."""
+    with _WT_LOCK:
+        for fd in WT["held"].values():
+            _drop(fd)
+        WT["held"].clear()
+        if WT["gate"] is not None:
+            _drop(WT["gate"])
+        WT.update(gate=None, mode=None)
+
+
+def wt_lane():
+    """The worktree lane this process runs on (0 when none is held)."""
+    return min(WT["held"]) if WT["held"] else 0
+
+
+def own_worktree(argv, t0):
+    """Before the local fallback exec (it writes into the worktree): hold the gate exclusive. Not a mode
+    change of a running run but a hand-over between two runs: it is called only from the main thread once
+    the pool attempt is over (host_loop returned; no session in flight - else refused), the pool run's lane
+    and shared gate are released, and the local run takes the exclusive gate from scratch (wait_s, as any
+    run) and keeps it until exec ends. Nothing reads or ships the worktree in between. -> None when held
+    (or no worktree is held at all), else Rc: 72 (logged to route.log with its wait in lock_s, never as a
+    local exec), or 75 when sessions still run."""
+    with _WT_LOCK:
+        if WT["mode"] in (None, "ex"):
+            return None
+        with LIVE_LOCK:
+            live = bool(LIVE)
+        if live or threading.current_thread() is not threading.main_thread():
+            record("none", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
+            return infra(EXIT_NEVER_RAN, "a run of this invocation is still in flight; not running it on this "
+                         "machine as well")
+        wt12, wait_s, cfg = WT["wt12"], WT["wait_s"], WT["cfg"]
+        release_wt_lanes()
+    t = time.monotonic()
+    try:
+        take_wt_lanes(wt12, wait_s, cfg, exclusive=True)
+    except WorktreeBusy as e:
+        add_stage("lock_s", time.monotonic() - t)
+        record("none", argv, EXIT_WT_BUSY, time.monotonic() - t0)
+        return infra(EXIT_WT_BUSY, "%s; running it on this machine needs the worktree to itself; never ran" % e,
+                     "check `rrun --mine`; rerun when it is done")
+    add_stage("lock_s", time.monotonic() - t)
+    return None
 
 
 # ---------------------------------------------------------------------------- push
@@ -341,11 +501,12 @@ def push(cfg, wt):
     env_file_guard(cfg, wt, base)        # rrun and rd_warm both push here: nothing ships past it
     limit = float(cfg.get("rr_push_timeout_s", PUSH_TIMEOUT_S) or PUSH_TIMEOUT_S)
     try:
-        p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
-                            "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
-                            "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base,
-                           cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                           timeout=limit)
+        with push_lock(cfg["host"], limit):
+            p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
+                                "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
+                                "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base,
+                               cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=limit)
     except subprocess.TimeoutExpired:
         # nothing ran there yet: the job moves on to the next worker like any unreachable one
         raise RunError("git push did not finish in %d s" % limit)
@@ -722,7 +883,6 @@ class Lane:
 
 
 _LANES, _LANES_LOCK = {}, threading.Lock()
-_HOST_LOCKS = {}
 
 
 def take_lane(host_key):
@@ -738,10 +898,37 @@ def drop_lane(host_key, n):
         _LANES.get(host_key, set()).discard(n)
 
 
-def host_lock(host_key):
-    """One push at a time per worker (parallel pushes of the same refs would fail on ref locks)."""
-    with _LANES_LOCK:
-        return _HOST_LOCKS.setdefault(host_key, threading.Lock())
+class push_lock:
+    """One git push at a time per worker from this Mac, across processes and threads (a flock on
+    STATE_DIR/push-<host>.lock; flock binds the open file, so two fds of one process exclude each other
+    too). Concurrent worktree lanes, shards, hedges and rd_warm all push the same base-branch refs, and
+    parallel pushes of one ref fail on its ref lock. Waits at most wait_s (the push timeout), then raises
+    RunError - never a push without the lock: the attempt fails like an unreachable worker (next worker,
+    or infra) instead."""
+
+    def __init__(self, host_key, wait_s=PUSH_TIMEOUT_S):
+        self.path = os.path.join(rd_common.STATE_DIR, "push-%s.lock" % NAME_RE.sub("_", str(host_key))[:80])
+        self.host, self.wait_s, self.fd = host_key, wait_s, None
+
+    def __enter__(self):
+        import fcntl
+        rd_common.ensure_dirs()
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        end = time.monotonic() + self.wait_s
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if time.monotonic() >= end:
+                    os.close(self.fd)
+                    raise RunError("another push to %s from this Mac did not finish in %d s"
+                                   % (self.host, self.wait_s))
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        os.close(self.fd)
+        return False
 
 
 # ---------------------------------------------------------------------------- remote session
@@ -990,6 +1177,11 @@ class Session:
                 self.wake.set()
             self.waits += 1
             self.wait_note(rest)
+        elif word == "SLOT":             # the runner's own slot wait (taken, or given up: BUSY follows)
+            try:
+                add_stage("slot_s", float(rest.strip()))
+            except ValueError:
+                pass
         elif word == "UNAVAIL":
             self.unavail = rest.strip() or "unavailable"
         elif word == "NODE":
@@ -1205,7 +1397,17 @@ class Session:
 
 # ---------------------------------------------------------------------------- timing / state
 
-STAGES = {}      # client-side start timings of this rrun (route.log, always): cache_s plan_s push_s overlay_s remote_s start_s
+STAGES = {}      # client-side start timings of this rrun (route.log, always): lock_s cache_s plan_s push_s overlay_s
+#                 slot_s remote_s start_s. lock_s = the wait for a worktree lane (this Mac); slot_s = the wait
+#                 for a worker slot (the runners' SLOT statuses, summed over attempts / shards). Both are
+#                 also inside start_s; route.log readers must not add them to it.
+_STAGES_LOCK = threading.Lock()
+
+
+def add_stage(key, secs):
+    with _STAGES_LOCK:
+        STAGES[key] = round(STAGES.get(key, 0.0) + secs, 2)
+
 ROUTE_EXTRA = {}  # more route.log fields of this rrun: pred_s (the placement's run estimate), client (code sha)
 
 
@@ -1235,9 +1437,9 @@ def short_argv(argv):
     return s if len(s) <= 120 else s[:117] + "..."
 
 
-def record(target, argv, rc, secs, wt12=None, start=False, cap=None):
-    """route.log line + rrun.json (last result, runs in flight: argv, worker, owner, start, cap) for
-    `rdocker status` and the worktree-lock wait line."""
+def record(target, argv, rc, secs, wt12=None, start=False, cap=None, pred=None):
+    """route.log line + rrun.json (last result, runs in flight: argv, worker, owner, start, cap, the
+    placement's run estimate) for `rdocker status` and the worktree-lane wait line."""
     pid = str(os.getpid())
 
     def apply(cur):
@@ -1246,7 +1448,8 @@ def record(target, argv, rc, secs, wt12=None, start=False, cap=None):
         if start:
             o = owner_info()
             active[pid] = {"ts": time.time(), "argv": short_argv(argv), "wt12": wt12, "host": target,
-                           "owner": o["id"], "name": o["name"], "cap_s": cap, "cwd": os.getcwd()}
+                           "owner": o["id"], "name": o["name"], "cap_s": cap, "cwd": os.getcwd(),
+                           "pred_s": pred}
         else:
             cur["last"] = {"ts": time.time(), "rc": rc, "target": target, "secs": round(secs, 1),
                            "argv": short_argv(argv)}
@@ -1316,18 +1519,21 @@ def job_rows(now):
     return rows
 
 
+def wt_holder_text(a, now):
+    """'<argv> on <worker>, running 4 min, owner X, its cap ends it within 26 min' for one rrun.json entry."""
+    ts = a.get("ts") if isinstance(a.get("ts"), (int, float)) else now
+    cap = a.get("cap_s")
+    return "%s on %s, running %s, owner %s%s" % (
+        a.get("argv"), a.get("host") or "?", fmt_min(max(0, now - ts)), owner_label(a),
+        ", its cap ends it within %s" % fmt_min(max(0, cap - (now - ts))) if cap else "")
+
+
 def wt_holder(wt12, now=None):
-    """' (<argv> on <worker>, running 4 min, owner X, capped at 30 min)' for the run of ours that
-    holds this worktree's lock, '' when rrun.json does not say."""
+    """' (<holder>; <holder>)' for the runs of ours that hold this worktree's lanes, '' when rrun.json
+    does not say."""
     now = time.time() if now is None else now
-    for _pid, a in active_runs(now):
-        if a.get("wt12") == wt12:
-            ts = a.get("ts") if isinstance(a.get("ts"), (int, float)) else now
-            cap = a.get("cap_s")
-            return " (%s on %s, running %s, owner %s%s)" % (
-                a.get("argv"), a.get("host") or "?", fmt_min(max(0, now - ts)), owner_label(a),
-                ", its cap ends it within %s" % fmt_min(max(0, cap - (now - ts))) if cap else "")
-    return ""
+    held = [wt_holder_text(a, now) for _pid, a in active_runs(now) if a.get("wt12") == wt12]
+    return " (%s)" % "; ".join(held) if held else ""
 
 
 def _ago(ts, now):
@@ -1352,7 +1558,7 @@ def run_local(argv, env_pairs, why=None):
         note(line[len("rrun: "):] if line.startswith("rrun: ") else line)
     sys.stdout.flush()
     sys.stderr.flush()
-    for fd in HELD_LOCKS:          # the local run keeps holding the worktree lock
+    for fd in HELD_LOCKS:          # the local run keeps holding the worktree (the gate exclusive + lane 0)
         os.set_inheritable(fd, True)
     try:
         os.execvpe(argv[0], argv, env)
@@ -1369,6 +1575,9 @@ def fallback(argv, env_pairs, why, t0, job=None, pool=False):
         record("none", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
         return infra(EXIT_NEVER_RAN, "%s; a %s job never runs on this machine (the pool keeps it off "
                      "agent machines)" % (why, job["cls"]), "rerun it when a worker is back")
+    busy = own_worktree(argv, t0)    # it writes into the worktree: it runs alone (or 72, logged as such)
+    if busy is not None:
+        return busy
     record("local", argv, "exec", time.monotonic() - t0)
     return run_local(argv, env_pairs, why)
 
@@ -1652,11 +1861,14 @@ def _rrun(argv, env_args, environ0):
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
     if not opts.where:
         timing.mark("resolve")
-        try:                         # fd stays open (and locked) until we exit or exec
-            take_wt_lock(wt["wt12"], wt_wait_s(cfg, job), cfg)
+        try:                         # fds stay open (and locked) until we exit or exec
+            # a build that copies outputs back writes into the worktree: it runs alone (the gate exclusive)
+            take_wt_lanes(wt["wt12"], wt_wait_s(cfg, job), cfg, exclusive=bool(outputs))
         except WorktreeBusy as e:
+            timing.mark("worktree lock", "lock_s")
+            record("none", argv, EXIT_WT_BUSY, time.monotonic() - t0)
             return infra(EXIT_WT_BUSY, "%s; never ran" % e, "check `rrun --mine`; rerun when it is done")
-        timing.mark("worktree lock")
+        timing.mark("worktree lock", "lock_s")
     crun, cache_why = cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs) if wt \
         else (None, "not in a git worktree")
     hit = rd_cache.lookup(crun.key) if crun is not None and opts.cache and not opts.host else None
@@ -1789,7 +2001,7 @@ def version_lines():
 
 def warm_trigger_paths(key):
     """(stamp, pending) for one repo + lockfiles: stamp's mtime = when a triggered warm last STARTED
-    (the throttle); pending = a triggered warm is waiting for the worktree lock."""
+    (the throttle); pending = a triggered warm is waiting for the worktree's lane 0."""
     base = os.path.join(rd_common.STATE_DIR, "warm-trigger-%s" % key)
     return base, base + ".pending"
 
@@ -1797,8 +2009,9 @@ def warm_trigger_paths(key):
 def trigger_warm(cfg, plan, wt, dshas, job=None):
     """Fast start: a worker that may take this job but lacks its packages (probe warm_deps 0) gets
     them in the background - one detached `rdocker warm --once --repo <cwd> --after-lock S --trigger K`
-    (rd_warm: idle priority, only on workers running no job). It waits for THIS rrun's worktree lock
-    (at most the job's cap + a minute), so it starts once the foreground job is done, never skipping
+    (rd_warm: idle priority, only on workers running no job). It waits for the worktree's lane 0 (its
+    mirror is the one it warms; at most the job's cap + a minute) - held by THIS rrun when it runs on lane
+    0, so it starts once the foreground job is done; on lane 1+ it may warm meanwhile - never skipping
     the repo; the throttle (rr_warm_trigger_every_s) starts only when a warm really starts. -> True
     when a waiting warm was spawned."""
     if not (plan.pool and wt and dshas and cfg.get("rr_warm_trigger", True)):
@@ -2198,7 +2411,8 @@ def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0)
     """attempt() on a free lane of h, with a hedge watching it when hedging is on for this job."""
     key = h.cfg["host"]
     n = take_lane(key)
-    lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
+    mid = lane_mirror_id(ctx.wt["wt12"], wt_lane(), n)
+    lane = Lane(out, err, None if mid == ctx.wt["wt12"] else mid)
     lane.tag = tag
     hedge = Hedge(ctx, h, argv, lane, tag, frac, out, err) if hedge_on(ctx) else None
     try:
@@ -2300,7 +2514,8 @@ class Hedge:
             self.dup = c.name
             if ctx.cache is not None:    # two runs' output on one screen: not replayable
                 ctx.cache.taint("a hedged duplicate ran")
-            self.dup_lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
+            mid = lane_mirror_id(ctx.wt["wt12"], wt_lane(), n)
+            self.dup_lane = Lane(out, err, None if mid == ctx.wt["wt12"] else mid)
         try:
             kind, val = attempt(c, ctx.wt, self.argv, ctx.env_pairs, Timing(False), ctx.t0, ctx.job,
                                 ctx.plan.pool, ctx.outputs, ctx.deps, None, self.dup_lane)
@@ -2354,10 +2569,16 @@ def shard_argv(argv, i, n):
 
 
 def run_local_shard(ctx, argv, out, err, why):
-    """A shard no worker could take: on this machine (subprocess, output prefixed like the rest),
-    unless RRUN_STRICT=1 / a never-local job in the pool (exit 75)."""
+    """A shard no worker could take: on this machine (subprocess, output prefixed like the rest) - only
+    when this run holds the worktree's gate exclusive (it may write there) or none at all; a run holding
+    it shared, RRUN_STRICT=1 and a never-local job in the pool end the shard with exit 75."""
     if os.environ.get("RRUN_STRICT") == "1" or ctx.job.get("never_local"):
         return infra(EXIT_NEVER_RAN, "%s - not running this shard on this machine" % why)
+    if WT["mode"] == "sh":
+        # it would write into the worktree while other runs of it share it; the gate is never switched
+        # mid-run (see WT), so a shared run never runs a shard here: it ends like an unreachable shard
+        return infra(EXIT_NEVER_RAN, "%s - a shard runs on this machine only in a run that holds the worktree "
+                     "alone (a build with --outputs); not running it here" % why, "rerun it when a worker is free")
     mark_started()
     note("%s - running this shard on this machine (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")
@@ -2536,11 +2757,11 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs.
     cache (rd_cache.Run): told what this attempt shipped and how its command ended."""
     cfg = h.cfg
+    wt12 = wt["wt12"]                # the worktree's own id: rrun.json, the lane wait line
     if lane is not None and lane.wt12:
         wt = dict(wt, wt12=lane.wt12)
     try:
-        with host_lock(cfg["host"]):
-            base = push(cfg, wt) or []
+        base = push(cfg, wt) or []
     except PolicyRefused as e:
         return "done", Rc(65, "needs-human", "%s; not run" % e,
                           "tell the owner: untrack it (git rm --cached + commit) or rename it to *.example")
@@ -2567,9 +2788,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         ROUTE_EXTRA["pred_s"] = pred
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs,
                                   run_id=run_id, waited_s=round(time.monotonic() - t0, 1), pred_s=pred,
+                                  lock_s=STAGES.get("lock_s", 0.0),
                                   **({"node_id": 1} if cache is not None else {}))
     cap = timeout_s(cfg, job["cls"])
-    record(h.name, argv, None, 0, wt12=wt["wt12"], start=True, cap=cap)
+    record(h.name, argv, None, 0, wt12=wt12, start=True, cap=cap, pred=pred)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
     sess.host_name, sess.timeout_s, sess.silent_s = h.name, cap, silent_s(cfg)
     sess.run_id = run_id

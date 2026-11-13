@@ -205,7 +205,10 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since
   2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
   client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused|abandoned-setup|moved|warm
-  setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version> node=<node major the job ran, - if unknown>`; `stalled` is reserved.
+  setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version> node=<node major the job ran, - if unknown>
+  lock_s=<s> slot_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
+  `lock_s` = the client's wait for a worktree lane on its Mac (`-` from an older client), `slot_s` = the
+  worker's own slot wait.
   **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
   `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
   elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`
@@ -267,7 +270,21 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   `TEST_DB_KEEP_CONTAINERS=1` is no longer needed for that. A harness whose cleanup lists every matching
   container (`docker ps -aq --filter name=...`) now gets exit 1 for the others' - scope it with
   `--filter label=$RRUN_DOCKER_LABEL`.
-- **How many at once:** one run per laptop worktree (a lock); on the mini always `rr_slots_base` (2)
+- **How many at once:** up to **3 runs per laptop worktree** at once (fleet.json top-level `wt_lanes`,
+  1-8; 2026-11-13: before, one, and an agent fanning out subagents queued them while workers sat idle).
+  Each concurrent run of a worktree is a **lane**: its own lock (`rrun-<wt12>[.<k>].lock` in the state
+  dir), its own worker mirror and push ref (`<repo>-<12 hex>` / `refs/rrun/<12 hex>`, lane 0 = the
+  worktree's own), so runs never share a checkout. A run that writes into the worktree - a build that
+  copies outputs back (`--outputs`), a local fallback - holds the worktree's **gate** (`rrun-<wt12>.gate`)
+  exclusive and runs alone; every pool run holds it shared. A run's mode is chosen once and never changes
+  (a local fallback gives the pool run's hold back only after it is over, then takes the gate exclusive).
+  Pushes to one worker go one at a time from each Mac (they share the base-branch refs); a push that
+  cannot get its turn within `rr_push_timeout_s` fails that attempt like an unreachable worker. When
+  every lane is busy (or a writer runs) the run polls and says why, how many run and how long it has
+  waited: `rrun: waiting for this worktree: this worktree runs at most 3 rrun jobs at once (fleet.json
+  wt_lanes); 3 running; waited 1 min (<argv> on hp, running 2 min, owner X, its cap ends it within 28
+  min; ...); gives up after 30 min (exit 72)`. There is no queue: the first to poll a freed lane takes it,
+  and a writer can wait behind a stream of runs until its wait ends (exit 72). On a worker: always `rr_slots_base` (2)
   runs, and up to `rr_slots` (6) while the mini has room (free memory % >= `rr_spare_min_free_pct` 25
   and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits and
   says so **every `rr_status_every_s` (60 s)**: `rrun: waiting for a slot on hp: 4 of 4 slots busy; held
@@ -276,14 +293,14 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   **One worker's slot wait is short:** after `rr_slot_wait_s` (120 s) its runner answers busy and rrun
   re-plans from a fresh probe (another worker may have freed up), round after round, until
   `rr_wait_min` (30) in all → exit 73. A worker that refuses (share off, no Docker) is skipped, never
-  waited for. A run waiting for the **worktree lock** says so the same way, naming the run that holds
-  it (command, worker, how long, owner, and when its cap ends it), and waits at most the job's own cap
+  waited for. A run waiting for a **worktree lane** says so the same way, naming the runs that hold
+  them (command, worker, how long, owner, and when its cap ends it), and waits at most the job's own cap
   (`rr_wt_wait_min` overrides) → exit **72**. The lock file is never deleted.
 - **Hung and silent jobs (2026-11-11).** The command's stdout/stderr are pipes the runner relays, never
   the ssh session itself. When the command's **main process exits**, whatever it left behind (a DB,
   a vitest worker, a dev server) gets `rr_exit_grace_s` (10 s) to finish, then the job's process group
   is TERMed, KILLed 10 s later and checked empty before the slot is freed; rrun returns the main
-  process's exit code and releases the worktree lock. A leftover that left the group can hold only the
+  process's exit code and releases its worktree lane. A leftover that left the group can hold only the
   runner's pipe, which it stops reading. If ssh still stays open 45 s after the exit code arrived,
   rrun closes it itself. `git push` to a worker is capped at `rr_push_timeout_s` (300 s; then that
   worker counts as unreachable and the job moves on).
@@ -360,7 +377,8 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
   Spotlight (`.metadata_never_index`).
 - **Timing:** every job's `route.log` line ends with a tab and its client-side start timings:
-  `cache_s plan_s push_s overlay_s remote_s` (remote = the worker's prepare + slot) and `start_s`
+  `lock_s cache_s plan_s push_s overlay_s slot_s remote_s` (lock = the wait for a worktree lane; slot =
+  the workers' slot waits, summed over attempts and shards; remote = the worker's prepare + slot) and `start_s`
   (command start, from rrun's own start: the time-to-start SLO), plus `pred_s` (the placement's
   predicted command seconds) and `client` (the dotfiles commit). `RRUN_TIMING=1` also prints the stages
   on stderr.
@@ -440,7 +458,7 @@ and runs a scenario that emits each one):
 
 | code | class       | meaning |
 |------|-------------|---------|
-| 72   | infra       | another rrun from this worktree held its lock past the wait; never ran (`rrun --mine`) |
+| 72   | infra       | this worktree stayed busy past the wait (every lane, fleet.json `wt_lanes` 3, held; or a run writing into it / runs blocking a writer); never ran (`rrun --mine`) |
 | 73   | infra       | every worker stayed busy past `rr_wait_min`; never ran |
 | 75   | infra       | never ran: no worker reachable, lost before the start, `RRUN_STRICT=1`, a heavy/DB job with no worker |
 | 76   | infra       | may have run: the link (every reconnect) or the worker's record of the result was lost after the start, the runner ended after the start without the command's exit status, or a build's outputs could not be copied back |
@@ -462,7 +480,7 @@ failures mention DATABASE_URL - likely no test DB on <worker>; rerun with npm ru
 never a verdict (a real failure must not hide behind it). The fix is placement: a suite that needs a
 DB is a db job.
 
-Troubleshooting: exit 72 → another rrun of this worktree is still running (`rrun --mine`); exit 124 →
+Troubleshooting: exit 72 → other rruns of this worktree kept it busy (`rrun --mine`); exit 124 →
 the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: the silence line
 names the last test file; fix the teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls
 back to the laptop every time → `rdocker doctor` (the push over ssh is the reachability test). Exit 73 →
@@ -532,11 +550,14 @@ job and one that comes back (or is added to fleet.json) is used at once.
   **predicted rate** for this job (1 / its predicted run): shards go one at a time to the worker that
   would then finish its share soonest (<= its free slots, 8 in all). A worker whose single shard would
   take over 2x the fastest worker's gets none (2026-11-11: a laptop shard hit the 30-min cap). A second
-  shard on the same worker gets its own "lane" mirror (`<repo>-<12 hex>`, reaped like any mirror). Output
+  shard on the same worker gets its own "lane" mirror (`<repo>-<12 hex>`, reaped like any mirror; one per
+  worktree lane and shard, never shared). Output
   lines are prefixed `[shard i/n host]`; a merged `Test Files` / `Tests` summary is printed last; the
   result is the test result when every shard ran (see the exit-code section). A shard whose worker is
   lost before GO moves to the next worker (lost after GO: rerun once, as for any vitest job); if no
-  worker takes it, it runs on this machine. Never sharded: DB jobs (also a `vitest run` whose suite
+  worker takes it, it runs on this machine only when the run holds the worktree alone (a build with
+  `--outputs`); in any other sharded run that shard ends with exit 75 (infra: rerun it), because a run's
+  hold on its worktree is chosen once at its start and never changes. Never sharded: DB jobs (also a `vitest run` whose suite
   needs a test DB: the package has a `test:db*` script, its vitest setup files read
   `process.env.DATABASE_URL`, or a `*.db.test.*` file is in scope - then the whole run is a db job),
   `--watch`, `--ui`, `--coverage*`, `--shard` already, json/junit/blob reporters, `--outputFile`, named
@@ -603,7 +624,8 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
   comes back online (Nick's MacBook waking up) starts a pass at once. And event-driven: a job that
   finds a worker cold for its lockfile queues one background `rdocker warm --once --repo <cwd>
-  --after-lock S`, which waits (at most the job's cap + 1 min) for the job's worktree lock BEFORE it
+  --after-lock S`, which waits (at most the job's cap + 1 min) for the worktree's lane 0 (the mirror it
+  warms; the job's own lane when it runs there) BEFORE it
   takes this Mac's warm-pass lock (so other repos keep warming meanwhile), and warms right after the
   job. If a pass is running then, the request stays queued (`warm-trigger-<key>.pending` in the state
   dir) and the next pass warms it first. One waits per repo + lockfiles at a time; the throttle

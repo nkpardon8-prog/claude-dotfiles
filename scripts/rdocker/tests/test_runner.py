@@ -232,7 +232,8 @@ class RunnerTest(unittest.TestCase):
                              'echo "RRUN rc=0"; exit 3' % (fake, fake)])
         self.assertEqual(r.rc, 3)
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce + " ")]
-        self.assertEqual(own, [self.nonce + " READY", self.nonce + " STARTED", self.nonce + " EXIT 3"])
+        self.assertRegex(own[0], r" SLOT \d+\.\d$")                    # the slot wait (route.log slot_s)
+        self.assertEqual(own[1:], [self.nonce + " READY", self.nonce + " STARTED", self.nonce + " EXIT 3"])
         self.assertNotIn(self.nonce, r.out)
 
     def test_bad_header_fields_rejected(self):
@@ -446,9 +447,10 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 73)
         self.assertGreaterEqual(time.time() - t0, 1.0)
         lines = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
-        self.assertEqual(len(lines), 2, r.err)
+        self.assertEqual(len(lines), 3, r.err)
         self.assertRegex(lines[0], r" WAIT holder=other-repo age=4[2-4] busy=1 slots=1 ahead=0$")
-        self.assertEqual(lines[1], self.nonce + " BUSY")
+        self.assertRegex(lines[1], r" SLOT 1\.\d$")                    # its slot wait (route.log slot_s)
+        self.assertEqual(lines[2], self.nonce + " BUSY")
         self.assertEqual(self.calls(), [])                          # nothing ran
         self.assertEqual(self.run_runner(["true"]).rc, 0)           # lock released => runs
 
@@ -1356,7 +1358,7 @@ class DetachedRuns(RunnerTest):
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
         self.assertEqual(own, [self.nonce + " ATTACHED", self.nonce + " EXIT 5"])
         line = self.runs_log()[-1]
-        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=20$" % rid)
+        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=20 lock_s=\S+ slot_s=[\d.]+$" % rid)
         with open(os.path.join(self.root, "slots", "0")) as lk:
             fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)                      # slot released
         # the same run again after its end (another reattach): the rest from those offsets, then EXIT
@@ -1510,7 +1512,7 @@ class DetachedRuns(RunnerTest):
         line = self.runs_log()[-1]
         self.assertRegex(line, r"^\S+ repo=\S+ wt=\S+ sha=\S+ outcome=rc=0 prepare_s=\S+ cmd_s=\S+ "
                                r"argv=/bin/sh -c exit 0\trun=%s owner=session:abc-1 cls=heavy "
-                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=- node=20$" % rid)
+                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=- node=20 lock_s=\S+ slot_s=[\d.]+$" % rid)
         self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
         # rd_pool's probe (perl, as on a worker): the command's evidence without the v2 fields
         import rd_pool
@@ -1540,14 +1542,14 @@ class DetachedRuns(RunnerTest):
         node missing / unparseable, or the run never took a slot."""
         r = self.run_runner(["/bin/sh", "-c", "node -v"])
         self.assertEqual((r.rc, r.out), (0, "v20.0.0\n"), r.err)
-        self.assertRegex(self.runs_log()[-1], r"\trun=.* pv=- node=20$")
+        self.assertRegex(self.runs_log()[-1], r"\trun=.* pv=- node=20 lock_s=\S+ slot_s=[\d.]+$")
         wfile(os.path.join(self.bin, "node"), "#!/bin/sh\necho not-a-version\n")
         r = self.run_runner(["/bin/sh", "-c", "exit 0"])
         self.assertEqual(r.rc, 0, r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+$")
         r = self.run_runner(["/bin/sh", "-c", "exit 0"], cls="BAD")         # refused before any slot
         self.assertEqual(r.rc, 65, r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=refused .* node=-$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=refused .* node=- lock_s=\S+ slot_s=[\d.]+$")
 
     def hung_node(self):
         """A fake node that hangs with descendants: its own pid and two children's go to files."""
@@ -1581,7 +1583,7 @@ class DetachedRuns(RunnerTest):
         r = self.run_runner(["/bin/sh", "-c", "echo ran"], env_extra={"RR_NODE_V_S": "1"})
         self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
         self.assertLess(time.monotonic() - t0, 30)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+$")
         self.assert_all_gone(pids)
 
     def test_a_signal_during_the_node_probe_leaves_nothing_behind(self):
@@ -1601,7 +1603,7 @@ class DetachedRuns(RunnerTest):
             self.skipTest("a node on the system PATH")
         r = self.run_runner(["/bin/sh", "-c", "echo ran"])
         self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+$")
 
     def test_norun_only_from_the_runners_signed_record_else_gone(self):
         # no record of the run at all (never here, or its spool was swept): it may have run -> GONE

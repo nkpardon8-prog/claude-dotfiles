@@ -35,6 +35,9 @@ FIELDS = {"name": str, "alias": str, "ip": str, "port": int, "user": str, "os": 
           # ROLLOUT: rd_fleet before 2026-11-11 rejects unknown fields (the whole fleet.json, so every
           # client falls back to one host): add it only after every client runs this code (Phase B rule)
           "history_since": int}
+# rd_run worktree lanes (Phase C1, 2026-11-13): concurrent rrun jobs per agent worktree; each lane has its
+# own worker mirror and push ref. Small on purpose: every lane is one more checkout + node_modules per worker.
+WT_LANES_DEFAULT, WT_LANES_MAX = 3, 8
 JOB_CLASSES = ("light", "normal", "heavy", "db", "build")    # rd_pool.classify's classes
 REQUIRED = ("name", "roles", "enabled")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
@@ -61,6 +64,9 @@ def problems(fl):
     pnm = fl.get("pool_node_major")
     if pnm is not None and (not isinstance(pnm, int) or isinstance(pnm, bool) or not 1 <= pnm <= 999):
         bad.append("pool_node_major must be a whole number (the node major the pool runs, e.g. 25)")
+    wl = fl.get("wt_lanes")
+    if wl is not None and (not isinstance(wl, int) or isinstance(wl, bool) or not 1 <= wl <= WT_LANES_MAX):
+        bad.append("wt_lanes must be a whole number from 1 to %d (concurrent rrun jobs per worktree)" % WT_LANES_MAX)
     names, aliases, homes = set(), set(), []
     for i, m in enumerate(fl["machines"]):
         if not isinstance(m, dict):
@@ -149,6 +155,17 @@ def load_doc(path=None):
     if bad:
         raise FleetError("%s invalid: %s" % (path, "; ".join(bad)))
     return doc
+
+
+def wt_lanes(cfg=None):
+    """How many rrun jobs one agent worktree may run at once (top-level "wt_lanes", 1..WT_LANES_MAX;
+    rd_run's worktree lanes): WT_LANES_DEFAULT when absent or when fleet.json is missing / invalid. An
+    older rd_fleet ignores unknown top-level keys, so adding it never breaks an older client."""
+    try:
+        v = load_doc((cfg or {}).get("fleet_path")).get("wt_lanes")
+    except FleetError:
+        return WT_LANES_DEFAULT
+    return v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= WT_LANES_MAX else WT_LANES_DEFAULT
 
 
 def pool_node_major(cfg=None):
