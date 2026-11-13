@@ -170,6 +170,43 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
     each heavy segment of a `&&` / `;` chain is rewritten on its own; `timeout N` / `time` / `nice` /
     `caffeinate` stay outside rrun; `bash -c '<script>'` (single-quoted) has its script routed by the
     same rules.
+  - **Since 2026-11-13** (the gaps in `tmp/research/2026-11-13-local-compute-leaks.md`, dentall first;
+    hardened after review the same day: every rule below fails closed):
+    - `node [--max-old-space-size=N] <file.mjs> [args]` when a `check*` / `lint*` / `typecheck*` /
+      `verify*` / `test*` script in this repo's package.json runs exactly that file, with a body that is
+      ONLY `node [that flag] <file>` (dentall's `node scripts/check-update-record.mjs`, a selftest a
+      check script names). Never with an `UPDATE_*=` prefix on the command. A file no package.json
+      script names (a one-off selftest the guard tier runs) stays here.
+    - Script names: the name veto (watch / dev / serve / e2e / ui / fix / update / snap / coverage /
+      cov / debug / inspect / install ...) applies to EVERY script. Exempt only an exact list of
+      dentall checkers (`CHECKER_ALLOW` in the hook: `check:update-record`, `check:rls-coverage`,
+      `check:tenant-context-coverage`, `check:ci-entrypoints`, `check:patient-link-origins` ...) whose
+      body is exactly `node scripts/check-<x>.mjs`. A checker-category body (`check*` / `verify*` /
+      `lint*` / `typecheck*`) may not use `--inspect*`, `c8`, `nyc`, `--coverage`, `--update`, `-u`,
+      `--watch` or set ANY `VAR=` first (so `check:update-record:strict` stays here). A script whose
+      name or body says build, or that runs (`npm|pnpm|yarn|bun [flags] run|run-script [flags] <x>`,
+      every flag on both sides skipped, 3 levels) one that does, only ever meets the build rule
+      (`rr_outputs`), never a checker path. A runner call in a body that cannot be followed fully
+      (`npm exec`, `npx <not tsc|vitest|jest|eslint>`, `npx tsc -b`, a missing script, a runner behind
+      `cross-env` / `timeout`) counts as a build too (fail closed). ANY script body (test scripts
+      included) with `-u`, `--update`, an `UPDATE_*=` or `*SNAPSHOT*=` assignment, or a word naming
+      this Mac stays here.
+    - A `$(...)` / backtick, in an argument or an earlier segment (`f=$(git ls-files | grep x) &&
+      npx vitest run $f`), ONLY when it is exactly `git diff --name-only [refs/paths]`, `git ls-files
+      [patterns]` or `find <relative dirs> [-name|-path|-type X]...`, piped only into `grep [-v|-E|-F]
+      <pattern>`, `head [-n N]`, `tail [-n N]`, `sort [-u]` or `uniq`. Never with `$`, a backtick, `~`,
+      `..` (so `origin/dev...HEAD` stays here: use `origin/dev HEAD`), an absolute path (quoted too),
+      sed / awk / cat / xargs / echo: it expands here before rrun, and a laptop path does not exist on
+      the worker.
+    - A heredoc line that carries the run: `cat > x.test.ts <<'E' && npx vitest run x.test.ts` (body after).
+    - An earlier `export A=b` / `export A` and `source f` / `. f` are forwarded: `export A=b && npx
+      vitest run a` -> `export A=b && rrun -e A npx vitest run a`. A sourced file is read now and may hold
+      only comments and `[export ]NAME=value` lines with plain or quoted, `$`-free values; its exported
+      names (all of them after `set -a`) get `-e`. A file named `.env*`, or one exporting a name that
+      matches TOKEN / SECRET / KEY / PASSWORD / PASS / AUTH / CREDENTIAL / DATABASE_URL / PG*, stays
+      here (secrets are never copied to a worker). Never forwarded, in a prefix, export or file:
+      `PATH`, `HOME`, `TMPDIR`, `NODE_OPTIONS`, `NODE_PATH`, `DYLD_*`, `LD_*`, shell-special names (the
+      command stays here); `RRUN*` / `RDOCKER_*` configure this side.
 - **Never rewritten (they run here, as typed):** watch / interactive runs (bare `vitest`, `--watch*`,
   `-w`, `jest --watch`, `tsc -w`, `--ui`); dev servers (`npm run dev`, `npm start`, `vite`,
   `vite preview`, `next dev`, scripts named `dev` / `start` / `serve` / `preview` / `watch`); installs
@@ -179,13 +216,35 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   would not copy back (`vite build`, `pnpm build`, `npm run build:*`, an unmapped package dir);
   `yarn` / `bun` and yarn / bun projects; any pnpm command that is not one of the exact shapes above; bare
   `tsc` / `vitest` / `eslint` / `jest` in an npm project (a worker's PATH has no `node_modules/.bin`; use `npx`);
-  `ssh ...`, `docker ...`, heredocs, `$(...)` / backticks, a command fed by a pipe, an unknown cwd
-  (`cd $D`) or no git repo; an earlier segment that sets shell state (`export`, `set -a`,
-  `source`/`.`, a bare `FOO=1;`); an assignment value beyond `[A-Za-z0-9_./:@%+,=-]`; whitespace other
-  than space/tab. When the hook is unsure it leaves the whole command alone, and it never breaks a
+  `ssh ...`, `docker ...`, a heavy command INSIDE a heredoc body, a substitution that is not one of the
+  relative-output shapes above (or sits in the head, an env prefix, or inside double quotes), a command
+  fed by a pipe, an unknown cwd (`cd $D`) or no git repo; an earlier segment that sets shell state the
+  hook cannot forward (`declare`, `set -o allexport`, `setopt allexport`, an `export` inside `if`, a
+  sourced file with commands or `$(...)`, or one an earlier segment may write, a bare `FOO=1;` to an
+  exported name); an assignment value beyond `[A-Za-z0-9_./:@%+,=-]`; **any word naming this Mac**
+  (`localhost`, all of `127.0.0.0/8` incl. `127.1` / `127.0.1`, `0.0.0.0`, `0` as a host (`http://0:3000`,
+  `0:3000`, `--host 0`, `HOST=0`), `::1` / `[::1]`, `host.docker.internal`, any case, anywhere in the command:
+  arguments, prefixes, `export` values, substitutions; also in a sourced file or an npm script body: a
+  DB on a mirrored laptop port or a local dev server, which a worker cannot reach); `--inspect`
+  anywhere; a command over 8 KB (left alone before any parsing); whitespace other than space/tab. When the hook is unsure it leaves the whole command alone, and it never breaks a
   command: any internal error passes it through unchanged.
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
+  **When `RRUN=0` is right, and when it is not** (2026-11-13: agents typed it 606 times in 3 days,
+  238 on heavy commands; most cases needed no opt-out):
+  - Right: the run must reach something only this Mac has (a DB or server on a `localhost` port, the
+    owner's Chrome, real-od), it writes files you then read here (`prisma generate` into the local
+    `node_modules`, a deliberately swapped local `node_modules`), or the owner said so. A localhost
+    value in the command itself is already kept here by the hook; you need no `RRUN=0` for that.
+  - Not needed: one or two test files (they route fine, and a repeat is a cache hit); a run "while
+    another rrun is running" (up to 3 runs per worktree run at once: worktree lanes, below); a rerun "to
+    see the full error" (rrun streams the same output and exit code); a mutation / red-first loop (the
+    edited file travels with the run).
+  - After an rrun failure: read its last line. `rrun: fail` is the command's own result: fix the code,
+    do not switch to `RRUN=0`. `rrun: infra` / `needs-human` (exit 72-78): rerun once, then `rdocker
+    doctor`; a pnpm repo failing with exit 127 and `pnpm: not found` was a worker setup gap (none
+    seen since 2026-11-13 09:31): report it rather than opting out.
+  - Do not write `RRUN=0` into subagent briefs or sourced env files as a default: name the exact case.
 - **npm shim (catches scripts):** only a TOP-LEVEL npm (parent is a shell) is routed - npm spawned by a
   node runner / git hook / another npm script stays local (the parent job is the routed unit; 150 tiny
   `check:x` round trips cost more than they save). `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
@@ -200,6 +259,19 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   same rules, `RDOCKER_MODE=local` inside it included; a double-quoted script is left alone.
 - **Safety net:** if a heavy npm script starts a container without going through `rrun`, the shim puts
   that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
+- **Hook decision log (2026-11-13):** `~/.local/state/rdocker/hook.log` (under `RDOCKER_HOME` when set),
+  one JSON line per heavy-looking Bash command the hook sees: `t`, `sid` (the session id), `d` =
+  `routed` / `local` (judged, kept here) / `skipped` (a gate before judging), `why` (a short code:
+  `ok`; `marker:RRUN=0`, `already-rrun`, `remote`, `worker`, `no-rrun`; `not-heavy`, `node-script`,
+  `script-veto`, `script-body`, `build`, `update-env`, `env-deny`, `state-secret`, `inspect`,
+  `too-long`, `watch`, `veto-flag`, `tsc-emits`, `subst`, `subst-head`, `state`,
+  `local-url`, `env-value`, `pipe-target`, `unsure-quoting`, `unsure-segment`, `head`, `no-git`,
+  `cwd-unknown`, `lockfile`, `pnpm-shape`, `error:<Type>`...), `cwd` and the command (URL userinfo,
+  every `NAME=value` value, auth tokens and secret headers, `--password` / `--api-key` / `--token`
+  values and `curl -u user:pw` redacted; only the first line of a command with a heredoc; cut at 300
+  chars). 0600, rotated to `hook.log.1`
+  past 5 MB; a failed write never changes or blocks the command. `jq -r .why hook.log | sort | uniq -c`
+  answers "why did this stay local".
 - **Logs:** laptop `~/.local/state/rdocker/route.log` (one line per decision, rrun lines with rc and
   seconds; rotated at 10 MB, ~1 week) and `daemon.log`; mini `~/rr/log/runs.log` (one line per run: time,
   repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since

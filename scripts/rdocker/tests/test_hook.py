@@ -84,6 +84,10 @@ POSITIVE = [
     ("bash -c 'npm run test:db'", "bash -c 'rrun npm run test:db'"),
     ("bash -c 'cd server && npm run test:db' > o.log 2>&1",
      "bash -c 'cd server && rrun npm run test:db' > o.log 2>&1"),
+    # 2026-11-13: an earlier `export` is forwarded like a NAME=value prefix; `set -a` alone sets nothing
+    ("export FOO=1; npm run test:db", "export FOO=1; rrun -e FOO npm run test:db"),
+    ("export FOO=1 && npm run test:db", "export FOO=1 && rrun -e FOO npm run test:db"),
+    ("set -a; npm run test:db", "set -a; rrun npm run test:db"),
 ]
 
 NEGATIVE = [
@@ -111,18 +115,17 @@ NEGATIVE = [
     "cat x | npm run test:db",
     "(cd server && npm run test:db)",
     "{ npm run test:db; }",
-    "npm run test:db $(echo x)",
-    "npm run test:db `echo x`",
     "npm run test:db < input.txt",
     'npm run test:db -- -t "unbalanced',
     'FOO="a b" npm run test:db',
     "for f in a b; do npm run test:db; done",
     "# npm run test:db",
-    "npm run test:db && echo $(date)",              # any substitution -> touch nothing
     "x=`true; npm run test:db; true`",
     "echo $(true; npm run test:db; true)",
     "npm run test:db && FOO='a b' npm run test:db:rls",   # one unsure hit -> touch none
     "ls -la",
+    # a substitution outside subst_ok's exact grammar (git diff --name-only / ls-files / find + filters)
+    "npm run test:db $(echo x)", "npm run test:db `echo x`", "npm run test:db && echo $(date)",
     # assignment values beyond [A-Za-z0-9_./:@%+,=-]*: the shell would expand/split them
     "FOO=*.ts npm run test:db",
     "FOO=~/x npm run test:db",
@@ -142,10 +145,7 @@ NEGATIVE = [
     "npm run test:db\r",
     "npm run test:db\u2028",
     # earlier shell state that a remote rrun would not see
-    "export FOO=1; npm run test:db",
-    "export FOO=1 && npm run test:db",
     "declare -x FOO=1; npm run test:db",
-    "set -a; npm run test:db",
     "set -ea && npm run test:db",
     "set -o allexport; npm run test:db",
     "source .env && npm run test:db",
@@ -214,6 +214,7 @@ ONESHOT = [
     ("npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail", "rrun npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail"),
     ("npx --prefix client vitest run src/x.test.ts", "rrun npx --prefix client vitest run src/x.test.ts"),
     ("FOO=1 npx vitest run a", "FOO=1 rrun -e FOO npx vitest run a"),
+    ("npx vitest run $(git diff --name-only)", "rrun npx vitest run $(git diff --name-only)"),
     ("timeout 300 npx vitest run src/a.test.ts", "timeout 300 rrun npx vitest run src/a.test.ts"),
     ("./node_modules/.bin/vitest run src/a.test.ts", "rrun ./node_modules/.bin/vitest run src/a.test.ts"),
     ("npx jest src/a.test.ts", "rrun npx jest src/a.test.ts"),
@@ -259,9 +260,8 @@ NEVER = [
     "yarn test", "pnpm test", "pnpm typecheck", "bun run test",
     # unclear / remote / container / heredoc / substitution / pipe target
     "cat <<EOF\nnpx vitest run a\nEOF", "ssh hp npx vitest run a", "docker run node npx vitest run a",
-    "docker compose run app npm test", "npx vitest run $(git diff --name-only)",
-    "npx tsc --noEmit -p $(pwd)", "echo x | npx vitest run a", "cd $D && npx vitest run a",
-    "cd /tmp && npx vitest run a", "npm run test:nope && echo $(date)",
+    "docker compose run app npm test", "npx tsc --noEmit -p $(pwd)", "npm run test:nope && echo $(date)",
+    "echo x | npx vitest run a", "cd $D && npx vitest run a", "cd /tmp && npx vitest run a",
     "npx -p typescript -c 'tsc -p tsconfig.check.json'", "bash -c \"npx vitest run a\"",
     # opt-outs
     "RRUN=0 npx vitest run a", "rrun npx vitest run a", "RRUN=0 npm test",
@@ -466,6 +466,7 @@ class LeakedOnTheMini(HookBase):
                 ("cat << EOF\nhi\nEOF\nnpm test", "cat << EOF\nhi\nEOF\nrrun npm test"),
                 ("cat <<-EOF >x\n\tbody\n\tEOF\nnpm test", "cat <<-EOF >x\n\tbody\n\tEOF\nrrun npm test"),
                 ("cat <<A\na\nA\ncat <<B\nb\nB\nnpm test", "cat <<A\na\nA\ncat <<B\nb\nB\nrrun npm test"),
+                ("cat <<EOF && npm test\nbody\nEOF", "cat <<EOF && rrun npm test\nbody\nEOF"),
                 ("cat <<'EOF' > plan.md\nnpx vitest run src/a.test.ts\nEOF\nnpm test",
                  "cat <<'EOF' > plan.md\nnpx vitest run src/a.test.ts\nEOF\nrrun npm test")):
             with self.subTest(cmd=cmd):
@@ -483,7 +484,6 @@ class LeakedOnTheMini(HookBase):
                 "cat <<<hi\nnpm test",
                 "cat <<A <<B\na\nA\nb\nB\nnpm test",                          # two on one line
                 "cat <<A; cat <<B\na\nA\nb\nB\nnpm test",
-                "cat <<EOF && npm test\nbody\nEOF",                            # operator before the body
                 "cat <<EOF 'a\nb'\nEOF\nnpm test",                             # quote spans the body
                 "cat <<$X\nbody\n$X\nnpm test",                                # $ in the delimiter
                 "cat <<E\"OF\"\nbody\nEOF\nnpm test",                           # partly quoted
@@ -494,6 +494,319 @@ class LeakedOnTheMini(HookBase):
                 "npx vitest run a <<EOF\nx\nEOF\nnpm test"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.at(cmd))
+
+
+class ClosedGaps(HookBase):
+    """2026-11-13 gaps (tmp/research/2026-11-13-local-compute-leaks.md), with the shapes dentall agents
+    really typed: a substitution in an argument, a heredoc line that carries the test run, an earlier
+    `export` / `source`, `node scripts/check-*.mjs`, checker names with update / coverage in them,
+    and a value naming this Mac (the RRUN=0 cause: a DB on a mirrored laptop port)."""
+
+    DENTALL = {
+        "test": "vitest run", "typecheck": "tsc --noEmit",
+        "check:update-record": "node scripts/check-update-record.mjs",
+        "check:update-record:strict": "UPDATE_RECORD_STRICT=true node scripts/check-update-record.mjs",
+        "check:tenant-context-coverage": "node scripts/check-tenant-context-coverage.mjs",
+        "check:dev-db-guard:self-test": "node scripts/_lib/dev-db-guard.selftest.mjs",
+        "check:ui-mirror-coverage": "node client/scripts/check-ui-mirror-coverage.mjs",
+        "check:patient-link-origins": "node scripts/check-patient-link-origins.mjs",
+        "check:writes": "node scripts/check-writes.mjs --write",
+        "check:cov": "vitest run --coverage",
+        "gen:demo-endpoints": "node scripts/gen-demo-endpoints.mjs",
+        "check:guard:self-test": "node scripts/_lib/guard.selftest.mjs",
+        "check:lint-plain": "node scripts/check-lint-plain.mjs",
+        "check:debug-x": "node scripts/check-x.mjs", "check:inspect-x": "node scripts/check-x.mjs",
+        "check:cov-x": "node scripts/check-x.mjs", "check:watch-x": "node scripts/check-x.mjs",
+        "check:update-x": "node scripts/check-x.mjs", "check:snap-x": "node scripts/check-x.mjs",
+        "check:c8": "c8 node scripts/check-x.mjs", "check:nyc": "nyc node scripts/check-x.mjs",
+        "check:insp": "node --inspect-brk scripts/check-x.mjs", "check:upd": "node scripts/check-x.mjs --update",
+        "check:env": "FOO=1 node scripts/check-x.mjs", "check:dashu": "node scripts/check-x.mjs -u",
+        "check:wat": "node scripts/check-x.mjs --watch",
+        "check:coverage-fake": "node scripts/check-x.mjs && echo done",
+        "verify:build": "node scripts/verify-dist.mjs", "check:all": "npm run build && npm run lint",
+        "lint:bundle": "npm run lint:inner", "lint:inner": "vite build --mode check",
+        "check:build-env": "node scripts/check-build-env.mjs",
+        "check:local": "node scripts/check-x.mjs --base http://localhost:3000",
+        # round 2: nested scripts are followed past every flag; an unfollowable call is a build
+        "lint:p": "npm run --silent verify:c", "verify:c": "next build",
+        "lint:q": "npm --prefix . run lint:inner", "lint:r": "npm --prefix . run -s lint:plain2",
+        "lint:plain2": "eslint .", "lint:s": "npm run-script --if-present -s verify:c",
+        "check:pn": "pnpm -r --filter x run --silent verify:c", "lint:npx": "npx tsc -b",
+        "lint:npxok": "npx eslint . && npm test", "lint:exec": "npm exec foo",
+        "lint:missing": "npm run nope", "lint:wrapped": "cross-env A=1 npm run lint:plain2",
+        "lint:timeout": "timeout 60 npm run lint:plain2", "lint:deep": "npm run lint:r",
+        # round 2: any body that updates snapshots / records stays here, test scripts included
+        "test:u": "vitest run -u", "test:upd": "vitest run --update",
+        "test:snap2": "UPDATE_SNAPSHOTS=1 vitest run", "test:snap3": "VITEST_SNAPSHOT_UPDATE=1 vitest run",
+        "test:plain": "vitest run",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.dent = project(self.home, "dentall-x", scripts=self.DENTALL)
+
+    def at(self, command, cwd=None, **extra):
+        out = self.hook(dict(self.bash(command), cwd=cwd or self.dent), **extra)
+        return out and out["hookSpecificOutput"]["updatedInput"]["command"]
+
+    def write(self, name, text):
+        with open(os.path.join(self.dent, name), "w") as f:
+            f.write(text)
+
+    def test_substitution_in_an_argument_routes(self):
+        for cmd in (
+                "f=$(git ls-files | grep FormComposerAction.mirror) && npx vitest run $f",
+                "cd client && npx vitest run $(git ls-files 'src/**/*.test.tsx' | grep -E \"OfficeView|PatientProfile\")",
+                "npx vitest run `git diff --name-only origin/dev -- '*.test.ts'`",
+                "npx vitest run $(find src -name '*.test.ts' -type f | grep -v legacy | sort -u | head -n 20)",
+                "npm run check:update-record -- $(git diff --name-only origin/dev HEAD | grep -E '^docs/')"):
+            with self.subTest(cmd=cmd):
+                self.assertIn("rrun ", self.at(cmd) or "")
+        self.assertEqual(self.at("f=$(git ls-files | grep a.test) && npx vitest run $f"),
+                         "f=$(git ls-files | grep a.test) && rrun npx vitest run $f")
+
+    def test_substitution_fail_safes(self):
+        for cmd in (
+                "npx tsc --noEmit -p $(git rev-parse --show-toplevel)/server",   # laptop absolute path
+                "npx tsc --noEmit -p $(pwd)", "npx vitest run $(realpath src/a.test.ts)",
+                "npx vitest run $(cat /tmp/list.txt)", "npx vitest run $(ls src | xargs realpath)",
+                "npx vitest run \"$(git diff --name-only)\"",                       # inside double quotes
+                "$(npm bin)/vitest run a", "npx $(echo vitest) run a",            # substitution in the head
+                "F=$(git diff --name-only) npx vitest run",                      # ... in an env prefix
+                "npx vitest run $(git diff --name-only; rm -rf x)", "npx vitest run $(case x in a) echo;; esac)",
+                "npx vitest run $(git diff --name-only", "npx vitest run `git diff 'x`",
+                "x=`true; npm run test:db; true`", "echo $(true; npm run test:db; true)",
+                # review repros: anything that can print a laptop path or run more than a file list
+                "npx vitest run $(git ls-files $CLAUDE_PROJECT_DIR/src)",
+                "npx vitest run $(git ls-files | sed 's|^|/Users/me/repo/|')",
+                "npx vitest run $(git ls-files | awk '{print ENVIRON[\"HOME\"] \"/\" $0}')",
+                "npx vitest run $(cat files.txt)", "npx vitest run $(git ls-files | xargs echo)",
+                "npx vitest run $(git ls-files ../other)", "npx vitest run $(git diff --name-only origin/dev...HEAD)", "npx vitest run $(git ls-files '/abs/x')",
+                "npx vitest run $(find /Users/me -name '*.test.ts')", "npx vitest run $(find ~/x -name a)",
+                "npx vitest run $(find src -exec rm {} +)", "npx vitest run $(git diff origin/dev)",
+                "npx vitest run $(git diff --name-only --relative=..)", "npx vitest run $(git log --name-only)",
+                "npx vitest run $(git ls-files | grep -r x)", "npx vitest run $(git ls-files | tail -f)",
+                "npx vitest run $(git ls-files > f)", "npx vitest run $(echo src/a.test.ts)",
+                "N=$(git rev-list --count HEAD..origin/dev) && echo $N && npm run -s check:update-record"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+
+    def test_heredoc_line_carrying_the_run(self):
+        cmd = ("cat > src/x.test.tsx <<'E' && npx vitest run src/x.test.tsx\nimport { it } from 'vitest'\n"
+               "it('x', () => {})\nE")
+        self.assertEqual(self.at(cmd), cmd.replace("&& npx", "&& rrun npx"))
+        cmd = "python3 - <<'EOF'; cd client && npx tsc --noEmit\np = 'a'\nEOF\nnpm run typecheck"
+        self.assertEqual(self.at(cmd), "python3 - <<'EOF'; cd client && rrun npx tsc --noEmit\np = 'a'\nEOF\n"
+                                       "rrun npm run typecheck")
+        for cmd in ("cat <<E | npx vitest run a\nx\nE",                          # a pipe target
+                    "cat <<E && npx vitest run a\n$(date)\nE",                   # substitution in the body
+                    "cat <<E && npx vitest run a\nx"):                            # no terminator
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+
+    def test_export_and_source_are_forwarded(self):
+        self.write("dbenv.sh", "# test DB\nexport TEST_SHARD=2\n"
+                               "TEST_DB_CONSTRAINED=1\nexport RRUN_TIMING=1\nRRUN=1\n")
+        self.assertEqual(self.at(". ./dbenv.sh && npm run test:db"),
+                         ". ./dbenv.sh && rrun -e TEST_SHARD npm run test:db")
+        self.assertEqual(self.at("source dbenv.sh; npm --prefix client test"),
+                         "source dbenv.sh; rrun -e TEST_SHARD npm --prefix client test")
+        self.assertEqual(self.at("set -a && . ./dbenv.sh && set +a && npm run test:db"),
+                         "set -a && . ./dbenv.sh && set +a && rrun -e TEST_SHARD -e TEST_DB_CONSTRAINED npm run test:db")
+        self.assertEqual(self.at("export A=b && npx vitest run a"), "export A=b && rrun -e A npx vitest run a")
+        self.assertEqual(self.at('export A="x y" B && FOO=1 npm test'), 'export A="x y" B && FOO=1 rrun -e A -e B -e FOO npm test')
+        self.assertEqual(self.at("export RRUN_TIMING=1 && npm test"), "export RRUN_TIMING=1 && rrun npm test")
+        self.assertEqual(self.at("npm test && export A=1"), "rrun npm test && export A=1")
+
+    def test_export_and_source_fail_safes(self):
+        self.write("local.sh", f"export DATABASE_URL=postgres://david:{'david'}@localhost:20007/postgres\n")
+        self.write("subst.sh", "L=prov.log\nexport TEST_DATABASE_URL=$(sed -n 's/^X=//p' $L) RRUN=0\n")
+        self.write("cmd.sh", "export A=1\ncd server\n")
+        self.write("path.sh", "export PATH=/x\n")
+        self.write(".env.test", "export TEST_SHARD=1\n")
+        for name, line in (("db.sh", "export TEST_DATABASE_URL=postgres://app@db.internal/t"),
+                           ("pg.sh", "export PGHOST=db.internal"), ("tok.sh", "export GH_TOKEN=x"),
+                           ("key.sh", "export OPENAI_API_KEY=x"), ("pw.sh", "export DB_PASSWORD=x"),
+                           ("auth.sh", "export AUTH_SECRET=x"), ("no.sh", "export NODE_OPTIONS=--max-old-space-size=4096"),
+                           ("insp.sh", "export X=--inspect-brk")):
+            self.write(name, line + "\n")
+        for cmd in (". ./local.sh && npm run test:db", ". ./subst.sh && npm run test:db",
+                    ". ./cmd.sh && npm test", ". ./path.sh && npm test", ". ./missing.sh && npm test",
+                    "echo 'export A=1' > env.sh && . ./env.sh && npm test",        # written first
+                    ". $F && npm test", ". ./a.sh ./b.sh && npm test",
+                    "export PATH=/x:$PATH && npm test", "export -n A && npm test", "export && npm test",
+                    "export DATABASE_URL=postgres://u@localhost:20007/db && npx vitest run a",
+                    "export DYLD_INSERT_LIBRARIES=x && npm test",
+                    "if true; then export X=1; fi; npm run test:db", "declare -x A=1; npm test",
+                    "set -a; A=1; npm test", "set -ea && npm run test:db",
+                    # sourced env files and secret names are never copied to a worker
+                    ". ./.env.test && npm test", ". ./db.sh && npm run test:db", ". ./pg.sh && npm test",
+                    ". ./tok.sh && npm test", ". ./key.sh && npm test", ". ./pw.sh && npm test",
+                    ". ./auth.sh && npm test", ". ./no.sh && npm test", ". ./insp.sh && npm test",
+                    "export NODE_OPTIONS=--max-old-space-size=4096 && npm test",
+                    "NODE_OPTIONS=--max-old-space-size=4096 npm test", "export X=--inspect && npm test",
+                    "PATH=/x npm run test:db"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+
+    def test_node_check_scripts_named_by_package_json(self):
+        for cmd, want in (
+                ("node scripts/check-update-record.mjs", "rrun node scripts/check-update-record.mjs"),
+                ("node scripts/check-tenant-context-coverage.mjs --self-test 2>&1 | tail -3",
+                 "rrun node scripts/check-tenant-context-coverage.mjs --self-test 2>&1 | tail -3"),
+                ("node scripts/_lib/guard.selftest.mjs", "rrun node scripts/_lib/guard.selftest.mjs"),
+                ("node ./scripts/check-update-record.mjs", "rrun node ./scripts/check-update-record.mjs"),
+                ("cd client && node ../scripts/check-update-record.mjs", "cd client && rrun node ../scripts/check-update-record.mjs"),
+                ("node --max-old-space-size=4096 scripts/check-patient-link-origins.mjs",
+                 "rrun node --max-old-space-size=4096 scripts/check-patient-link-origins.mjs"),
+                # an exact CHECKER_ALLOW name whose body is exactly `node scripts/check-<x>.mjs`
+                ("npm run -s check:update-record 2>&1 | tail", "rrun npm run -s check:update-record 2>&1 | tail"),
+                ("npm run check:tenant-context-coverage", "rrun npm run check:tenant-context-coverage"),
+                ("npm run check:patient-link-origins", "rrun npm run check:patient-link-origins"),
+                ("npm run check:lint-plain", "rrun npm run check:lint-plain")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.at(cmd), want)
+        for cmd in ("node scripts/check-small.mjs",                    # no package.json script runs it
+                    "node scripts/gen-demo-endpoints.mjs",             # not a check
+                    "node scripts/check-writes.mjs",                   # its script writes (--write)
+                    "npm run check:writes", "npm run check:cov",       # body writes / coverage
+                    "node client/scripts/check-ui-mirror-coverage.mjs --write", "node scripts/check-update-record.mjs -w",
+                    "node --inspect scripts/check-update-record.mjs", "node -e 1", "node /tmp/check-x.mjs",
+                    "npm run test:coverage", "npm run test:update",
+                    # review repros: the name veto applies to every script, the body veto to checkers
+                    "UPDATE_RECORD_STRICT=true node scripts/check-update-record.mjs",   # UPDATE_* prefix
+                    "npm run -s check:update-record:strict",           # VAR= in the body
+                    "node scripts/_lib/dev-db-guard.selftest.mjs",     # its script's name says dev
+                    "npm run check:ui-mirror-coverage",                # ui + coverage, not allowlisted
+                    "npm run check:debug-x", "npm run check:inspect-x", "npm run check:cov-x",
+                    "npm run check:watch-x", "npm run check:update-x", "npm run check:snap-x",
+                    "npm run check:c8", "npm run check:nyc", "npm run check:insp", "npm run check:upd",
+                    "npm run check:env", "npm run check:dashu", "npm run check:wat",
+                    "npm run check:coverage-fake",                     # allowlist needs the EXACT body
+                    "npm run verify:build", "npm run check:all", "npm run lint:bundle",
+                    "node scripts/check-build-env.mjs", "npm run check:local"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+        pn = project(self.home, "pn2", lock="pnpm-lock.yaml", scripts=self.DENTALL)
+        self.assertIsNone(self.at("node scripts/check-update-record.mjs", cwd=pn))   # workers: npm ci here
+
+    def test_nested_scripts_are_followed_or_fail_closed(self):
+        for cmd in ("npm run lint:p", "npm run lint:q", "npm run lint:s", "npm run check:pn",
+                    "npm run lint:npx", "npm run lint:exec", "npm run lint:missing",
+                    "npm run lint:wrapped", "npm run lint:timeout",
+                    "npm run test:u", "npm run test:upd", "npm run test:snap2", "npm run test:snap3"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+        for cmd in ("npm run lint:r", "npm run lint:plain2", "npm run lint:npxok", "npm run lint:deep",
+                    "npm run test:plain"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.at(cmd), "rrun " + cmd)
+
+    def test_a_value_naming_this_mac_stays_here(self):
+        for cmd in (f"DATABASE_URL=postgres://david:{'david'}@localhost:20007/postgres npx vitest run a",
+                    "BASE=http://127.0.0.1:5391 npm test", "API=http://0.0.0.0:3000 npx vitest run a",
+                    "H=host.docker.internal npm run test:db",
+                    # review repros: ONE check over every word of the command
+                    "npx vitest run a --base-url http://localhost:3000", "npm run test:db -- --host ::1",
+                    "export DATABASE_URL=$(cat url.txt | grep localhost) && npm run test:db",
+                    "export U=http://LOCALHOST:1 && npm test", "npm test -- 'http://127.0.0.1:9'",
+                    "npx vitest run a --url=local\"host\":3000", "git commit -m 'localhost' && npm test",
+                    # round 2: all of 127.0.0.0/8 (short forms too), 0 as a host, [::1]
+                    "npx vitest run a --base http://127.1:3000", "npx vitest run a --base 127.0.1",
+                    "npx vitest run a --base http://127.0.0.2/x", "npx vitest run a --url http://0:3000",
+                    "npx vitest run a --api 0:8080", "npx vitest run a --host 0", "HOST=0 npm test",
+                    "npx vitest run a --url http://[::1]:9", "npx vitest run a --base 127.255.255.254"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+        for cmd in ("RRUN_CACHE=0 npx vitest run a", "npx vitest run src/v127.1.test.ts",
+                    "npx vitest run a --retry 0", "npx vitest run a --testTimeout=10000"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.at(cmd))
+        self.assertEqual(self.at("DATABASE_URL=postgres://u@db.internal/x npm test"),
+                         "DATABASE_URL=postgres://u@db.internal/x rrun -e DATABASE_URL npm test")
+
+
+class DecisionLog(HookBase):
+    """Every heavy-looking command leaves one JSON line: routed / local / skipped + why."""
+
+    def log(self):
+        p = os.path.join(self.home, ".local", "state", "rdocker", "hook.log")
+        if not os.path.exists(p):
+            return []
+        with open(p) as f:
+            return [json.loads(x) for x in f]
+
+    def run_cmd(self, command, **extra):
+        return self.hook(dict(self.bash(command), session_id="sess-1", cwd=self.proj), **extra)
+
+    def test_one_line_per_heavy_looking_command(self):
+        self.run_cmd("npx vitest run src/a.test.ts")
+        self.run_cmd("npx tsc -p tsconfig.json")               # emits: stays
+        self.run_cmd("npx vitest")                             # watch
+        self.run_cmd("RRUN=0 npx vitest run a")
+        self.run_cmd("npm run test:db", RRUN_REMOTE="1")
+        self.run_cmd("ls -la && git status")                   # not heavy-looking: no line
+        self.run_cmd("cd $D && npx vitest run a")
+        got = [(x["d"], x["why"]) for x in self.log()]
+        self.assertEqual(got, [("routed", "ok"), ("local", "tsc-emits"), ("local", "watch"),
+                               ("skipped", "marker:RRUN=0"), ("skipped", "remote"), ("local", "cwd-unknown")])
+        first = self.log()[0]
+        self.assertEqual(first["sid"], "sess-1")
+        self.assertEqual(first["cwd"], self.proj)
+        self.assertEqual(first["cmd"], "npx vitest run src/a.test.ts")
+        self.assertEqual(oct(os.stat(os.path.join(self.home, ".local", "state", "rdocker", "hook.log")).st_mode & 0o777), "0o600")
+
+    def test_secrets_are_redacted_and_long_commands_cut(self):
+        self.run_cmd(f"DATABASE_URL=postgres://u:{'s3cret'}@db.x/y TOKEN=abc123 npm run test:db -- a " + "x" * 600)
+        line = self.log()[0]
+        self.assertNotIn("s3cret", json.dumps(line))
+        self.assertNotIn("abc123", json.dumps(line))
+        self.assertTrue(line["cmd"].startswith("DATABASE_URL=**** TOKEN=**** npm run test:db"))
+        self.assertLessEqual(len(line["cmd"]), 300)
+        self.run_cmd(f"curl -H 'Authorization: Bearer zz9' x; npx vitest run --reporter=dot postgres://a:{'pw'}@h/d")
+        s = json.dumps(self.log()[1])
+        self.assertNotIn("zz9", s)
+        self.assertNotIn(":pw@", s)
+        self.assertIn("--reporter=dot", s)                     # a flag is not an assignment
+
+    def test_review_redactions(self):
+        for cmd, secret in (("mysql --password=hunter2 && npm test", "hunter2"),
+                            ("x --api-key abc123 && npm test", "abc123"), ("x --api-key=abc124 && npm test", "abc124"),
+                            ("x --token tk9 && npm test", "tk9"), ("x --token=tk8 && npm test", "tk8"),
+                            ("curl -H 'X-Api-Key: zz7' u && npm test", "zz7"),
+                            ('curl -H "Authorization: Basic zz6" u && npm test', "zz6"),
+                            ("curl -u bob:pw5 u && npm test", "pw5"),
+                            ("psql postgres://u:p/w4@h/db && npm test", "p/w4"),
+                            ("cat > f.txt <<E && npm test\nSECRET=zz3\nE", "zz3")):
+            with self.subTest(cmd=cmd):
+                self.run_cmd(cmd)
+                self.assertNotIn(secret, json.dumps(self.log()[-1]))
+        self.assertEqual(self.log()[-1]["cmd"], "cat > f.txt <<E && npm test [heredoc body not logged]")
+
+    def test_a_command_over_8_kb_is_left_alone(self):
+        out = self.run_cmd("npx vitest run a " + "b " * 4200)
+        self.assertIsNone(out)
+        self.assertEqual((self.log()[-1]["d"], self.log()[-1]["why"]), ("local", "too-long"))
+
+    def test_rotates_and_never_breaks_the_hook(self):
+        d = os.path.join(self.home, ".local", "state", "rdocker")
+        os.makedirs(d)
+        with open(os.path.join(d, "hook.log"), "w") as f:
+            f.write("x" * (5 * 1024 * 1024 + 1))
+        self.run_cmd("npx vitest run a")
+        self.assertTrue(os.path.exists(os.path.join(d, "hook.log.1")))
+        self.assertEqual(len(self.log()), 1)
+        shutil.rmtree(d)
+        open(d, "w").close()                                    # the state dir is a FILE: no log possible
+        out = self.run_cmd("npx vitest run a")
+        self.assertEqual(out["hookSpecificOutput"]["updatedInput"]["command"], "rrun npx vitest run a")
+
+    def test_rdocker_home_is_honoured(self):
+        other = tempfile.mkdtemp(prefix="hook-other-", dir=TEST_HOME)
+        self.addCleanup(shutil.rmtree, other, True)
+        self.run_cmd("npx vitest run a", HOME=other)
+        self.assertEqual(len(self.log()), 1)
+        self.assertFalse(os.path.exists(os.path.join(other, ".local", "state", "rdocker", "hook.log")))
 
 
 class NoOps(HookBase):
