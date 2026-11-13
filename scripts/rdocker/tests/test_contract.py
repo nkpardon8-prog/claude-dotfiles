@@ -289,6 +289,21 @@ class Version(unittest.TestCase):
         with open(os.path.join(t.home, "rr", "pool_version")) as f:
             self.assertEqual(f.read().strip(), "garbage")                  # never overwritten on a guess
 
+    def test_a_symlinked_rr_root_still_reports_its_version(self):
+        # nickmbp keeps Spotlight out with ~rd/rr -> rr.noindex: that must not make every job warn
+        t = self.run_base()
+        rr, real = os.path.join(t.home, "rr"), os.path.join(t.home, "rr.noindex")
+        if os.path.isdir(rr) and not os.path.islink(rr):
+            os.rename(rr, real)
+        else:
+            os.makedirs(real, exist_ok=True)
+        os.symlink("rr.noindex", rr)
+        r = t.rrun("/bin/sh", "-c", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("could not report its pool version", r.stderr)
+        with open(os.path.join(real, "pool_version")) as f:
+            self.assertEqual(f.read().strip(), str(rd_common.POOL_VERSION))
+
     def test_pool_version_is_raised_under_a_lock_and_never_lowered(self):
         t = self.run_base()
         rr = os.path.join(t.home, "rr")

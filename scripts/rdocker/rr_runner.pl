@@ -1578,8 +1578,12 @@ sub log_fields {
 # client then proceeds with a warning (fail open). Never through a symlink.
 sub raise_pool_version {
     my $want = $h{pool_version};
-    my $f = "$ROOT/pool_version";
-    return undef if -l $f || -l $ROOT;
+    # ~/rr may itself be a symlink on purpose (nickmbp: rr -> rr.noindex keeps Spotlight out):
+    # resolve the root once, then refuse only a symlinked version or lock FILE.
+    my $root = $ROOT;
+    if (-l $root) { require Cwd; $root = Cwd::abs_path($root); return undef unless defined $root && -d $root }
+    my $f = "$root/pool_version";
+    return undef if -l $f;
     my $read = sub { my ($v) = slurp($f) =~ /^\s*(\d+)\s*$/; defined $v ? $v + 0 : (-e $f ? undef : 0) };
     my $lk = "$f.lock";
     my $lfh;
