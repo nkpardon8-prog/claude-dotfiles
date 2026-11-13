@@ -295,9 +295,6 @@ def step(w, now):
             ok = type_into(w, RESET_NOTICE)
             w["state"] = "done"
             w["result"] += "; told it limits reset" if ok else "; could NOT tell it limits reset"
-        elif now - w["t"] > STEP_TIMEOUT * 4:
-            w["state"] = "done"
-            w["result"] += "; limits-reset notice not sent (window stayed busy)"
 
 
 def heal():
@@ -407,8 +404,11 @@ def run(todo, skipped, host, a):
         time.sleep(POLL)
     for w in todo:
         if w["state"] != "done":
-            w["result"] = "NOT DONE: stayed busy past the timeout" if w["state"] == "start" else \
-                f"NOT DONE: stuck at {w['state']}"
+            if w["state"] == "notify":
+                w["result"] += "; limits-reset notice not sent (window stayed busy or waiting)"
+            else:
+                w["result"] = "NOT DONE: stayed busy past the timeout" if w["state"] == "start" else \
+                    f"NOT DONE: stuck at {w['state']}"
     print(f"relink on {host}")
     for w in todo:
         print(f"  {w['name']:<40} {w['result']}")
