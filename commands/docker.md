@@ -342,22 +342,29 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   exits with its code instead of running it again, with one stderr line: `rrun: cached result (same code +
   command, 3m ago on hp); RRUN_CACHE=0 to run again`. Passes are kept 24 h, failures 20 min (flakes).
   **`RRUN_CACHE=0` always runs** (and saves the fresh result); `rrun --where <cmd>` has a `cache:` line
-  (hit / miss / not cached and why). The key is a hash of exactly what the worker gets: the HEAD commit,
-  the base branches pushed (as commits), every uncommitted / untracked / env file rrun sends (path, exec
-  bit, bytes), the deleted files, the env passed (`rr_env_pass` + `-e`, values included), the deps dirs
-  and the runner script, plus the argv, the cwd and the job class. Ignored files that never travel do
-  not count. Each attempt re-hashes what it really sent; if a file changed in between, nothing is saved.
+  (hit / miss / not cached and why). The key is a hash of what the worker gets that can decide the
+  result: the HEAD commit, every uncommitted / untracked / env file rrun sends (path, exec bit, bytes),
+  the deleted files, the env passed (`rr_env_pass` + `-e`, values included), the deps dirs and the runner
+  script, plus the argv, the cwd and the job class. Ignored files that never travel do not count. The base
+  branches rrun pushes (origin/dev, origin/main) are NOT in the key, so a fetch that moves them keeps the
+  hit and two worktrees on one commit share; a command that may read git state is never cached instead. Each attempt re-hashes what it really sent; if a file changed in between, nothing is saved.
   Cached: one-shot tsc / vue-tsc / eslint (no `--fix`) / `vitest run` / jest (no watch), directly, via
   npx or `node [--max-old-space-size=N] <their bin>`, and `npm test` / `npm run test|typecheck|lint[:x]`
   whose script (pre/post included, read from the package.json rrun ships) is only those tools joined by
   `&&`. **Never cached:** DB jobs, a DB-looking variable in the env sent or in a shipped env file, a
-  script that sets env vars or runs anything else, builds, `--host` runs (they run, then save), local
+  script that sets env vars or runs anything else, any run that may pick tests from git state (one check,
+  fail closed: a token anywhere in the argv, in every npm script it expands to, or forwarded after `--`
+  whose letters - lowercased, `-` and `_` dropped - contain `changed` or `lastcommit`, e.g. `--changed`,
+  `--changedSince`, `--changed-since`, `--only-changed`, `--coverage.changed`, `--last-commit`; or a short
+  flag group containing `o`, like jest `-o` / `-io`), builds, `--host` runs (they run, then save), local
   runs, a run that called `docker` on the worker, an interrupted or hedged run, a sharded run with a lost
   or local shard, a missing-test-DB run, and exit codes 65/69/70/72/73/75/76/77/78/124 or from a signal. A sharded run is one entry (keyed on
   the unsharded command), saved after every shard ended. Hits show as target `cache` in `route.log`.
 - **Pool cache: the same results, shared by every agent Mac (`~rd/rr/rcache/` on the home worker, hp).**
   This Mac's cache is checked first, then the pool's. The pool lookup rides on the placement probe rrun
-  already sends to hp, so a miss costs no extra round trip. A hit replays the output and exit code with
+  already sends to hp, so a miss costs no extra round trip, and a valid hit (signed, current node major)
+  is replayed as soon as hp answers, without waiting for the other workers' probes (those probe ssh
+  processes are killed and reaped first: none outlives the run). A hit replays the output and exit code with
   the usual class line (`rrun: pass (exit 0 from the pool cache, 0s)`) and one line naming who made it:
   `rrun: cached result from the pool cache (same code + command, 3m ago on nickmbp by <agent>); RRUN_CACHE=0
   to run again`. A pool hit is never copied into this Mac's cache (that cache has no node check), so each
