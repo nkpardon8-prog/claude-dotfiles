@@ -170,6 +170,8 @@ sub main {
     write_shim("$tmp/docker");
     my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin');
     $ENV{PATH} = $path;    # git/node/npm below resolve the same way the command will
+    # the node major this run really uses (rd_cache's pool tier tags a shared result with it)
+    status('NODE ' . (((`node -v 2>/dev/null` // '') =~ /^v(\d+)\./)[0] // '?')) if $h{node_id};
     $ENV{GIT_TERMINAL_PROMPT} = '0';
     exclude_root();
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);

@@ -727,6 +727,13 @@ def build_parser():
     s.add_argument("--after-lock", dest="after_lock", type=float, metavar="S",
                    help="(rrun's background trigger) wait up to S s for the worktree's rrun lock first")
     s.add_argument("--trigger", metavar="KEY", help=argparse.SUPPRESS)
+    s = sp.add_parser("pool-cache-key", help="the agent-Mac secret that signs rrun's pool cache entries",
+                      description="rrun's pool cache (results shared through the home worker) is signed with "
+                      "a secret that lives only on agent Macs (~/.config/rdocker/pool-cache.key, 0600; never "
+                      "on a worker, never in git). No key = this Mac uses its own cache only. Copy the same "
+                      "key to every agent Mac, then compare fingerprints.")
+    s.add_argument("action", choices=("init", "show-fingerprint"),
+                   help="init: create the key if missing; show-fingerprint: print a hash of it (never the key)")
     sp.add_parser("daemon", help="(launchd) event-driven forwarder")
     sp.add_parser("janitor-run")                      # internal, spawned by the daemon
     sp.add_parser("laptop-janitor-run")               # internal, spawned by the daemon
@@ -786,6 +793,26 @@ def main(argv):
     except rd_common.ConfigWriteError as e:
         rd_common.say("config not saved: %s" % e)
         return 1
+
+
+def pool_cache_key(action):
+    """`rdocker pool-cache-key init | show-fingerprint`: never prints the key itself."""
+    import rd_cache
+    if action == "init":
+        try:
+            created, fp = rd_cache.key_init()
+        except OSError as e:
+            rd_common.say("pool-cache key: %s" % e)
+            return 1
+        print("%s %s (fingerprint %s)" % ("created" if created else "kept the existing key", rd_cache.KEY_PATH, fp))
+        return 0
+    k = rd_cache.load_key()
+    if k is None:
+        rd_common.say("no usable pool-cache key at %s (rdocker pool-cache-key init); this Mac uses its own "
+                      "cache only" % rd_cache.KEY_PATH)
+        return 1
+    print(rd_cache.fingerprint(k))
+    return 0
 
 
 def use_mode(mode):
@@ -852,6 +879,8 @@ def command(argv):
     if cmd == "warm":
         import rd_warm               # not on the shim's import path
         return rd_warm.main(once=ns.once, repo=ns.repo, after_lock=ns.after_lock, trigger=ns.trigger)
+    if cmd == "pool-cache-key":
+        return pool_cache_key(ns.action)
     cfg = rd_common.load_cfg()
     if cmd == "add-server":
         return rd_fleet.add_server(cfg, ns)

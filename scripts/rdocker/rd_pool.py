@@ -52,6 +52,7 @@ import sys
 import threading
 import time
 
+import rd_cache
 import rd_common
 
 RTT_CAP_S = 0.5
@@ -505,6 +506,8 @@ $o{warm_deps} = $warm;
 # version guarantee - an older client updates itself before it runs anything
 my ($pv) = -l "$R/pool_version" ? () : slurp("$R/pool_version") =~ /^\s*(\d+)/;
 $o{pool_version} = defined $pv ? $pv + 0 : 0;
+# the pool result cache (rd_cache RCACHE_PL; only in the home worker's request): hit / inflight / miss
+$o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 # Evidence for rd_pool.score (runs.log, at most its last 2 MB; runs.log.1 too when the live one is
 # shorter): rows in [since, now] and the last q.days (EV_DAYS) days. Times are parsed WITH their offset (the
 # workers keep different time zones). Outcomes are relabelled truthfully (ev_code): a bare pre-GO
@@ -571,7 +574,7 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     $o{ev} = \%ev;
 }
 print JSON::PP->new->canonical->encode(\%o), "\n";
-'''
+''' + rd_cache.RCACHE_PL
 
 
 def remote_env(cfg):
@@ -982,6 +985,7 @@ class Plan:
         self.hosts, self.pool, self.local_after_s = hosts, pool, local_after_s
         self.promoted = None         # a busy worker put first (its eta beat every free one)
         self.ineligible = list(ineligible)   # [(Host, why)]: never tried (eligibility())
+        self.home, self.rcache = None, None   # the pool result cache (plan(rcache=))
 
 
 def pick_hosts(cfg, force=None):
@@ -999,13 +1003,29 @@ def pick_hosts(cfg, force=None):
     return hosts, len(hosts) >= 2
 
 
-def plan(cfg, job, slug="", deps=(), force=None, probe=None):
+def pool_node_major(cfg):
+    """fleet.json's declared pool node major (rd_fleet.pool_node_major), else None."""
+    try:
+        import rd_fleet
+    except ImportError:
+        return None
+    return rd_fleet.pool_node_major(cfg)
+
+
+def home_of(hosts):
+    """The fleet's home worker among hosts (it keeps the pool result cache), else None."""
+    return next((h for h in hosts if "home" in (_f(h.entry, "roles") or [])), None)
+
+
+def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
     """-> Plan with hosts in the order rd_run should try them. Probes only in a real pool (or when
-    probe=True, for `rrun --where`)."""
+    probe=True, for `rrun --where`). rcache (rd_cache.Shared.req()): rides on the home worker's
+    probe; its answer is plan.rcache (None: no home worker, not probed, or it did not answer)."""
     hosts, pool = pick_hosts(cfg, force)
     if not (pool or probe):
         bad = [(h, why) for h, why in ((h, eligibility(h, job)) for h in hosts) if why]
         return Plan([h for h in hosts if h not in dict(bad)], False, ineligible=bad)
+    home = home_of(hosts) if rcache else None
     req = {"slug": slug, "deps": [list(d) for d in deps], "sig": job.get("sig") or "",
            "kind": kind_of(job.get("sig") or ""), "kinds": [list(k) for k in KINDS],
            "days": int(_num(cfg.get("rr_history_days"), EV_DAYS)), "rows": int(_num(cfg.get("rr_history_rows"), EV_ROWS))}
@@ -1018,8 +1038,11 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
         hs = _f(h.entry, "heavy_slots") if h.entry is not None else None
         if isinstance(hs, int) and hs >= 0:
             r["heavy_slots"] = hs
+        if h is home:
+            r["rcache"] = rcache
         return r
     probe_all(hosts, req_for, float(cfg.get("rr_probe_timeout_s", PROBE_TIMEOUT_S)))
+    rc_answer = (home.probe or {}).get("rcache") if home is not None else None
     model = Model(hosts, job, cfg)
     bad = []
     for h in hosts:
@@ -1073,6 +1096,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
     p = Plan(order, pool, local_after, bad)
     p.promoted = promoted
     p.req = req
+    p.home, p.rcache = home, rc_answer
     return p
 
 

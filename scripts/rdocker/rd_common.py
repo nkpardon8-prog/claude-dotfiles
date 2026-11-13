@@ -143,6 +143,11 @@ DEFAULTS = {
     "rr_slot_wait_s": 120,             # wait this long for a slot on one worker, then re-plan (all of it
                                        # bounded by rr_wait_min, then exit 73)
     "rr_push_timeout_s": 300,          # a git push to a worker that takes longer = that worker is out
+    # the pool tier of the result cache (rd_cache: ~rd/rr/rcache on the fleet's home worker, singleflight)
+    "rr_pool_cache": True,             # false: this Mac's cache only
+    "rr_pool_cache_stale_s": 90,       # a waiter takes over a lease its owner has not refreshed this long
+    "rr_pool_cache_refresh_s": 30,     # the lease holder refreshes it this often
+    "rr_pool_cache_poll_s": 5,         # a waiter polls the home worker at most this far apart
     # "rr_wt_wait_min": N              # wait for this worktree's lock at most N min (default: the job's cap)
     # `rdocker warm` (rd_warm, the client launch agent com.rdocker.warm): pre-warm each worker with
     # the repos this client ran rrun in lately (push the mirror, install deps), politely

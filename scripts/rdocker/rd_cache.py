@@ -1,4 +1,6 @@
-"""rdocker rd_cache: rrun's result cache (on the agent Mac, ~/.local/state/rdocker/cache/).
+"""rdocker rd_cache: rrun's result cache (on the agent Mac, ~/.local/state/rdocker/cache/), plus its
+pool tier on the fleet's home worker (~rd/rr/rcache/, shared by every agent Mac, with singleflight
+leases: see "pool tier" below).
 
 Agents often rerun the same check on the same code. When the code a worker would get and the
 command are both identical to a recent run, rrun replays that run's output and exits with its code
@@ -29,6 +31,7 @@ Entries: <key>.entry = one JSON line (v, rc, ts, worker, secs, argv) + the outpu
 the store is capped at MAX_BYTES (least recently used first out). 0700 dir, 0600 files.
 """
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -315,6 +318,7 @@ class Run:
         self.rec = Recorder()
         self.sharded, self.expect = False, 1
         self.finished, self.bad = [], None
+        self.nodes = []              # per finished attempt: the node major it ran with
         self.lock = threading.Lock()
 
     def taint(self, why):
@@ -325,14 +329,16 @@ class Run:
         if cid != self.cid:
             self.taint("the files changed while it ran")
 
-    def attempt_done(self, host, rc, docker=False, interrupted=False):
-        """A command that really ran on a worker ended with rc (the runner's EXIT status)."""
+    def attempt_done(self, host, rc, docker=False, interrupted=False, node=None):
+        """A command that really ran on a worker ended with rc (the runner's EXIT status); node = the
+        node major it ran with (the runner's NODE status; None = unknown: never shared)."""
         if docker:
             self.taint("it used docker on the worker")
         if interrupted:
             self.taint("it was interrupted")
         with self.lock:
             self.finished.append((host, rc))
+            self.nodes.append(node)
 
     def why_not_save(self, rc):
         if self.bad:
@@ -347,13 +353,17 @@ class Run:
             return "exit %s is not a test verdict" % rc
         return None
 
-    def save(self, rc, secs, argv_text):
+    def save(self, rc, secs, argv_text, extra=None):
+        """-> the saved entry's meta (extra: more meta fields, e.g. the pool tier's node / agent),
+        else None when this run may not be replayed. The local tier is written here; the pool tier
+        is the caller's (Shared.finish, after the result is printed)."""
         if self.why_not_save(rc) is not None:
-            return False
+            return None
         workers = ", ".join(dict.fromkeys(h for h, _r in self.finished))
-        meta = {"v": FORMAT, "rc": rc, "ts": time.time(), "worker": workers, "secs": round(secs, 1),
-                "argv": argv_text}
-        return store(self.key, meta, self.rec.frames)
+        meta = dict(extra or {}, v=FORMAT, rc=rc, ts=time.time(), worker=workers, secs=round(secs, 1),
+                    argv=argv_text)
+        store(self.key, meta, self.rec.frames)
+        return meta
 
 
 # ---------------------------------------------------------------------------- store
@@ -371,13 +381,12 @@ def store(k, meta, frames):
     """Write one entry atomically (tmp + rename), then prune. -> True when written."""
     if not re.match(r"^[0-9a-f]{64}$", k):
         return False
-    body = b"".join(b"%d %d\n" % (fd, len(d)) + d for fd, d in frames)
     try:
         _ensure_dir()
         tmp = os.path.join(CACHE_DIR, ".%s.%d.tmp" % (k, os.getpid()))
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
-            f.write(json.dumps(meta).encode("utf-8") + b"\n" + body)
+            f.write(entry_bytes(meta, frames))
         os.replace(tmp, _path(k))
     except OSError:
         return False
@@ -396,6 +405,16 @@ def _read(path):
             raw = f.read()
     except OSError:
         return None
+    return parse_entry(raw)
+
+
+def entry_bytes(meta, frames):
+    """The one entry format, local and shared: a JSON meta line + "<fd> <len>\\n<bytes>" frames."""
+    return json.dumps(meta).encode("utf-8") + b"\n" + b"".join(b"%d %d\n" % (fd, len(d)) + d for fd, d in frames)
+
+
+def parse_entry(raw):
+    """Entry bytes -> (meta, frames), else None (damaged, other format). Data only: never executed."""
     line, nl, body = raw.partition(b"\n")
     try:
         meta = json.loads(line.decode("utf-8")) if nl else None
@@ -498,3 +517,353 @@ def replay(frames, out, err):
         s = out if fd == 1 else err
         s.write(data)
         s.flush()
+
+
+# ---------------------------------------------------------------------------- pool tier (the home worker)
+#
+# The same entries, shared by every agent Mac: ~rd/rr/rcache/ on the fleet's home worker (hp, always
+# on). Local tier first, then this one. The lookup rides on the placement PROBE rd_pool already sends
+# the home worker (rd_pool.plan(rcache=Shared.req())): no extra round trip. It answers
+#   hit       the entry (base64), when it is fresh (PASS_TTL_S / FAIL_TTL_S, as locally);
+#   inflight  an identical run holds a live lease (owner, how long it may still run): wait for it;
+#   miss      nothing; with lease 1 this run now holds the lease (singleflight).
+# A lease (<key>.lease: owner, host, pid, token, t, exp = the job's cap + LEASE_MARGIN_S) is live while
+# exp is ahead and its owner refreshed it (mtime) within LEASE_STALE_S: the owner's rrun refreshes it
+# every LEASE_REFRESH_S, so a killed owner frees it within LEASE_STALE_S. After the result is printed
+# the owner stores the entry (when it may be replayed) and drops the lease in one detached ssh (store);
+# a run that ends without a replayable result only drops it. Entries are data, never executed; an
+# entry over SHARED_MAX is not shared.
+# Integrity: every shared entry carries an HMAC-SHA256 ("mac" in its meta) made on the agent Mac with
+# KEY_PATH, a secret that exists only on agent Macs (never on a worker, never in git): it binds the cache
+# key, every meta field and the exact output bytes, so a job running as rd on the home worker cannot
+# forge a verdict. Unsigned or bad-MAC entries are misses. No key file = the pool tier is off here.
+# Toolchain: fleet.json's top-level "pool_node_major" is the one declared node major of the pool (no
+# value = the pool tier is off). A producer shares only when its runner's actual node major (its
+# "NODE <major>" status) equals it; a consumer replays only an entry whose signed node tag equals it.
+# A worker on another major therefore never shares (bump the value when the workers are upgraded).
+# A pool hit is replayed, never copied into this Mac's tier (that tier has no toolchain check).
+# Pruning: rd-tune's prune pass (expired first, then least recently used over its size cap).
+SHARED_MAX = 1024 * 1024        # bytes of one shared entry (meta line + frames); a hit carries it in the probe
+LEASE_MARGIN_S = 600            # a lease outlives the job's cap by this much (slot wait, prepare)
+LEASE_NOCAP_S = 4 * 3600        # ...for a job with no cap (RRUN_TIMEOUT=0)
+LEASE_STALE_S = 90              # a lease its owner has not refreshed this long: the owner is gone
+LEASE_REFRESH_S = 30
+POLL_MAX_S = 5.0                # a waiter polls the home worker at most this far apart
+OP_TIMEOUT_S = 10.0             # one poll / refresh ssh
+POLL_FAILS = 3                  # a waiter that cannot reach the home worker this many times in a row runs
+KEY_PATH = os.path.join(rd_common.CFG_DIR, "pool-cache.key")   # agent Macs only: 64 hex chars, 0600
+MAC_CONTEXT = b"rrun-pool-cache-v1\0"
+MAC_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+RCACHE_PL = r'''
+use JSON::PP (); use MIME::Base64 (); use Fcntl qw(:flock O_RDONLY O_WRONLY O_CREAT O_EXCL O_NOFOLLOW);
+sub rc_ttl { $_[0] == 0 ? 86400 : 1200 }
+sub rc_slurp {
+    my ($p, $max) = @_;
+    return undef if -l $p || !sysopen(my $f, $p, O_RDONLY | O_NOFOLLOW);
+    my $b = "";
+    while (1) {
+        my $n = sysread($f, $b, 65536, length $b);
+        return undef unless defined $n;
+        last unless $n;
+        return undef if length($b) > $max;
+    }
+    $b
+}
+sub rc_meta {
+    my ($raw) = @_;
+    my ($line) = $raw =~ /\A([^\n]*)\n/ or return undef;
+    my $m = eval { JSON::PP->new->decode($line) };
+    return undef unless ref $m eq "HASH" && ($m->{v} // "") eq "1" && ($m->{rc} // "") =~ /^\d+$/
+        && ($m->{ts} // "") =~ /^\d+(\.\d+)?$/;
+    $m
+}
+sub rc_put {
+    my ($p, $data) = @_;
+    my $t = "$p.$$.tmp";
+    unlink $t;
+    sysopen(my $f, $t, O_WRONLY | O_CREAT | O_EXCL, 0600) or return 0;
+    my $ok = print {$f} $data;
+    $ok = close($f) && $ok;
+    return 1 if $ok && rename($t, $p);
+    unlink $t;
+    0
+}
+sub rc_dir {
+    mkdir $_[0], 0700 unless -e $_[0] || -l $_[0];
+    my $d = "$_[0]/rcache";
+    mkdir $d, 0700 unless -e $d || -l $d;
+    (-l $d || !-d $d) ? undef : $d
+}
+sub rc_lock {
+    sysopen(my $l, "$_[0]/.lock", O_WRONLY | O_CREAT | O_NOFOLLOW, 0600) or return undef;
+    flock($l, LOCK_EX) ? $l : undef
+}
+sub rc_lease { my $raw = rc_slurp($_[0], 4096); my $ls = defined $raw ? eval { JSON::PP->new->decode($raw) } : undef; ref $ls eq "HASH" ? $ls : undef }
+# $c = {key, max, stale, lease: {owner, host, pid, token, ttl} | absent} -> {st: hit|inflight|miss|bad, ...}
+sub rcache {
+    my ($R, $c) = @_;
+    my $k = $c->{key} // "";
+    return { st => "bad" } unless $k =~ /^[0-9a-f]{64}$/;
+    my $d = rc_dir($R) or return { st => "bad" };
+    my $now = time;
+    my $max = ($c->{max} // "") =~ /^(\d+)$/ ? $1 : 1048576;
+    my $e = "$d/$k.entry";
+    if (-e $e || -l $e) {
+        my $raw = rc_slurp($e, $max);
+        my $m = defined $raw ? rc_meta($raw) : undef;
+        if ($m && $now - $m->{ts} >= -60 && $now - $m->{ts} <= rc_ttl($m->{rc})) {
+            utime(undef, undef, $e);                       # recently used: the prune keeps it longer
+            return { st => "hit", entry => MIME::Base64::encode_base64($raw, "") };
+        }
+        unlink $e;
+    }
+    my $lk = rc_lock($d) or return { st => "miss" };      # check + take the lease is one step
+    my $l = "$d/$k.lease";
+    my $stale = ($c->{stale} // "") =~ /^(\d+)$/ ? $1 : 90;
+    my $mine = ref $c->{lease} eq "HASH" ? $c->{lease} : undef;
+    if (-e $l || -l $l) {
+        my $ls = rc_lease($l);
+        my $mt = (lstat $l)[9] // 0;
+        if ($ls && ($ls->{exp} // "") =~ /^\d+(\.\d+)?$/ && $ls->{exp} > $now && $now - $mt <= $stale
+                && !($mine && ($ls->{token} // "") eq ($mine->{token} // ""))) {
+            my $t = ($ls->{t} // "") =~ /^\d+$/ ? $ls->{t} : $now;
+            return { st => "inflight", owner => "" . ($ls->{owner} // "?"), host => "" . ($ls->{host} // "?"),
+                     age => $now - $t, left => int($ls->{exp} - $now) };
+        }
+        unlink $l;                                        # expired, or its owner stopped refreshing it
+    }
+    return { st => "miss" } unless $mine;
+    my $ttl = ($mine->{ttl} // "") =~ /^(\d+)$/ ? $1 : 3600;
+    my %ls = (owner => "" . ($mine->{owner} // "?"), host => "" . ($mine->{host} // "?"),
+              pid => (($mine->{pid} // "") =~ /^(\d+)$/ ? $1 + 0 : 0), token => "" . ($mine->{token} // ""),
+              t => $now, exp => $now + $ttl);
+    return { st => "miss", lease => (rc_put($l, JSON::PP->new->canonical->encode(\%ls)) ? 1 : 0) };
+}
+'''
+
+# The op script (`perl -e RCACHE_OP <op>`, stdin): check = the JSON request -> the answer (a waiter's
+# poll); touch = header {key, token}: refresh our lease; store = header {key, token, max} + entry bytes
+# (none = only drop the lease): write it atomically, then drop our lease. Bounded by alarm.
+RCACHE_OP = RCACHE_PL + r'''
+alarm 30;
+my $R = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
+my $op = $ARGV[0] // "";
+binmode STDIN; binmode STDOUT;
+if ($op eq "check") {
+    my $c = eval { JSON::PP->new->decode(do { local $/; <STDIN> } // "{}") };
+    print JSON::PP->new->canonical->encode(rcache($R, ref $c eq "HASH" ? $c : {})), "\n";
+    exit 0;
+}
+exit 2 unless $op eq "touch" || $op eq "store";
+my $c = eval { JSON::PP->new->decode(scalar(<STDIN>) // "") };
+exit 2 unless ref $c eq "HASH" && ($c->{key} // "") =~ /^([0-9a-f]{64})$/;
+my $k = $1;
+my $tok = ($c->{token} // "") =~ /^([0-9a-f]{16,64})$/ ? $1 : "";
+my $d = rc_dir($R) or exit 2;
+my $l = "$d/$k.lease";
+my $ours = sub { my $ls = rc_lease($l); $tok ne "" && $ls && ($ls->{token} // "") eq $tok };
+if ($op eq "touch") {
+    my $lk = rc_lock($d) or exit 1;
+    exit($ours->() && utime(undef, undef, $l) ? 0 : 1);
+}
+my $max = ($c->{max} // "") =~ /^(\d+)$/ ? $1 : 1048576;
+my ($body, $chunk) = ("", "");
+while (read(STDIN, $chunk, 65536)) { $body .= $chunk; exit 3 if length($body) > $max }
+my $ok = !length($body) || (rc_meta($body) && rc_put("$d/$k.entry", $body));
+my $lk = rc_lock($d);
+unlink $l if $lk && $ours->();
+exit($ok ? 0 : 1);
+'''
+
+
+def remote_op(env_prefix, op):
+    """The remote command line of one op on the home worker (env_prefix: rd_pool.remote_env)."""
+    return "%sexec /usr/bin/perl -e %s %s" % (env_prefix, shlex.quote(RCACHE_OP), op)
+
+
+def load_key(path=None):
+    """The pool-cache secret (bytes) from KEY_PATH, else None (missing, unreadable, a symlink, not ours,
+    readable by others, or not 64 hex chars): no key = no pool tier on this Mac."""
+    path = path or KEY_PATH
+    try:
+        st = os.lstat(path)
+        if not stat_ok(st):
+            return None
+        with open(path, "rb") as f:
+            raw = f.read(200).strip()
+        return bytes.fromhex(raw.decode("ascii")) if re.match(rb"^[0-9a-f]{64}$", raw) else None
+    except (OSError, ValueError):
+        return None
+
+
+def stat_ok(st):
+    import stat as st_mod
+    return st_mod.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+
+def key_init(path=None):
+    """`rdocker pool-cache-key init`: create the secret if missing (0600, atomically). -> (created, fp);
+    raises OSError when a file is there but unusable (fix it by hand: never overwritten)."""
+    path = path or KEY_PATH
+    if os.path.lexists(path):
+        k = load_key(path)
+        if k is None:
+            raise OSError("%s exists but is not a usable key (a regular 0600 file of 64 hex chars, "
+                          "owned by you); not touching it" % path)
+        return False, fingerprint(k)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    k = os.urandom(32)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(k.hex() + "\n")
+        os.link(tmp, path)               # fails if another init won the race: theirs stays
+    finally:
+        os.unlink(tmp)
+    return True, fingerprint(load_key(path) or k)
+
+
+def fingerprint(secret):
+    """A short hash that names the secret without revealing it (compare it across Macs)."""
+    return hashlib.sha256(b"rrun-pool-cache-fingerprint\0" + secret).hexdigest()[:16]
+
+
+def entry_mac(secret, k, meta, frames):
+    """HMAC-SHA256 binding the cache key, every meta field (but "mac") and the exact output bytes."""
+    canon = json.dumps({n: v for n, v in meta.items() if n != "mac"}, sort_keys=True, separators=(",", ":"))
+    body = b"".join(b"%d %d\n" % (fd, len(d)) + d for fd, d in frames)
+    return hmac.new(secret, MAC_CONTEXT + k.encode() + b"\0" + canon.encode("utf-8") + b"\0" + body,
+                    hashlib.sha256).hexdigest()
+
+
+class Shared:
+    """The pool tier for one rrun (key k; owner / host: who holds a lease, for a waiter's line;
+    ttl_s: the job's cap). attach() names the home worker once the plan found it. leased = this
+    run holds the key's lease."""
+
+    def __init__(self, k, owner, host, ttl_s, cfg=None, secret=None, pool_node=None):
+        cfg = cfg or {}
+        self.key, self.owner, self.host, self.secret = k, owner, host, secret
+        self.pool_node = pool_node   # fleet.json pool_node_major (str): the only node shared or replayed
+        self.home, self.ssh, self.env_prefix = None, [], ""
+        self.ttl = int(ttl_s) + LEASE_MARGIN_S if ttl_s else LEASE_NOCAP_S
+        self.stale = int(cfg.get("rr_pool_cache_stale_s", LEASE_STALE_S))
+        self.refresh_s = float(cfg.get("rr_pool_cache_refresh_s", LEASE_REFRESH_S))
+        self.poll_max = float(cfg.get("rr_pool_cache_poll_s", POLL_MAX_S))
+        self.token = os.urandom(12).hex()
+        self.leased = False
+        self.done = threading.Event()
+
+    def attach(self, home, ssh_argv, env_prefix):
+        """home = its name; ssh_argv = the ssh command up to its host; env_prefix = rd_pool.remote_env."""
+        self.home, self.ssh, self.env_prefix = home, list(ssh_argv), env_prefix
+
+    def req(self, lease=True):
+        r = {"key": self.key, "max": SHARED_MAX, "stale": self.stale}
+        if lease:
+            r["lease"] = {"owner": self.owner, "host": self.host, "pid": os.getpid(), "token": self.token,
+                          "ttl": self.ttl}
+        return r
+
+    def answer(self, raw):
+        """A probe's / poll's "rcache" dict -> {"st": "hit", "meta", "frames"} | {"st": "inflight",
+        "owner", "host", "left"} | {"st": "miss"} | None (no usable answer). A miss with lease 1
+        marks this run as the lease holder."""
+        if not isinstance(raw, dict):
+            return None
+        st = raw.get("st")
+        if st == "hit":
+            try:
+                import base64
+                got = parse_entry(base64.b64decode(raw.get("entry") or "", validate=True))
+            except (ValueError, TypeError):
+                got = None
+            if got is None or len(raw.get("entry") or "") > SHARED_MAX * 4 // 3 + 8 or not self.signed(*got):
+                return {"st": "miss"}            # damaged, oversized, unsigned or forged: never replayed
+            age = time.time() - got[0]["ts"]
+            if age < -60 or age > ttl(got[0]["rc"]):
+                return {"st": "miss"}
+            return {"st": "hit", "meta": got[0], "frames": got[1]}
+        if st == "inflight":
+            left = raw.get("left") if isinstance(raw.get("left"), (int, float)) else 0
+            return {"st": "inflight", "owner": str(raw.get("owner") or "?")[:80],
+                    "host": str(raw.get("host") or "?")[:48], "left": max(0, left)}
+        if st == "miss":
+            if raw.get("lease") == 1:
+                self.leased = True
+            return {"st": "miss"}
+        return None
+
+    def signed(self, meta, frames):
+        """True only for a well-formed MAC (exactly 64 lowercase hex chars) that matches; anything
+        else - a missing, non-string, short, uppercase or non-ASCII MAC - is simply unsigned."""
+        mac = meta.get("mac")
+        if not self.secret or not isinstance(mac, str) or not MAC_RE.match(mac):
+            return False
+        want = bytes.fromhex(entry_mac(self.secret, self.key, meta, frames))
+        return hmac.compare_digest(bytes.fromhex(mac), want)
+
+    def _argv(self, op):
+        return self.ssh + [remote_op(self.env_prefix, op)]
+
+    def poll(self, lease=True, timeout=None):
+        """One check over ssh (a waiter): -> answer(), or None when the home worker did not answer
+        within timeout (at most OP_TIMEOUT_S)."""
+        import subprocess
+        try:
+            p = subprocess.run(self._argv("check"), input=json.dumps(self.req(lease)).encode(),
+                               capture_output=True, timeout=max(0.1, min(OP_TIMEOUT_S, timeout or OP_TIMEOUT_S)))
+            raw = json.loads(p.stdout.decode("utf-8", "replace").strip().splitlines()[-1]) \
+                if p.returncode == 0 else None
+        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+            raw = None
+        return self.answer(raw)
+
+    def start_refresh(self):
+        """Keep the lease alive while this process runs (a daemon thread: it dies with us, and the
+        lease goes stale LEASE_STALE_S later - a killed owner never holds waiters for its cap)."""
+        import subprocess
+
+        def loop():
+            while not self.done.wait(self.refresh_s):
+                try:
+                    subprocess.run(self._argv("touch"), input=json.dumps({"key": self.key, "token": self.token}).encode()
+                                   + b"\n", capture_output=True, timeout=OP_TIMEOUT_S)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        threading.Thread(target=loop, daemon=True, name="rcache-lease").start()
+
+    def finish(self, meta=None, frames=None):
+        """After the result is printed: one detached ssh stores the entry (when given and small
+        enough) and drops our lease. Never waited on; its failure only costs the share. -> True when
+        an upload was started (False: nothing to do, or it could not even start)."""
+        import subprocess
+        import tempfile
+        self.done.set()
+        body = b""
+        if meta is not None and self.secret:
+            body = entry_bytes(dict(meta, mac=entry_mac(self.secret, self.key, meta, frames)), frames)
+        if len(body) > SHARED_MAX:
+            body = b""
+        if not body and not self.leased:
+            return False
+        head = json.dumps({"key": self.key, "token": self.token if self.leased else "", "max": SHARED_MAX})
+        try:
+            with tempfile.TemporaryFile() as f:      # a file, not a pipe: we never block on a slow link
+                f.write(head.encode() + b"\n" + body)
+                f.seek(0)
+                with open(os.devnull, "wb") as dn:
+                    subprocess.Popen(self._argv("store"), stdin=f, stdout=dn, stderr=dn, start_new_session=True,
+                                     close_fds=True)
+        except OSError:
+            return False
+        return True
+
+
+def pool_hit_line(meta, now=None):
+    now = time.time() if now is None else now
+    by = " by %s" % meta["agent"] if meta.get("agent") else ""
+    return ("cached result from the pool cache (same code + command, %s ago on %s%s); RRUN_CACHE=0 to run again"
+            % (fmt_age(now - meta["ts"]), meta.get("worker") or "a worker", by))

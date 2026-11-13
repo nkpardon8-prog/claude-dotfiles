@@ -58,6 +58,9 @@ def problems(fl):
     keys = fl.get("client_keys", [])
     if not isinstance(keys, list) or not all(isinstance(k, str) and KEY_RE.match(k) for k in keys):
         bad.append("client_keys must be a list of one-line SSH public keys")
+    pnm = fl.get("pool_node_major")
+    if pnm is not None and (not isinstance(pnm, int) or isinstance(pnm, bool) or not 1 <= pnm <= 999):
+        bad.append("pool_node_major must be a whole number (the node major the pool runs, e.g. 25)")
     names, aliases, homes = set(), set(), []
     for i, m in enumerate(fl["machines"]):
         if not isinstance(m, dict):
@@ -146,6 +149,16 @@ def load_doc(path=None):
     if bad:
         raise FleetError("%s invalid: %s" % (path, "; ".join(bad)))
     return doc
+
+
+def pool_node_major(cfg=None):
+    """The node major the pool runs (top-level "pool_node_major", the one source of truth for rrun's
+    pool result cache), else None (absent, or no valid fleet.json): the pool cache is then off. An
+    older rd_fleet ignores unknown top-level keys, so adding it never breaks an older client."""
+    try:
+        return load_doc((cfg or {}).get("fleet_path")).get("pool_node_major")
+    except FleetError:
+        return None
 
 
 def entry(m):

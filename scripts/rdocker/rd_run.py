@@ -65,7 +65,10 @@ RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns th
 Cache (rd_cache): a one-shot tsc / eslint / vitest / jest run or a known test / typecheck / lint npm
 script whose shipped code + command match a recent run replays that run's output and exit code
 (passes 24 h, failures 20 min); RRUN_CACHE=0 always runs (and saves the fresh result). Looked up
-under the worktree lock, so a second identical run waiting on the first gets its result.
+under the worktree lock, so a second identical run waiting on the first gets its result. Then the
+pool tier (rd_cache, home worker): looked up through the placement probe; an identical run in flight
+elsewhere is waited for (wait_inflight) and replayed; a result is shared after it is printed
+(share_after). RRUN_CACHE=0 skips the pool tier entirely.
 """
 import fnmatch
 import hashlib
@@ -155,7 +158,8 @@ def result_class(rc):
 def result_line(rc):
     """The one line that classifies the result (printed first after the command's output)."""
     klass, why, nxt = result_class(rc)
-    where = (" from the cache" if RESULT.get("host") == "cache" else
+    where = (" from the cache" if RESULT.get("host") == "cache" else " from the pool cache"
+             if RESULT.get("host") == "pcache" else
              " on %s" % RESULT["host"] if RESULT.get("host") not in (None, "none") else "")
     secs = ", %.0fs" % RESULT["secs"] if isinstance(RESULT.get("secs"), (int, float)) else ""
     head = "rrun: %s (exit %d%s%s%s)" % (klass, int(rc), where, secs, "; " + why if why else "")
@@ -787,6 +791,7 @@ class Session:
         self.scan_tail = {}                  # per stream: a line cut by a read boundary
         self.no_db_n = 0                     # lines of the command's output with the missing-test-DB signature
         self.worker_pv = None                # "<nonce> PV <n>": the worker's pool_version (before any prepare)
+        self.node_major = None               # "<nonce> NODE <major|?>": the node this run really uses
         self.outdated = None                 # that version, when it is newer than ours: never GO
 
     host_name = None     # the worker's name, for messages
@@ -910,6 +915,9 @@ class Session:
             self.wait_note(rest)
         elif word == "UNAVAIL":
             self.unavail = rest.strip() or "unavailable"
+        elif word == "NODE":
+            v = rest.strip()
+            self.node_major = v if v.isdigit() else None
         elif word == "PV":
             v = rest.strip()
             self.worker_pv = int(v) if v.isdigit() else None       # "?" = unknown: proceed, warn at the end
@@ -1261,6 +1269,7 @@ def run_local(argv, env_pairs, why=None):
         note("%s - running on the laptop instead (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")   # RRUN=0: the npm shim must not re-route
     env.update(env_pairs)
+    share_after()                  # a held pool-cache lease is dropped before exec (nothing to share)
     for line in version_lines():   # exec replaces this process: say it now, not at the end
         note(line[len("rrun: "):] if line.startswith("rrun: ") else line)
     sys.stdout.flush()
@@ -1504,11 +1513,14 @@ def rrun(argv, env_args=()):
     environ0 = dict(os.environ)          # before Opts pops rrun's own flags: a re-exec needs them back
     ENVIRON0.clear()
     ENVIRON0.update(environ0)
-    rc = _rrun(argv, env_args, environ0)
-    if RESULT["job"]:
-        sys.stdout.flush()
-        sys.stderr.write("\n".join([result_line(rc)] + RESULT["after"] + version_lines()) + "\n")
-        sys.stderr.flush()
+    try:
+        rc = _rrun(argv, env_args, environ0)
+        if RESULT["job"]:
+            sys.stdout.flush()
+            sys.stderr.write("\n".join([result_line(rc)] + RESULT["after"] + version_lines()) + "\n")
+            sys.stderr.flush()
+    finally:
+        share_after()                    # after the result is out: never delays it
     return int(rc)
 
 
@@ -1560,13 +1572,35 @@ def _rrun(argv, env_args, environ0):
     if hit is not None and not opts.where:
         return replay_hit(hit, argv, t0)
     dshas = rd_pool.deps_shas(wt["top"], deps) if wt else []
+    shared = pool_cache_for(cfg, crun, opts, job) if hit is None else None
     try:
-        plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "", dshas, force=opts.host, probe=opts.where)
+        plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "", dshas, force=opts.host, probe=opts.where,
+                            rcache=shared.req(lease=not opts.where) if shared else None)
     except ValueError as e:
         note(str(e))
         RESULT["job"] = False
         return 2
     timing.mark("plan", "plan_s")
+    pans = pool_answer(shared, plan)
+    where_pool = pool_where(shared, pans, plan) if opts.where else []
+    if pans is None:
+        shared = None                    # no home worker answered: this Mac's tier only, as before
+    if shared is not None and not opts.where:
+        SHARE["sh"] = shared
+        ROUTE_EXTRA["pcache"] = pans["st"]
+        if pans["st"] == "inflight":
+            got = wait_inflight(cfg, shared, pans, timeout_s(cfg, job["cls"]) or rd_cache.LEASE_NOCAP_S)
+            if isinstance(got, Rc):
+                return got               # a cancelled waiter just exits
+            pans = got
+            ROUTE_EXTRA["pcache"] = "waited-" + got["st"]
+            ROUTE_EXTRA["pwait_s"] = "%.1f" % got["waited"]
+            if not (got["st"] == "hit" and pool_hit_ok(got["meta"], shared)):
+                plan = rd_pool.plan(cfg, job, wt["slug"], dshas, force=opts.host)   # time passed: place it afresh
+        if pans["st"] == "hit" and pool_hit_ok(pans["meta"], shared):
+            return replay_pool_hit(pans["meta"], pans["frames"], argv, t0)
+        if shared.leased:
+            shared.start_refresh()
     ROUTE_EXTRA["client"] = client_sha() or "-"
     if not opts.where:
         trigger_warm(cfg, plan, wt, dshas, job)
@@ -1585,7 +1619,7 @@ def _rrun(argv, env_args, environ0):
             why_not = "fewer than 2 free workers would help"
         shards = shards if shards and len(shards) >= 2 else None
     if opts.where:
-        print("\n".join([cache_where(crun, cache_why, hit, opts)]
+        print("\n".join([cache_where(crun, cache_why, hit, opts)] + where_pool
                         + rd_pool.where_report(cfg, job, plan, shards or why_not)))
         return 0
     ctx = Ctx(cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps, crun)
@@ -1782,10 +1816,162 @@ def replay_hit(hit, argv, t0):
 
 
 def cache_save(ctx, rc, argv):
-    """Store the finished run's result when it may be replayed (rd_cache.Run.save decides)."""
+    """Store the finished run's result when it may be replayed (rd_cache.Run.save decides): this
+    Mac's tier now; the pool tier gets it from share_after(), once the result is printed - only when
+    every attempt's runner really ran fleet.json's pool_node_major."""
     if ctx.cache is not None:
-        ctx.cache.save(rc, time.monotonic() - ctx.t0, short_argv(argv))
+        node = producer_node(ctx)
+        oi = owner_info()
+        extra = {"agent": owner_label({"owner": oi["id"], "name": oi["name"]}), "client": client_sha() or "-",
+                 "host": oi["client"]}
+        if node is not None:
+            extra["node"] = node
+        meta = ctx.cache.save(rc, time.monotonic() - ctx.t0, short_argv(argv), extra)
+        sh = SHARE["sh"]
+        if meta is not None and sh is not None and node is not None and node == sh.pool_node:
+            SHARE["entry"] = (meta, list(ctx.cache.rec.frames))
     return rc
+
+
+# ---- the pool tier of the result cache (rd_cache "pool tier": the home worker, singleflight)
+SHARE = {"sh": None, "entry": None, "done": False}   # this invocation's rd_cache.Shared + its entry
+
+
+def pool_cache_for(cfg, crun, opts, job):
+    """-> rd_cache.Shared for a cacheable run that may use the pool tier, else None (RRUN_CACHE=0
+    bypasses both tiers; --host runs only there; rr_pool_cache false turns the tier off; no
+    pool-cache key on this Mac (`rdocker pool-cache-key init`) = off; no pool_node_major in
+    fleet.json = off)."""
+    if crun is None or not opts.cache or opts.host or not cfg.get("rr_pool_cache", True):
+        return None
+    secret = rd_cache.load_key()
+    pnm = rd_pool.pool_node_major(cfg) if secret is not None else None
+    if pnm is None:
+        return None
+    oi = owner_info()
+    return rd_cache.Shared(crun.key, owner_label({"owner": oi["id"], "name": oi["name"]}), oi["client"],
+                           timeout_s(cfg, job["cls"]), cfg, secret, pool_node=str(pnm))
+
+
+def pool_answer(shared, plan):
+    """The home worker's answer from the placement probe (zero extra round trip) -> rd_cache.Shared
+    .answer(), or None when there is no home worker or it did not answer."""
+    if shared is None or plan.home is None or plan.home.probe is None:
+        return None
+    shared.attach(plan.home.name, rd_pool.ssh_base() + [plan.home.cfg["host"]], rd_pool.remote_env(plan.home.cfg))
+    return shared.answer(plan.rcache)
+
+
+def pool_hit_ok(meta, shared):
+    """A pool entry is replayed only when its (signed) node tag is fleet.json's pool_node_major."""
+    return shared.pool_node is not None and meta.get("node") == shared.pool_node
+
+
+def producer_node(ctx):
+    """The node major every attempt of this run really used (the runner's NODE status), else None."""
+    if ctx.cache is None:
+        return None
+    majors = set(ctx.cache.nodes)
+    return majors.pop() if ctx.cache.nodes and len(majors) == 1 and None not in majors else None
+
+
+def wait_inflight(cfg, shared, ans, budget_s):
+    """An identical run holds the lease: wait for its result (polling the home worker, at most
+    rd_cache POLL_MAX_S apart; a status line every rr_status_every_s), for at most budget_s (this
+    job's own cap: one monotonic deadline, whoever holds the lease meanwhile; every sleep and poll
+    fits in what is left). -> {"st": "hit", "meta", "frames", "waited"} | {"st": "miss", "waited"}
+    (its lease expired, its owner ended without a result or went quiet - this run took the lease when
+    it could - the home worker stopped answering, or the budget ran out) | stopped() when this waiter
+    was cancelled (it just exits)."""
+    who = "%s on %s" % (ans["owner"], ans["host"])
+    note("identical run in flight by %s; waiting for its result" % who)
+    sig = []
+    ev = threading.Event()
+
+    def _stop(signum, _frame):
+        sig.append(signum)
+        ev.set()
+    old = {s: signal.signal(s, _stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    t0 = last = time.monotonic()
+    deadline = t0 + max(0.0, float(budget_s))
+    every = float(cfg.get("rr_status_every_s", 60))
+    delay, fails = 0.5, 0
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                note("waited %s (this job's cap) for the identical run; running it now" % fmt_min(budget_s))
+                return {"st": "miss", "waited": time.monotonic() - t0}
+            if ev.wait(min(delay, left)):
+                return stopped(sig[0])
+            delay = min(delay * 1.5, shared.poll_max)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                continue
+            a = shared.poll(timeout=left)
+            waited = time.monotonic() - t0
+            if a is None:
+                fails += 1
+                if fails >= rd_cache.POLL_FAILS:
+                    note("the pool cache (%s) stopped answering; running it now" % shared.home)
+                    return {"st": "miss", "waited": waited}
+                continue
+            fails = 0
+            if a["st"] == "hit":
+                return dict(a, waited=waited)
+            if a["st"] == "miss":
+                note("the identical run ended, expired or went quiet without a result to share; running it now")
+                return {"st": "miss", "waited": waited}
+            if time.monotonic() - last >= every:
+                last = time.monotonic()
+                note("still waiting for the identical run by %s (%s so far; its lease ends in %s at most)"
+                     % (who, fmt_min(waited), fmt_min(a["left"])))
+    finally:
+        for s_, h in old.items():
+            signal.signal(s_, h)
+
+
+def replay_pool_hit(meta, frames, argv, t0):
+    """A pool-cache result: its output, the class line, one stderr line naming the worker and agent
+    that produced it. Never copied into this Mac's tier: that tier has no toolchain check, so the next
+    repeat goes through the probe (and its node check) again."""
+    sys.stdout.flush()
+    rd_cache.replay(frames, std_stream("stdout"), std_stream("stderr"))
+    RESULT["after"].append("rrun: " + rd_cache.pool_hit_line(meta))
+    record("pcache", argv, meta["rc"], time.monotonic() - t0)
+    return meta["rc"]
+
+
+def share_after():
+    """Once, after the result is printed (or before a local exec): hand the pool tier this run's
+    entry and drop our lease, in one detached ssh (rd_cache.Shared.finish). Never waited on."""
+    sh = SHARE["sh"]
+    if sh is None or SHARE["done"]:
+        return
+    SHARE["done"] = True
+    meta, frames = SHARE["entry"] or (None, None)
+    sh.finish(meta, frames)
+
+
+def pool_where(shared, pans, plan):
+    """`rrun --where`: what the pool tier would do (no lease is taken)."""
+    home = getattr(plan, "home", None)
+    if shared is None or home is None:
+        return []
+    if pans is None:
+        return ["pool cache (%s): did not answer - this Mac's cache only" % home.name]
+    if pans["st"] == "hit":
+        m = pans["meta"]
+        if not pool_hit_ok(m, shared):
+            return ["pool cache (%s): a result made with node %s, but the pool runs node %s (fleet.json "
+                    "pool_node_major) - runs" % (home.name, m.get("node") or "?", shared.pool_node)]
+        return ["pool cache (%s): hit - replays the result from %s ago on %s%s (exit %d)" % (
+            home.name, rd_cache.fmt_age(time.time() - m["ts"]), m.get("worker") or "a worker",
+            " by %s" % m["agent"] if m.get("agent") else "", m["rc"])]
+    if pans["st"] == "inflight":
+        return ["pool cache (%s): an identical run is in flight by %s on %s - would wait for its result"
+                % (home.name, pans["owner"], pans["host"])]
+    return ["pool cache (%s): miss - runs, then shares the result" % home.name]
 
 
 def cache_where(crun, why, hit, opts):
@@ -2280,7 +2466,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     if pred is not None:
         ROUTE_EXTRA["pred_s"] = pred
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs,
-                                  run_id=run_id, waited_s=round(time.monotonic() - t0, 1), pred_s=pred)
+                                  run_id=run_id, waited_s=round(time.monotonic() - t0, 1), pred_s=pred,
+                                  **({"node_id": 1} if cache is not None else {}))
     cap = timeout_s(cfg, job["cls"])
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True, cap=cap)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
@@ -2348,7 +2535,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
                  % (label(h), sess.exit_rc))
         rc = sess.exit_rc
         if cache is not None:
-            cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig))
+            cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig), sess.node_major)
         if sess.timed_out and rc == EXIT_TIMEOUT:
             rc = infra(EXIT_TIMEOUT, "hit its %s wall-clock cap on %s and was killed with everything it started"
                        % (fmt_min(sess.timeout_s), h.name),

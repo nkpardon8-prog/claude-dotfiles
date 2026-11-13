@@ -8,7 +8,8 @@
 #  * restart docker / sshd when they are down (at most once per 5 min each);
 #  * prune ~/rr, also while runs are in progress (never a mirror a run uses, nothing used in the last
 #    30 min): every 30 min, ~/rr/w mirrors and ~/rr/deps entries unused 2 days; on every tick, while the
-#    ~/rr filesystem is low on space, least-recently-used mirrors, then store entries (see prune()).
+#    ~/rr filesystem is low on space, least-recently-used mirrors, then store entries (see prune());
+#    every 30 min, the pool result cache ~/rr/rcache (home worker): expired, then LRU over RCACHE_MAX_MB;
 #    Every 30 min and only while no rrun slot is held: npm cache over 1 GB, and - on non-home workers
 #    only - stopped containers (> 24 h) and images (unused > 72 h), never anything labelled
 #    rdocker.keep (the home host's janitor owns those);
@@ -255,6 +256,41 @@ sweep_spool() {
     }' "$1" 2>/dev/null
 }
 
+# ~/rr/rcache (rd_cache's pool result cache, on the home worker): entries past their TTL (pass 24 h,
+# failure 20 min) or unreadable, leases past their expiry or untouched 1 h, temp files over 1 h; then
+# the least recently used entries (mtime: a hit touches it) until the store is under RCACHE_MAX_MB.
+RCACHE_MAX_MB=${RCACHE_MAX_MB:-512}
+prune_rcache() {   # $1 = rr
+  perl -MJSON::PP -e '
+    my ($d, $cap, $now) = ("$ARGV[0]/rcache", $ARGV[1] * 1048576, time);
+    exit 0 if -l $d || !opendir(my $dh, $d);
+    my ($tot, @live) = (0);
+    for my $n (readdir $dh) {
+      my $p = "$d/$n";
+      my @st = lstat $p or next;
+      next unless -f _;
+      if ($n =~ /\.tmp$/) { unlink $p if $now - $st[9] > 3600; next }
+      my ($k, $ext) = $n =~ /^([0-9a-f]{64})\.(entry|lease)$/ or next;
+      open(my $f, "<", $p) or next;
+      my $line = <$f> // ""; close $f;
+      my $m = eval { JSON::PP->new->decode($line) };
+      if ($ext eq "lease") {
+        unlink $p if ref $m ne "HASH" || ($m->{exp} // 0) < $now || $now - $st[9] > 3600;
+        next;
+      }
+      my $ttl = ref $m eq "HASH" && ($m->{rc} // "") =~ /^\d+$/ ? ($m->{rc} == 0 ? 86400 : 1200) : -1;
+      if ($ttl < 0 || ($m->{ts} // 0) !~ /^\d+(\.\d+)?$/ || $now - $m->{ts} > $ttl) { unlink $p; next }
+      push @live, [$st[9], $st[7], $p, $k]; $tot += $st[7];
+    }
+    for (sort { $a->[0] <=> $b->[0] } @live) {
+      last if $tot <= $cap;
+      next unless unlink $_->[2];
+      $tot -= $_->[1];
+      printf "rd-tune: prune rm pool-cache entry %s (over %d MB, last used %dh ago)\n", substr($_->[3], 0, 12),
+        $ARGV[1], ($now - $_->[0]) / 3600;
+    }' "$1" "$RCACHE_MAX_MB" 2>/dev/null
+}
+
 prune() {
   local rr home_dir g kind; rr=$(rr_root); home_dir=$(dirname "$rr")
   [ -d "$rr" ] || return 0
@@ -265,6 +301,7 @@ prune() {
     done
   fi
   cooldown_ok prune 1800 || return 0
+  prune_rcache "$rr"
   evict "$rr" w $(( 2 * 86400 )) 0 "unused 2d"
   evict "$rr" w2 $(( 2 * 86400 )) 0 "unused 2d"   # mirrors of runners since 2026-11-11
   for g in "$rr"/git/*.git; do [ -d "$g" ] && git --git-dir="$g" worktree prune 2>/dev/null; done
