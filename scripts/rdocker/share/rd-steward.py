@@ -55,12 +55,27 @@ st=$(cat /run/rdocker/doctor 2>/dev/null || cat ~/rr/state/doctor.json 2>/dev/nu
 since=$(date -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-3600)) +%Y-%m-%dT%H:%M:%S)
 printf 'NOW %s\nDOCTOR %s\n' "$now" "$st"
 for f in rd-doctor rd-tune rd-verify; do p=/usr/local/bin/$f; [ -f "$p" ] || p=/usr/local/libexec/$f; [ -f "$p" ] && printf 'SHA %s %s\n' "$f" "$( (sha256sum "$p" 2>/dev/null || shasum -a 256 "$p") | cut -c1-16)"; done
-tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -oE 'outcome=([a-z-]+ rc=[0-9]+|[^ ]+)' | sort | uniq -c | sed 's/^/OUT /'
+# Every field is read from its own part of the line, never from argv (a job's argv is free text, e.g.
+# `sh -c 'echo node=24 outcome=busy'`): outcome= / cmd_s= only before the first " argv=", the v2 fields
+# (pred_s=, node=) only after the TAB (redact_argv turns control characters into spaces, so the first TAB
+# is the runner's own separator).
+tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | sed 's/ prepare_s=.*//' | grep -oE 'outcome=([a-z-]+ rc=[0-9]+|[^ ]+)$' | sort | uniq -c | sed 's/^/OUT /'
 # prediction accuracy, last 24 h: "PRED <pred_s> <cmd_s>" for completed runs that logged a prediction
 day=$(date -d @$((now-86400)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-86400)) +%Y-%m-%dT%H:%M:%S)
-tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$day" 'substr($1,1,19) >= s && /outcome=rc=[01][ \t]/ && /pred_s=/ {
-  c=""; p=""; for (i=1;i<=NF;i++) { if ($i ~ /^cmd_s=[0-9]/) c=substr($i,7); if ($i ~ /^pred_s=[0-9]/) p=substr($i,8) }
+tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$day" 'substr($1,1,19) >= s {
+  t = index($0, "\t"); if (!t) next
+  h = substr($0, 1, t - 1); a = index(h, " argv="); if (a) h = substr(h, 1, a - 1)
+  if (h !~ / outcome=rc=[01] prepare_s=/) next
+  c = ""; p = ""
+  n = split(h, f, " "); for (k = 1; k <= n; k++) if (f[k] ~ /^cmd_s=[0-9]/) c = substr(f[k], 7)
+  n = split(substr($0, t + 1), f, " "); for (k = 1; k <= n; k++) if (f[k] ~ /^pred_s=[0-9]/) p = substr(f[k], 8)
   if (c != "" && p != "") print "PRED " p " " c }'
+# node majors jobs ran with, last 24 h: "NODE <major> <count>" (runs.log node=, 2026-11-12; node=- or no
+# field = skipped; 1-3 digits only)
+tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$day" 'substr($1,1,19) >= s {
+  t = index($0, "\t"); if (!t) next
+  n = split(substr($0, t + 1), f, " "); for (k = 1; k <= n; k++) if (f[k] ~ /^node=[0-9][0-9]?[0-9]?$/) m[substr(f[k], 6)]++ }
+  END { for (k in m) print "NODE " k " " m[k] }'
 """
 
 
@@ -92,29 +107,52 @@ def probe(m):
         r["err"] = (p.stderr.strip().splitlines() or ["ssh failed"])[-1][:200]
         return r
     r["reachable"] = True
-    for line in p.stdout.splitlines():
+    parse_answer(r, p.stdout)
+    return r
+
+
+def whole(s, digits):
+    """A whole number of 1..digits ASCII digits, else None: a malformed or hostile field is unknown,
+    never an exception (one bad runs.log line must not stop the collection)."""
+    s = s.strip()
+    return int(s) if re.fullmatch(r"[0-9]{1,%d}" % digits, s) else None
+
+
+def secs(s):
+    """A seconds field (at most 7 integer digits, optional fraction) -> float, else None."""
+    return float(s) if re.fullmatch(r"[0-9]{1,7}(\.[0-9]{1,6})?", s) else None
+
+
+def parse_answer(r, out):
+    """The REMOTE script's lines -> r (now, doctor, sha, pred, node, outcomes). Anything malformed is
+    skipped line by line."""
+    for line in out.splitlines():
         if line.startswith("NOW "):
-            r["now"] = int(line[4:].strip() or 0)
+            r["now"] = whole(line[4:], 12) or 0
         elif line.startswith("DOCTOR "):
             try:
-                r["doctor"] = json.loads(line[7:])
-            except ValueError:
-                r["doctor"] = None
+                d = json.loads(line[7:])
+            except (ValueError, RecursionError):
+                d = None
+            r["doctor"] = d if isinstance(d, dict) else None
         elif line.startswith("SHA "):
             parts = line.split()
             if len(parts) == 3:
                 r.setdefault("sha", {})[parts[1]] = parts[2]
         elif line.startswith("PRED "):
             parts = line.split()
-            try:
-                r.setdefault("pred", []).append((float(parts[1]), float(parts[2])))
-            except (IndexError, ValueError):
-                pass
+            pc = (secs(parts[1]), secs(parts[2])) if len(parts) == 3 else (None, None)
+            if None not in pc:
+                r.setdefault("pred", []).append(pc)
+        elif line.startswith("NODE "):
+            parts = line.split()
+            major, n = (whole(parts[1], 3), whole(parts[2], 7)) if len(parts) == 3 else (None, None)
+            if major is not None and n is not None:
+                r.setdefault("node", {})[major] = n
         elif line.startswith("OUT "):
-            mm = re.match(r"OUT\s+(\d+)\s+outcome=(\S+(?: rc=\d+)?)\s*$", line)
+            mm = re.match(r"OUT\s+([0-9]{1,7})\s+outcome=(\S+(?: rc=[0-9]{1,3})?)\s*$", line)
             if mm:
                 r["outcomes"][mm.group(2)] = int(mm.group(1))
-    return r
 
 
 PRED_MIN_N = 30          # jobs in 24 h before the prediction error counts
@@ -130,8 +168,9 @@ def pred_error(pairs):
     return errs[len(errs) // 2], len(errs)
 
 
-def rules(r, m):
-    """-> list of (key, text). key is stable so repeats share a signature."""
+def rules(r, m, pool_node=None):
+    """-> list of (key, text). key is stable so repeats share a signature. pool_node = fleet.json's
+    pool_node_major (None = not declared: no node rule)."""
     n = r["name"]
     out = []
     if not r["reachable"]:
@@ -161,12 +200,24 @@ def rules(r, m):
     if err is not None and err[1] >= PRED_MIN_N and err[0] > PRED_MAX_ERR:
         out.append((f"{n}:pred-drift", f"{n} placement predictions are off by a median {err[0]:.0f}% over "
                                        f"{err[1]} jobs in 24 h (pred_s vs cmd_s): the routing model needs a look"))
+    off = {k: c for k, c in sorted((r.get("node") or {}).items()) if pool_node is not None and k != pool_node}
+    if off:
+        ran = ", ".join(f"node {k} x{c}" for k, c in off.items())
+        out.append((f"{n}:node-mismatch", f"{n} ran jobs on a different node major than the pool's ({ran} in 24 h; "
+                                          f"fleet.json pool_node_major is {pool_node}): its results are not "
+                                          "shared - fix the worker's node or bump pool_node_major"))
     total = sum(c for o, c in r["outcomes"].items() if not NOT_A_RUN.match(o))
     infra = sum(c for o, c in r["outcomes"].items() if INFRA.match(o))
     if total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
         kinds = ", ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items()) if INFRA.match(o))
         out.append((f"{n}:infra", f"{n} {infra}/{total} jobs in the last hour failed for infra reasons ({kinds})"))
     return out
+
+
+def pool_node_major(fleet):
+    """fleet.json's top-level pool_node_major as an int, or None (absent / not a whole number)."""
+    v = fleet.get("pool_node_major")
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def repo_sha():
@@ -242,9 +293,15 @@ def main():
     fleet = json.load(open(FLEET))
     results, findings = [], []
     for m in workers(fleet):
-        r = probe(m)
+        try:
+            r = probe(m)
+            found = rules(r, m, pool_node_major(fleet))
+        except Exception as e:  # one worker's odd answer must not stop the others
+            r = {"name": m.get("name", "?"), "os": m.get("os"), "reachable": True, "doctor": None,
+                 "outcomes": {}, "err": repr(e)[:200]}
+            found = [(f"{r['name']}:steward-error", f"rd-steward could not read {r['name']}'s answer ({r['err']})")]
         results.append(r)
-        findings += rules(r, m)
+        findings += found
     findings += self_rules()
     sig = hashlib.sha256("\n".join(sorted(k for k, _ in findings)).encode()).hexdigest()[:12]
     state_p = os.path.join(STATE, "state.json")

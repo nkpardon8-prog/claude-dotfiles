@@ -51,6 +51,12 @@ rrun-route hook self-installs on every Mac that uses the pool) being stale or st
 Routing accuracy: every report line shows each worker's median prediction error over the last 24 h
 (`pred_s` the router logged vs the real `cmd_s`, jobs of 2 s or more); over 50 % across 30+ jobs is a
 `pred-drift` finding.
+Node version: a worker whose last-24 h jobs ran on a node major other than fleet.json's top-level
+`pool_node_major` (runs.log `node=`, the `node -v` major on the job's PATH) is a `node-mismatch` finding naming
+the worker and both majors (its results are not shared by the pool cache). Rows without `node=`, or with
+`node=-`, are ignored; no `pool_node_major` = no check.
+Every field is read from its own part of a runs.log line, never from the job's argv, and only bounded numbers
+count. A worker whose answer cannot be read is a `steward-error` finding; the other workers are still checked.
 
     python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-steward.py --install     # user LaunchAgent, no sudo
     python3 .../rd-steward.py --once        # run now (RD_STEWARD_AGENT=0: report only)

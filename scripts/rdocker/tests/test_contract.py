@@ -329,7 +329,7 @@ class Version(unittest.TestCase):
             self.assertEqual(f.read().strip(), str(rd_common.POOL_VERSION))
         with open(os.path.join(t.home, "rr", "log", "runs.log")) as f:
             log = f.read()
-        self.assertRegex(log, r" pv=%d\n" % rd_common.POOL_VERSION)
+        self.assertRegex(log, r" pv=%d node=(\d+|-)\n" % rd_common.POOL_VERSION)
         self.assertRegex(log, r" setup=warm pred_s=\S+ client=\S+ pv=")
         route = os.path.join(t.home, ".local", "state", "rdocker", "route.log")
         with open(route) as f:

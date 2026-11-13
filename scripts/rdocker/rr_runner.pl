@@ -71,7 +71,8 @@
 # refused (exit 1); only full immutable ids reach docker.
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server),
-# RR_SHARE_FILE, RR_COLIMA (default /opt/homebrew/bin/colima), RR_COLIMA_TIMEOUT (default 120 s).
+# RR_SHARE_FILE, RR_COLIMA (default /opt/homebrew/bin/colima), RR_COLIMA_TIMEOUT (default 120 s),
+# RR_NODE_V_S (the `node -v` bound, default 5 s).
 #
 # Share switch (a worker's owner rents it in or out; see share_level): off = take no new job (exit 73
 # with "<nonce> UNAVAIL share=off", the client moves on); some = half the slots and heavy slots;
@@ -121,6 +122,10 @@ my $t_wait0;                          # run log: when the slot wait began (wait_
 my $unavail = 0;                      # we answered UNAVAIL (share off / no docker): refused, not busy
 my $moved = 0;                        # the client sent MOVE before GO: it re-planned elsewhere (runs.log "moved")
 my $setup_kind;                       # runs.log setup=: warm (packages there) / clone (from the store) / cold (npm install ran)
+my $node_major;                       # runs.log node=: `node -v` major on this run's PATH (undef = not known)
+my $node_v;                           # node_version()'s cached raw `node -v` output
+our $NODE_PROBE;                      # pid (= pgid) of a running `node -v` probe; finish() kills + reaps it
+my $NODE_V_S = ($ENV{RR_NODE_V_S} // '') =~ /^\d{1,3}(\.\d+)?$/ ? $ENV{RR_NODE_V_S} : 5;    # its time bound
 # Detached runs (header run_id; see the top): runner = before GO, or a run without run_id (attached,
 # as before); keeper = the forked owner of a started command; follower = relays a run's spool
 our $role = 'runner';
@@ -170,8 +175,9 @@ sub main {
     write_shim("$tmp/docker");
     my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin');
     $ENV{PATH} = $path;    # git/node/npm below resolve the same way the command will
-    # the node major this run really uses (rd_cache's pool tier tags a shared result with it)
-    status('NODE ' . (((`node -v 2>/dev/null` // '') =~ /^v(\d+)\./)[0] // '?')) if $h{node_id};
+    # the node major this run really uses (rd_cache's pool tier tags a shared result with it; runs.log node=)
+    ($node_major) = node_version() =~ /^v(\d{1,3})\./;
+    status('NODE ' . ($node_major // '?')) if $h{node_id};
     $ENV{GIT_TERMINAL_PROMPT} = '0';
     exclude_root();
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);
@@ -820,6 +826,50 @@ sub take_slot {
 }
 
 # --------------------------------------------------------------------------------- mirror
+# `node -v` on the run's PATH, bounded: a hung or broken node must never stall a run that holds a slot.
+# -> its raw stdout, byte for byte (the deps stamp hashes it), or '' when node is missing, or ran past
+# $NODE_V_S (then its process group is KILLed and reaped). Resolved once per run (main, after PATH).
+sub node_version {
+    return $node_v if defined $node_v;
+    $node_v = '';
+    pipe(my $r, my $w) or return $node_v;
+    my $pid = fork;
+    if (!defined $pid) { close $r; close $w; return $node_v }
+    $NODE_PROBE = $pid if $pid;    # a signal from here on dies into finish(), which ends the probe
+    if (!$pid) {
+        setpgrp(0, 0);
+        $SIG{$_} = 'DEFAULT' for qw(INT TERM HUP PIPE);
+        close $r;
+        open STDIN, '<', '/dev/null';
+        open STDOUT, '>&', $w;
+        open STDERR, '>', '/dev/null';
+        { no warnings 'exec'; exec 'node', '-v' }
+        _exit(127);
+    }
+    close $w;
+    my ($out, $end, $sel, $eof) = ('', time + $NODE_V_S, IO::Select->new($r), 0);
+    while ((my $left = $end - time) > 0) {
+        last unless $sel->can_read($left);
+        my $n = sysread($r, my $buf, 4096);
+        if (!$n) { $eof = 1; last }
+        $out .= $buf if length $out < 4096;
+    }
+    close $r;
+    my $done = 0;
+    while ($eof && !($done = waitpid($pid, WNOHANG) == $pid) && time < $end) { sleep 0.02 }
+    end_node_probe() unless $done;    # still running at the deadline: unknown
+    undef $NODE_PROBE;
+    $node_v = $out if $done;
+    $node_v;
+}
+sub end_node_probe {    # KILL the probe's whole group (descendants too) and reap it
+    my $pid = $NODE_PROBE // return;
+    kill 'KILL', -$pid;
+    kill 'KILL', $pid;
+    waitpid($pid, 0);
+    undef $NODE_PROBE;
+}
+
 sub run_cmd {    # internal tool; its stdout goes to $out (default: our stderr, never the command's stdout)
     my ($out, @cmd) = @_;
     my $pid = fork // fail("fork: $!");
@@ -1010,7 +1060,7 @@ sub deps {
     my ($env) = @_;
     my @saves;
     my $legacy = mk("$ROOT/state") . "/$h{repo_slug}.legacy-peer-deps";
-    my $nodev = `node -v 2>/dev/null` // '';
+    my $nodev = node_version();
     my $rm = realpath($mirror);
     for my $rel (@{ $h{stamps}{dirs} }) {
         my $dir = $rel eq '' ? $mirror : "$mirror/$rel";
@@ -1495,6 +1545,7 @@ sub finish {
     my ($rc) = @_;
     return if $role eq 'follower';    # it owns nothing: the keeper (or nobody, on a reattach) cleans up
     local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
+    eval { end_node_probe() };    # a signal during node_version(): its probe must not outlive us
     eval { delete_env_files(0) };
     eval { containers($rc) } if $started;
     leave_waiters();
@@ -1524,7 +1575,9 @@ sub finish {
 # so rd_pool's and the reporter's line parsers still match). Then (v2, 2026-11-11) a TAB and
 # "run=<id|-> owner=<id|-> cls=<class|-> wait_s=<s> exit_reason=pass|fail|cap|stalled|lost|busy|refused|
 # abandoned-setup|moved|warm", then (2026-11-11, same tab section, each field optional to readers)
-# "setup=warm|clone|cold|- pred_s=<s|-> client=<sha|-> pv=<pool_version|->".
+# "setup=warm|clone|cold|- pred_s=<s|-> client=<sha|-> pv=<pool_version|->", then (2026-11-12)
+# "node=<major|->": the node major on the run's PATH (`node -v`, the one the NODE status reports), `-`
+# when no slot was taken or node is missing. rd-steward compares it with fleet.json's pool_node_major.
 # Truthful labels (2026-11-11; every reader - rd_pool's PROBE, rd-doctor, rd-steward, the reporter -
 # accepts them): before GO, a client that left is `abandoned-setup` (it gave up or was killed during
 # the prepare or the slot wait), or `moved` when it said MOVE first (a deliberate re-plan elsewhere);
@@ -1565,9 +1618,9 @@ sub log_fields {
     my $slot_wait = defined $t_wait0 ? ($t_slot // $now) - $t_wait0 : 0;
     (my $owner = $owner_id // '-') =~ tr/ \t/__/;
     my $setup = $setup_kind // (defined $t_ready ? 'warm' : '-');
-    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s",
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s",
         $run_id // '-', $owner, $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait,
-        exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-';
+        exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-', $node_major // '-';
 }
 
 # Version guarantee (layer 2): $ROOT/pool_version holds the highest pool_version any client that ran

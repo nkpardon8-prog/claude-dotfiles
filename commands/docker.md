@@ -177,7 +177,7 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since
   2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
   client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused|abandoned-setup|moved|warm
-  setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version>`; `stalled` is reserved.
+  setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version> node=<node major the job ran, - if unknown>`; `stalled` is reserved.
   **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
   `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
   elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`
@@ -370,6 +370,7 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   result is replayed only when its signed node tag equals it. No `pool_node_major` = no pool cache; an
   unknown runtime = nothing shared; a worker on another major never shares. **When node is upgraded on
   the workers, bump `pool_node_major` in fleet.json** (until then the upgraded workers share nothing).
+  rd-steward flags a worker whose last-day runs.log `node=` differs from it (`node-mismatch`).
   Entries over 1 MB are not shared.
   **Signed entries.** Every pool entry carries an HMAC made on the agent Mac with
   `~/.config/rdocker/pool-cache.key` (0600). That secret exists only on agent Macs: never on a worker, never

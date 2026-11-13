@@ -330,7 +330,7 @@ export function parseLogTime(s) {
 
 /**
  * rr runs.log lines -> runs (format: rr_runner.pl run_log). The v2 tail after the TAB (run= owner= cls=
- * wait_s= exit_reason= setup= pred_s= client= pv=) is cut off argv; its pred_s comes back as `predS`
+ * wait_s= exit_reason= setup= pred_s= client= pv= node=) is cut off argv; its pred_s comes back as `predS`
  * (only on lines that have the tail; Collector.newRuns drops it before a frame).
  */
 export function parseRunsLog(text) {

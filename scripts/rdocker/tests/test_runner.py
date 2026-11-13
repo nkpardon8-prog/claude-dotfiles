@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1355,7 +1356,7 @@ class DetachedRuns(RunnerTest):
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
         self.assertEqual(own, [self.nonce + " ATTACHED", self.nonce + " EXIT 5"])
         line = self.runs_log()[-1]
-        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+$" % rid)
+        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=20$" % rid)
         with open(os.path.join(self.root, "slots", "0")) as lk:
             fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)                      # slot released
         # the same run again after its end (another reattach): the rest from those offsets, then EXIT
@@ -1509,7 +1510,7 @@ class DetachedRuns(RunnerTest):
         line = self.runs_log()[-1]
         self.assertRegex(line, r"^\S+ repo=\S+ wt=\S+ sha=\S+ outcome=rc=0 prepare_s=\S+ cmd_s=\S+ "
                                r"argv=/bin/sh -c exit 0\trun=%s owner=session:abc-1 cls=heavy "
-                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=-$" % rid)
+                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=- node=20$" % rid)
         self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
         # rd_pool's probe (perl, as on a worker): the command's evidence without the v2 fields
         import rd_pool
@@ -1533,6 +1534,74 @@ class DetachedRuns(RunnerTest):
             self.assertEqual(len(runs), 1)
             self.assertEqual(runs[0]["outcome"], "rc=0")
             self.assertTrue(runs[0]["argv"].startswith("/bin/sh -c exit 0"), runs[0])
+
+    def test_runs_log_node_is_the_major_the_run_used_else_dash(self):
+        """node= is `node -v` on the run's own PATH (the fake node: v20), `-` when it cannot be known:
+        node missing / unparseable, or the run never took a slot."""
+        r = self.run_runner(["/bin/sh", "-c", "node -v"])
+        self.assertEqual((r.rc, r.out), (0, "v20.0.0\n"), r.err)
+        self.assertRegex(self.runs_log()[-1], r"\trun=.* pv=- node=20$")
+        wfile(os.path.join(self.bin, "node"), "#!/bin/sh\necho not-a-version\n")
+        r = self.run_runner(["/bin/sh", "-c", "exit 0"])
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
+        r = self.run_runner(["/bin/sh", "-c", "exit 0"], cls="BAD")         # refused before any slot
+        self.assertEqual(r.rc, 65, r.err)
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=refused .* node=-$")
+
+    def hung_node(self):
+        """A fake node that hangs with descendants: its own pid and two children's go to files."""
+        pids = [os.path.join(self.d, "node.%s" % n) for n in ("pid", "kid1", "kid2")]
+        wfile(os.path.join(self.bin, "node"), "#!/bin/sh\necho $$ > '%s'\nsleep 60 & echo $! > '%s'\n"
+              "sleep 60 & echo $! > '%s'\nwait\n" % tuple(pids))
+        return pids
+
+    def assert_all_gone(self, pidfiles):
+        pids = []
+        for f in pidfiles:
+            self.until(lambda: os.path.exists(f) and open(f).read().strip(), 5, f)
+            with open(f) as fh:
+                pids.append(int(fh.read()))
+
+        def gone():
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    return False
+                except ProcessLookupError:
+                    pass
+            return True
+        self.until(gone, 10, "the node probe and its descendants to be gone")
+
+    def test_a_hung_node_is_bounded_killed_and_the_job_still_runs(self):
+        """`node -v` runs while the slot is held, before supervision: past RR_NODE_V_S its whole group
+        (descendants too) is killed and reaped, node is unknown (`node=-`), and the job runs as usual."""
+        pids = self.hung_node()
+        t0 = time.monotonic()
+        r = self.run_runner(["/bin/sh", "-c", "echo ran"], env_extra={"RR_NODE_V_S": "1"})
+        self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
+        self.assertLess(time.monotonic() - t0, 30)
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
+        self.assert_all_gone(pids)
+
+    def test_a_signal_during_the_node_probe_leaves_nothing_behind(self):
+        pids = self.hung_node()
+
+        def term(p):
+            self.until(lambda: all(os.path.exists(f) for f in pids), 20, "the node probe")
+            p.send_signal(signal.SIGTERM)
+        r = self.run_runner(["/bin/sh", "-c", "echo ran"], env_extra={"RR_NODE_V_S": "120"}, action=term)
+        self.assertEqual(r.rc, 128 + signal.SIGTERM, r.err)
+        self.assertEqual(r.out, "")                                       # the job never started
+        self.assert_all_gone(pids)
+
+    def test_no_node_at_all_still_runs_and_logs_unknown(self):
+        os.unlink(os.path.join(self.bin, "node"))
+        if shutil.which("node", path=rdmods.safe_path()):
+            self.skipTest("a node on the system PATH")
+        r = self.run_runner(["/bin/sh", "-c", "echo ran"])
+        self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=-$")
 
     def test_norun_only_from_the_runners_signed_record_else_gone(self):
         # no record of the run at all (never here, or its spool was swept): it may have run -> GONE

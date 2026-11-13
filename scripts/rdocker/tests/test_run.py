@@ -513,7 +513,7 @@ class RunTest(RunBase):
         self.assertIn("ControlMaster=no", att[0])
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log")).splitlines()
         self.assertRegex(runs[-1], r"outcome=rc=6 .*\trun=[0-9a-f-]{36} owner=\S+ cls=normal "
-                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+$")
+                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=\S+$")
 
     def test_runner_header_carries_a_uuid4_run_id_and_the_180s_tolerance(self):
         class H:

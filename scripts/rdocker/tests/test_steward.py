@@ -2,6 +2,7 @@
 import importlib.util
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -131,6 +132,116 @@ class Prediction(unittest.TestCase):
         self.assertIn("hp:pred-drift", keys(res(pred=bad)))
         self.assertNotIn("hp:pred-drift", keys(res(pred=bad[:-1])))        # n below the minimum
         self.assertNotIn("hp:pred-drift", keys(res(pred=[(11.0, 10.0)] * 40)))   # 10 %: fine
+
+
+class NodeMajor(unittest.TestCase):
+    def test_a_different_major_names_the_worker_and_both_majors(self):
+        self.assertEqual(st.rules(res(node={25: 40}), LINUX, 25), [])
+        found = st.rules(res(node={24: 3, 25: 10}), LINUX, 25)
+        self.assertEqual([k for k, _ in found], ["hp:node-mismatch"])
+        self.assertIn("hp", found[0][1])
+        self.assertIn("node 24 x3", found[0][1])
+        self.assertIn("pool_node_major is 25", found[0][1])
+        self.assertNotIn("node 25", found[0][1])                           # the matching jobs are not listed
+
+    def test_no_pool_major_or_no_node_data_is_no_finding(self):
+        self.assertEqual(keys(res(node={24: 3})), [])                       # fleet declares no pool_node_major
+        self.assertEqual(st.rules(res(), LINUX, 25), [])                    # only old lines: no node= field
+
+    def test_pool_node_major_from_fleet(self):
+        self.assertEqual(st.pool_node_major({"pool_node_major": 25}), 25)
+        for bad in ({}, {"pool_node_major": "25"}, {"pool_node_major": True}, {"pool_node_major": 25.5}):
+            self.assertIsNone(st.pool_node_major(bad), bad)
+
+    def test_remote_counts_node_majors_and_ignores_old_and_unknown_lines(self):
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        r = answer([line(ts, "25"), line(ts, "25"), line(ts, "24"),
+                    line(ts, "-"),                                          # unknown: skipped
+                    line(ts, None),                                         # pre-2026-11-12 line: no field
+                    line("2000-01-01T00:00:00+0000", "22"),                 # older than 24 h
+                    line(ts, "1234")])                                      # not a node major
+        self.assertEqual(r["node"], {25: 2, 24: 1})
+
+    def test_argv_text_never_counts_as_a_field(self):
+        """A job's argv is free text: `sh -c 'echo node=24'` (and outcome= / pred_s= / cmd_s= in it)
+        must not become a NODE / OUT / PRED of its own."""
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        tricky = "sh -c echo node=24 outcome=busy pred_s=999 cmd_s=1 outcome=rc=0"
+        r = answer([line(ts, "25", argv=tricky, outcome="rc=0", cmd="10.0", pred="11"),
+                    line(ts, None, argv="sh -c echo node=24 outcome=busy")])
+        self.assertEqual(r["node"], {25: 1})
+        self.assertEqual(r["outcomes"], {"rc=0": 2})
+        self.assertEqual(r["pred"], [(11.0, 10.0)])
+
+
+def line(ts, node, argv="npm test", outcome="rc=0", cmd="1.0", pred="-"):
+    """One runs.log line in the runner's format (node None = a line from before node=)."""
+    tail = "\trun=- owner=- cls=- wait_s=0.0 exit_reason=pass setup=warm pred_s=%s client=- pv=-" % pred
+    return ("%s repo=a wt=b sha=c outcome=%s prepare_s=0.1 cmd_s=%s argv=%s" % (ts, outcome, cmd, argv)
+            + tail + ("" if node is None else " node=" + node))
+
+
+def answer(lines):
+    """Run the real REMOTE script against a temp HOME holding these runs.log lines -> probe()'s result."""
+    import subprocess
+    import tempfile
+    from unittest import mock
+    home = tempfile.mkdtemp(dir=rdmods.TEST_HOME)
+    os.makedirs(os.path.join(home, "rr", "log"))
+    with open(os.path.join(home, "rr", "log", "runs.log"), "w") as f:
+        f.write("".join(l + "\n" for l in lines))
+    out = subprocess.run(["sh", "-s"], input=st.REMOTE, capture_output=True, text=True,
+                         env=dict(os.environ, HOME=home), timeout=60).stdout
+    with mock.patch.object(st.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=out, stderr="")):
+        return st.probe({"name": "hp", "alias": "rd-hp"})
+
+
+class Malformed(unittest.TestCase):
+    def test_hostile_numbers_are_unknown_never_a_crash(self):
+        r = {"name": "hp", "outcomes": {}}
+        st.parse_answer(r, "\n".join([
+            "NOW " + "9" * 5000,                                            # int() would raise here
+            "DOCTOR " + "[" * 100000 + "]" * 100000,                        # RecursionError, not ValueError
+            "NODE " + "9" * 5000 + " 3", "NODE 25 " + "9" * 5000, "NODE 0x19 2", "NODE \u00b2 2",
+            "PRED 1e999 5", "PRED 5 " + "9" * 400, "PRED nan 5",
+            "OUT " + "9" * 5000 + " outcome=rc=0", "OUT 3 outcome=lost rc=" + "9" * 50,
+            "NODE 24 3", "PRED 12 10", "OUT 2 outcome=rc=1"]))
+        self.assertEqual(r["now"], 0)
+        self.assertIsNone(r["doctor"])
+        self.assertEqual(r["node"], {24: 3})
+        self.assertEqual(r["pred"], [(12.0, 10.0)])
+        self.assertEqual(r["outcomes"], {"rc=1": 2})
+        self.assertEqual(st.rules(dict(res(), **{k: r[k] for k in ("node", "pred", "outcomes")}), LINUX, 25)[0][0],
+                         "hp:node-mismatch")
+
+    def test_a_doctor_that_is_not_an_object_is_no_doctor(self):
+        r = {"name": "hp", "outcomes": {}}
+        st.parse_answer(r, "DOCTOR [1, 2]")
+        self.assertIsNone(r["doctor"])
+
+    def test_one_workers_failure_never_stops_the_others(self):
+        import json
+        import tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp(dir=rdmods.TEST_HOME)
+        fleet = os.path.join(d, "fleet.json")
+        json.dump({"pool_node_major": 25, "machines": [
+            {"name": "bad", "alias": "rd-bad", "roles": ["worker"]},
+            {"name": "hp", "alias": "rd-hp", "roles": ["worker"]}]}, open(fleet, "w"))
+        seen = []
+
+        def fake_probe(m):
+            seen.append(m["name"])
+            if m["name"] == "bad":
+                raise RuntimeError("boom")
+            return res(node={24: 2})
+        with mock.patch.multiple(st, FLEET=fleet, STATE=d, AGENT=False, probe=fake_probe,
+                                 self_rules=lambda: []):
+            st.main()
+        self.assertEqual(seen, ["bad", "hp"])
+        found = json.load(open(os.path.join(d, "state.json")))["findings"]
+        self.assertTrue(any("could not read bad" in f for f in found), found)
+        self.assertTrue(any(f.startswith("hp ran jobs on a different node major") for f in found), found)
 
 
 class Runbook(unittest.TestCase):
