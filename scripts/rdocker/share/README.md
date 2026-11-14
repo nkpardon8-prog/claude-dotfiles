@@ -86,6 +86,14 @@ the worker and both majors (its results are not shared by the pool cache). Rows 
 `node=-`, are ignored; no `pool_node_major` = no check.
 Every field is read from its own part of a runs.log line, never from the job's argv, and only bounded numbers
 count. A worker whose answer cannot be read is a `steward-error` finding; the other workers are still checked.
+Pool failing (2026-11-13): a job the pool failed now runs locally on the agent Mac (route.log
+`fallback-local`), so it would be silent. `pool-failing` fires for a machine whose last hour has 3 or more
+pool failures, or more than 20 % of at least 10 runs failed by the pool, and names the machine and the top
+reason. Two sources: this Mac's own `route.log` (+ `.1`): `fallback-local` lines (their `why=` field is the
+reason) and infra-class rcs (69 70 72 73 75 76 78 124 127 132); the other agent Macs have no ssh alias, so
+for them each worker's runs.log stands in: `lost rc=N`, `error`/`refused rc=69|70`, `rc=127`, `rc=132` count as
+pool failures, plus every infra outcome for the rate. On a worker it replaces the `infra` finding (one problem,
+one finding). Set `RD_STEWARD_SELF` to name this Mac in the finding (default: its host name).
 
     python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-steward.py --install     # user LaunchAgent, no sudo
     python3 .../rd-steward.py --once        # run now (RD_STEWARD_AGENT=0: report only)

@@ -58,9 +58,9 @@ class Rules(unittest.TestCase):
         self.assertNotIn("hp:drained", keys(r))
 
     def test_infra_rate_needs_both_rate_and_count(self):
-        self.assertEqual(keys(res(outcomes={"rc=0": 10, "lost rc=255": 3, "rc=124": 2})), ["hp:infra"])
-        self.assertEqual(keys(res(outcomes={"rc=0": 100, "lost rc=255": 5})), [])      # 5 % rate
-        self.assertEqual(keys(res(outcomes={"rc=0": 2, "lost rc=255": 3})), [])        # only 3 jobs
+        self.assertEqual(keys(res(outcomes={"rc=0": 30, "lost rc=255": 2, "rc=124": 2})), ["hp:infra"])
+        self.assertEqual(keys(res(outcomes={"rc=0": 100, "rc=124": 5})), [])           # 5 % rate
+        self.assertEqual(keys(res(outcomes={"rc=0": 2, "rc=124": 3})), [])             # only 3 infra
 
     def test_remote_outcome_tokens_keep_the_rc(self):
         import subprocess
@@ -80,7 +80,8 @@ class Rules(unittest.TestCase):
         runners wrote for them) are not worker faults; a started run lost for good is."""
         quiet = {"rc=0": 5, "abandoned-setup": 20, "moved": 10, "warm": 5, "lost": 20, "interrupted": 3}
         self.assertEqual(keys(res(outcomes=quiet)), [])
-        self.assertEqual(keys(res(outcomes=dict(quiet, **{"lost rc=255": 4, "timeout rc=124": 2}))), ["hp:infra"])
+        self.assertEqual(keys(res(outcomes=dict(quiet, **{"lost rc=255": 4, "timeout rc=124": 2}))), ["hp:pool-failing"])
+        self.assertEqual(keys(res(outcomes=dict(quiet, **{"rc=0": 30, "rc=137": 4, "timeout rc=124": 2}))), ["hp:infra"])
         for o in ("lost rc=255", "deps-failed", "timeout rc=124", "rc=134", "error rc=70"):
             self.assertTrue(st.INFRA.match(o), o)
         for o in ("lost", "abandoned-setup", "moved", "warm", "rc=1", "interrupted rc=130"):
@@ -88,6 +89,93 @@ class Rules(unittest.TestCase):
 
     def test_interrupted_and_test_failures_are_not_infra(self):
         self.assertEqual(keys(res(outcomes={"rc=0": 5, "rc=1": 30, "interrupted": 20})), [])
+
+
+class PoolFailing(unittest.TestCase):
+    """Owner (2026-11-13): "the worst thing is shit failing in the background and no one getting work
+    done". A job the pool failed now runs locally (route.log `fallback-local`), so it is silent unless
+    the steward counts it: >= 3 in the last hour, or > 20 % of >= 10 runs failed by the pool."""
+
+    def test_worker_runs_log_pool_failures_name_the_top_reason(self):
+        r = res(outcomes={"rc=0": 40, "lost rc=255": 2, "error rc=70": 1})
+        found = dict(st.rules(r, LINUX))
+        self.assertIn("hp:pool-failing", found)
+        self.assertIn("hp pool failing (runs.log", found["hp:pool-failing"])
+        self.assertIn("top reason: lost rc=255 x2", found["hp:pool-failing"])
+        self.assertNotIn("hp:infra", found)              # one finding for one problem
+        for o in ("lost rc=255", "error rc=69", "refused rc=69", "error rc=70", "rc=127", "rc=132"):
+            self.assertTrue(st.POOL_FAIL.match(o), o)
+        for o in ("lost", "rc=1", "refused rc=65", "error rc=71", "timeout rc=124", "abandoned-setup", "rc=1270"):
+            self.assertFalse(st.POOL_FAIL.match(o), o)
+
+    def test_worker_two_failures_are_quiet_but_a_high_rate_is_not(self):
+        self.assertEqual(keys(res(outcomes={"rc=0": 40, "rc=127": 2})), [])
+        # 3 of 12 = 25 % > 20 % over >= 10 runs (busy is infra, not a POOL_FAIL): fires on the rate alone
+        self.assertEqual(keys(res(outcomes={"rc=0": 9, "busy": 2, "rc=132": 1})), ["hp:pool-failing"])
+        # the same 25 % over only 8 runs: too few (and below the older infra rule's count)
+        self.assertEqual(keys(res(outcomes={"rc=0": 6, "busy": 1, "rc=132": 1})), [])
+        # left-before-start labels are not runs: they never dilute or inflate the rate
+        self.assertEqual(keys(res(outcomes={"rc=0": 9, "busy": 2, "rc=132": 1, "abandoned-setup": 50})),
+                         ["hp:pool-failing"])
+
+    def route_line(self, ts, target, rc, extra=""):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+        return f"{stamp} {target:<5} rrun     npx vitest run rc={rc} 3.1s | /w/repo" + (f"\t{extra}" if extra else "")
+
+    def test_route_log_counts_fallbacks_and_infra_in_the_last_hour(self):
+        now = time.time()
+        lines = [self.route_line(now - 7200, "fallback-local", "exec", "why=old"),   # > 1 h ago: out
+                 self.route_line(now - 60, "hp", "0", "lock_s=0.0"),
+                 self.route_line(now - 50, "fallback-local", "exec", "lock_s=0.0 why=every_worker_unreachable"),
+                 self.route_line(now - 40, "fallback-local", "exec", "why=every_worker_unreachable"),
+                 self.route_line(now - 30, "fallback-local", "exec", "why=lost_hp_mid-run"),
+                 self.route_line(now - 20, "none", "73"),
+                 self.route_line(now - 10, "local", "exec"),
+                 "2026-11-13 10:00:00 laptop rrun-hook something else",
+                 "garbage"]
+        s = st.route_stats(lines, now - 3600)
+        self.assertEqual((s["runs"], s["fallback"], s["infra"]), (6, 3, 1))
+        self.assertEqual(st.top_reason(s["reasons"]), "every worker unreachable x2")
+
+    def test_route_rule_fires_on_three_fallbacks_and_names_this_mac(self):
+        import tempfile
+        from unittest import mock
+        home = tempfile.mkdtemp(dir=rdmods.TEST_HOME)
+        d = os.path.join(home, ".local", "state", "rdocker")
+        os.makedirs(d)
+        now = time.time()
+        ok = [self.route_line(now - 100 + i, "hp", "0") for i in range(20)]
+        two = [self.route_line(now - 50 + i, "fallback-local", "exec", "why=w2_unreachable") for i in range(2)]
+        paths = [os.path.join(d, "route.log.1"), os.path.join(d, "route.log")]
+        with mock.patch.object(st, "route_log_paths", lambda: paths), mock.patch.object(st, "self_name", lambda: "nick"):
+            open(os.path.join(d, "route.log.1"), "w").write("\n".join(ok) + "\n")
+            open(os.path.join(d, "route.log"), "w").write("\n".join(two) + "\n")
+            s, found = st.route_rules(now)
+            self.assertEqual((s["runs"], found), (22, []))                    # 2 of 22: quiet
+            with open(os.path.join(d, "route.log"), "a") as f:
+                f.write(self.route_line(now - 1, "fallback-local", "exec") + "\n")
+            _, found = st.route_rules(now)
+        self.assertEqual([k for k, _ in found], ["nick:pool-failing"])
+        self.assertIn("nick pool failing (route.log, last hour): 3 fallback(s) to local", found[0][1])
+        self.assertIn("top reason: w2 unreachable x2", found[0][1])
+
+    def test_route_log_is_this_macs_rdocker_state(self):
+        self.assertEqual([os.path.basename(p) for p in st.route_log_paths()], ["route.log.1", "route.log"])
+        self.assertTrue(all(p.startswith(rdmods.TEST_HOME) for p in st.route_log_paths()))  # RDOCKER_HOME, as rd_common
+
+    def test_route_rule_infra_rate_and_no_route_log(self):
+        import tempfile
+        from unittest import mock
+        home = tempfile.mkdtemp(dir=rdmods.TEST_HOME)
+        with mock.patch.object(st, "route_log_paths", lambda: [os.path.join(home, "route.log")]):
+            self.assertEqual(st.route_rules(), ({"runs": 0, "fallback": 0, "infra": 0, "reasons": {}}, []))
+        now = time.time()
+        lines = [self.route_line(now - 10, "hp", "0")] * 7 + [self.route_line(now - 10, "none", "75")] * 3
+        s = st.route_stats(lines, now - 3600)
+        f = st.pool_failing("nick", s["fallback"], s["fallback"] + s["infra"], s["runs"],
+                            st.top_reason(s["reasons"]), "route.log")
+        self.assertIsNotNone(f)                                               # 3/10 = 30 %
+        self.assertIn("top reason: rc=75 never ran (no worker) x3", f[1])
 
 
 class Cooldown(unittest.TestCase):

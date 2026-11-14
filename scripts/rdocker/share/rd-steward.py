@@ -6,6 +6,7 @@ updates it):  python3 rd-steward.py --install    |  --uninstall  |  --once (run 
 
 Every run (default every 30 min):
   1. collect, per enabled worker: reachability, rd-doctor status, last-hour job outcomes (runs.log);
+     and this Mac's own route.log (its rrun results: `fallback-local` = the pool failed, ran here);
   2. apply fixed rules -> a list of findings (empty = healthy);
   3. write a report + state under ~/.local/state/rd-steward/;
   4. only when there are findings whose signature has not been handed off within COOLDOWN_S, start a
@@ -39,6 +40,19 @@ SSH_TIMEOUT = 20
 INFRA = re.compile(r"^(lost rc=\d+|busy|deps-failed|(error|refused) rc=\d+|(timeout )?rc=(124|134|137)|rc=(72|73|75|76|77))$")
 # the client left before the command started (or a background prepare): not a run, so not in the rate
 NOT_A_RUN = re.compile(r"^(abandoned-setup|moved|warm|lost|interrupted)$")
+# The outcomes that push a job off the pool (rd_run host_loop "fallback": a started run lost, the
+# runner failing or the repo missing (69 / 70), a tool missing on the worker (127), SIGILL (132)).
+# They are what a worker's runs.log shows of the fallbacks the agent Macs' route.logs record.
+POOL_FAIL = re.compile(r"^(lost rc=\d+|(error|refused) rc=(69|70)|rc=(127|132))$")
+# route.log rc of an infra-class result (rd_run EXIT_CODES "infra"); `exec` = ran here (no rc)
+ROUTE_INFRA_RC = {"69", "70", "72", "73", "75", "76", "78", "124", "127", "132"}
+ROUTE_RC_WHY = {"69": "repo missing on the worker", "70": "the worker's runner failed", "72": "worktree busy",
+                "73": "every worker busy", "75": "never ran (no worker)", "76": "result lost after the start",
+                "78": "deps install failed", "124": "hit its time cap", "127": "command not found on the worker",
+                "132": "SIGILL on the worker"}
+# route.log rrun line (rd_run.record): "<date> <time> <target> rrun <argv> rc=<rc> <secs>s | <cwd>[\t<k=v ...>]"
+ROUTE_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) +(\S+) +rrun +.* rc=(\S*) [0-9.]+s \| [^\t]*(?:\t(.*))?$")
+ROUTE_TAIL_BYTES = 4 << 20       # route.log grows ~2 MB/day: the last hour is well inside this
 THRESH = {
     "doctor_stale_s": 300,      # rd-doctor writes every 30 s
     "infra_rate": 0.10,         # > 10 % of last-hour jobs failed for infra reasons ...
@@ -46,6 +60,9 @@ THRESH = {
     "disk_free_pct": 10,
     "mem_free_pct": 8,
     "drained_s": 15 * 60,
+    "pool_fail_min": 3,         # pool-failing: >= this many fallbacks (route.log) / POOL_FAIL runs in 1 h ...
+    "pool_rate": 0.20,          # ... or more than 20 % of the last hour's runs failed by the pool ...
+    "pool_rate_runs": 10,       # ... over at least this many runs
 }
 
 REMOTE = r"""
@@ -209,10 +226,94 @@ def rules(r, m, pool_node=None):
                                           "shared - fix the worker's node or bump pool_node_major"))
     total = sum(c for o, c in r["outcomes"].items() if not NOT_A_RUN.match(o))
     infra = sum(c for o, c in r["outcomes"].items() if INFRA.match(o))
-    if total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
+    bad = {o: c for o, c in r["outcomes"].items() if POOL_FAIL.match(o) or INFRA.match(o)}
+    pf = pool_failing(n, sum(c for o, c in bad.items() if POOL_FAIL.match(o)), sum(bad.values()), total,
+                      top_reason(bad), "runs.log")
+    if pf:
+        out.append(pf)          # the stronger statement of the same problem: no second `infra` finding
+    elif total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
         kinds = ", ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items()) if INFRA.match(o))
         out.append((f"{n}:infra", f"{n} {infra}/{total} jobs in the last hour failed for infra reasons ({kinds})"))
     return out
+
+
+def top_reason(counts):
+    """{reason: count} -> "reason xN" of the most common one (ties: alphabetical), or ""."""
+    if not counts:
+        return ""
+    o, c = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+    return f"{o} x{c}"
+
+
+def pool_failing(name, fails, bad, runs, top, src):
+    """The pool-failing rule, one machine's last hour -> (key, text) or None. fails = fallbacks
+    (route.log) or POOL_FAIL runs (runs.log); bad = every pool-caused failure (fails + infra results);
+    runs = the runs they are out of."""
+    rate = bad / runs if runs else 0.0
+    if fails < THRESH["pool_fail_min"] and not (runs >= THRESH["pool_rate_runs"] and rate > THRESH["pool_rate"]):
+        return None
+    what = "fallback(s) to local" if src == "route.log" else "pool failure(s)"
+    return (f"{name}:pool-failing", f"{name} pool failing ({src}, last hour): {fails} {what}, {bad}/{runs} runs "
+                                    f"({rate * 100:.0f}%) failed by the pool; top reason: {top or '-'}")
+
+
+def route_log_paths():
+    """This Mac's route.log (+ its one rotated generation), oldest first. RDOCKER_HOME as rd_common."""
+    state = os.path.join(os.path.abspath(os.path.expanduser(os.environ.get("RDOCKER_HOME") or "~")),
+                         ".local", "state", "rdocker")
+    return [os.path.join(state, "route.log.1"), os.path.join(state, "route.log")]
+
+
+def read_tail(path, limit=ROUTE_TAIL_BYTES):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            return f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+
+
+def route_stats(lines, since):
+    """route.log lines -> the last hour's rrun results: {runs, fallback, infra, reasons} (reasons: the
+    fallbacks' `why=` and the infra rcs' meaning, with counts). Lines before `since` (local time, like
+    route.log's own stamps) and lines that are not rrun results are skipped."""
+    cut = dt.datetime.fromtimestamp(since).strftime("%Y-%m-%d %H:%M:%S")
+    s = {"runs": 0, "fallback": 0, "infra": 0, "reasons": {}}
+    for line in lines:
+        m = ROUTE_LINE.match(line)
+        if not m or m.group(1) < cut:
+            continue
+        target, rc, extra = m.group(2), m.group(3), m.group(4) or ""
+        s["runs"] += 1
+        if target == "fallback-local":
+            s["fallback"] += 1
+            why = next((f[4:] for f in extra.split(" ") if f.startswith("why=")), "")
+            why = why.replace("_", " ")[:80] or "pool unavailable (no reason logged)"
+            s["reasons"][why] = s["reasons"].get(why, 0) + 1
+        elif rc in ROUTE_INFRA_RC:
+            s["infra"] += 1
+            why = f"rc={rc} {ROUTE_RC_WHY[rc]}"
+            s["reasons"][why] = s["reasons"].get(why, 0) + 1
+    return s
+
+
+def self_name():
+    return os.environ.get("RD_STEWARD_SELF") or (os.uname().nodename.split(".")[0] or "this Mac")
+
+
+def route_rules(now=None):
+    """This Mac's own route.log (the steward runs on an agent Mac): -> (stats, findings). The other
+    agent Macs (fleet.json, no ssh alias) are not reachable: their fallbacks show on the workers'
+    runs.log as POOL_FAIL outcomes (rules())."""
+    now = now or time.time()
+    lines = []
+    for p in route_log_paths():
+        lines += read_tail(p)
+    s = route_stats(lines, now - 3600)
+    f = pool_failing(self_name(), s["fallback"], s["fallback"] + s["infra"], s["runs"], top_reason(s["reasons"]),
+                     "route.log")
+    return s, [f] if f else []
 
 
 def pool_node_major(fleet):
@@ -303,6 +404,11 @@ def main():
             found = [(f"{r['name']}:steward-error", f"rd-steward could not read {r['name']}'s answer ({r['err']})")]
         results.append(r)
         findings += found
+    try:
+        route, found = route_rules()
+    except Exception as e:  # a garbled route.log must not stop the report
+        route, found = None, [("self:steward-error", f"rd-steward could not read this Mac's route.log ({e!r:.200})")]
+    findings += found
     findings += self_rules()
     sig = hashlib.sha256("\n".join(sorted(k for k, _ in findings)).encode()).hexdigest()[:12]
     state_p = os.path.join(STATE, "state.json")
@@ -318,6 +424,9 @@ def main():
                      f" doctor={'-' if not d else ('drained' if d.get('drained') else 'ok')}"
                      f" disk={d.get('disk_free_pct', '?')}% mem={d.get('mem_free_pct', '?')}% | 1h: {oc}"
                      + (lambda e: f" | pred err 24h: {e[0]:.0f}% (n={e[1]})" if e else "")(pred_error(r.get("pred"))))
+    if route is not None:
+        lines.append(f"- **{self_name()}** (this Mac, route.log) 1h: {route['runs']} rrun, "
+                     f"{route['fallback']} fallback-local, {route['infra']} infra")
     lines += ["", "## Findings", ""] + ([f"- {t}" for _, t in findings] or ["- none: pool healthy"])
     report = os.path.join(STATE, "reports", dt.datetime.now().strftime("%Y-%m-%d-%H%M") + ".md")
     action = "healthy"

@@ -1639,8 +1639,16 @@ def fallback(argv, env_pairs, why, t0, job=None, pool=False, pool_down=False):
     busy = own_worktree(argv, t0)    # it writes into the worktree: it runs alone (or 72, logged as such)
     if busy is not None:
         return busy
+    if pool_down:                    # the reason, one token: the steward names the top one
+        ROUTE_EXTRA["why"] = route_why(why)
     record("fallback-local" if pool_down else "local", argv, "exec", time.monotonic() - t0)
     return run_local(argv, env_pairs, why, pool_down=pool_down)
+
+
+def route_why(why):
+    """A fallback's reason as one route.log field value (whitespace -> `_`, at most 80 chars): the
+    line's fields are space-separated `key=value`, so the reason must hold neither a space nor a tab."""
+    return re.sub(r"\s+", "_", str(why).strip())[:80] or "-"
 
 
 def parse_env(pairs, environ=None):

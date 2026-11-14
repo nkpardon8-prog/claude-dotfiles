@@ -383,6 +383,7 @@ class RunTest(RunBase):
                                    r"within 0 s\), ran LOCALLY on this Mac\n$")
         route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
         self.assertRegex(route.splitlines()[-1], r"^\S+ \S+ fallback-local rrun .* rc=exec ")
+        self.assertRegex(route.splitlines()[-1], r"\twhy=Mac_mini_unreachable_\S*$|\t.* why=Mac_mini_unreachable_\S*")
         self.assertEqual(len([ln for ln in route.splitlines() if " rrun " in ln]), 1, route)   # one line, not two
         r = self.rrun("/bin/sh", "-c", "echo ran", FAKE_SSH_DOWN="1", RRUN_STRICT="1",
                       RRUN_RECONNECT_WAIT="0")

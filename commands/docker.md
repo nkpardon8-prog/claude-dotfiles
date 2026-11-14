@@ -563,7 +563,9 @@ and runs a scenario that emits each one):
 the reconnect wait), a run that is safe to repeat lost mid-run twice (or once, when no other worker is
 left to rerun it on), a worker's runner failing (69 / 70) twice, or once when no other worker is left, or
 a SIGILL with no other CPU tier left: rrun runs the command here instead of ending infra, with ONE loud line before its output, `rrun: pool unavailable (<reason>), ran LOCALLY on this
-Mac`, and route.log target `fallback-local` (the steward and the dashboard count it; it should be rare).
+Mac`, and route.log target `fallback-local` with `why=<reason>` (the steward's `pool-failing` finding and the dashboard's
+`pool-failing:<worker>` alert count these plus worker-side lost / 69 / 70 / 127 / 132 outcomes: 3+ in an hour or
+>20% of 10+ runs; it should be rare).
 The exit code is then the command's own (`pass` / `fail`, judged like any local run). It never happens for
 a busy pool (that queues: 73), a `fail` result, a needs-human code, `RRUN_STRICT=1` (fail-closed, as
 dentall's safe-push wants) or a job that must not run on an agent machine: heavy (tsc) and DB jobs,
