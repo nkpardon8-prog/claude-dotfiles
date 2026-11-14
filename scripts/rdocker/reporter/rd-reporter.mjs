@@ -7,7 +7,8 @@
 //     "role": "home + worker",            // optional label shown on the dashboard
 //     "pingPeers": true,                   // optional: tailscale ping online peers while viewed
 //     "speed": 1.0,                        // optional: else fleet.json `speed` for this name, else 1
-//     "rrRoot": "~/rr",                    // optional: rrun server root (slots, runs.log)
+//     "rrRoot": "~/rr",                    // optional: rrun server root (slots, wait, runs.log)
+//     "routeLog": "~/.local/state/rdocker/route.log", // optional (agent hosts): the rrun client's route.log
 //     "notify": true }                     // optional: show fleet alerts on this machine (agent Macs)
 // Protocol (dashboard/shared/protocol.ts is the typed source of truth):
 //   -> {t:'hello', v:1, name, ts, nonce, sig[, notify:true]}  sig = hex HMAC-SHA256(key, "rd-ingest-v1|name|ts|nonce")
@@ -24,8 +25,12 @@
 // rrun: running jobs from <rrRoot>/slots/*.who (+ each job's cap, timeoutS, from <i>.own), finished
 //   runs from <rrRoot>/log/runs.log. Linux: deadSlots = slots whose lock is still held (/proc/locks)
 //   while the runner named in <i>.who is dead (readSlots; not measured on macOS).
+//   queued / waitS: the runner's waiter list <rrRoot>/wait/<pid> (live pids; every OS), their mean age.
 // Pool health (about once a minute): rd-doctor's status file (/run/rdocker/doctor, macOS <rrRoot>/state/
-//   doctor.json, or "doctorFile" in the config), last-hour runs.log outcomes, 24 h prediction error.
+//   doctor.json, or "doctorFile" in the config), last-hour runs.log outcomes and submit-to-start wait
+//   p50/p90 and worktree setup, 24 h job count, slot-wait total and prediction error.
+// Agent hosts: route (24 h rruns by placement: pool, cache, local, fallback-local) from the client's
+//   route.log (~/.local/state/rdocker/route.log, or "routeLog" in the config).
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
@@ -36,7 +41,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.1.0'; // 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.2.0'; // 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -332,8 +337,9 @@ export function parseLogTime(s) {
 
 /**
  * rr runs.log lines -> runs (format: rr_runner.pl run_log). The v2 tail after the TAB (run= owner= cls=
- * wait_s= exit_reason= setup= pred_s= client= pv= node=) is cut off argv; its pred_s comes back as `predS`
- * (only on lines that have the tail; Collector.newRuns drops it before a frame).
+ * wait_s= exit_reason= setup= pred_s= client= pv= node= lock_s= slot_s=) is cut off argv; on lines that
+ * have the tail its pred_s, wait_s, slot_s and setup come back as `predS`, `waitS`, `slotS`, `setup` (pool
+ * health only: Collector.newRuns keeps just the RUN_KEYS fields in a frame).
  */
 export function parseRunsLog(text) {
   const out = [];
@@ -344,10 +350,93 @@ export function parseRunsLog(text) {
     if (!m) continue;
     const tab = m[6].indexOf('\t');
     const run = { ts: parseLogTime(m[1]), repo: m[2], outcome: m[3], prepS: n(m[4]), cmdS: n(m[5]), argv: (tab < 0 ? m[6] : m[6].slice(0, tab)).slice(0, 160) };
-    if (tab >= 0) run.predS = n(/(?:^|\s)pred_s=(\S+)/.exec(m[6].slice(tab + 1))?.[1]);
+    if (tab >= 0) {
+      const tail = m[6].slice(tab + 1);
+      const f = (k) => new RegExp(`(?:^|\\s)${k}=(\\S+)`).exec(tail)?.[1];
+      run.predS = n(f('pred_s'));
+      run.waitS = n(f('wait_s'));
+      run.slotS = n(f('slot_s'));
+      const setup = f('setup');
+      run.setup = setup === 'warm' || setup === 'clone' || setup === 'cold' ? setup : null;
+    }
     out.push(run);
   }
   return out;
+}
+/** The fields of a run that go into a frame (shared/protocol.ts Run). */
+const RUN_KEYS = ['ts', 'repo', 'outcome', 'prepS', 'cmdS', 'argv'];
+const frameRun = (r) => Object.fromEntries(RUN_KEYS.map((k) => [k, r[k]]));
+
+// ---------------------------------------------------------------------------- client routes (agent hosts)
+/**
+ * The client's route.log (rd_run.py record: ONE line per rrun, its final placement) -> rrun entries:
+ * "<YYYY-MM-DD HH:MM:SS local> <target> rrun <argv> rc=<rc> <s>s | <cwd>[TAB stages]". target = a worker
+ * name, `cache` / `pcache` (a result-cache hit: nothing ran), `local` (run here by design),
+ * `fallback-local` (the pool failed or was unreachable: the job ran on this Mac), `none`.
+ */
+export function parseRouteLog(text) {
+  const out = [];
+  const re = /^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) (\S+)\s+rrun\s/;
+  for (const line of text.split('\n')) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const ts = new Date(`${m[1]}T${m[2]}`).getTime(); // this machine's local time, as rd_run.py writes it
+    if (Number.isFinite(ts)) out.push({ ts, target: m[3] });
+  }
+  return out;
+}
+
+/** route.log entries -> RouteStats: the last 24 h's rruns by where they went (shared/protocol.ts). */
+export function routeStats(entries, now) {
+  const day = { rrun: 0, pool: 0, cache: 0, local: 0, fallback: 0 };
+  for (const e of entries) {
+    if (e.ts <= now - DAY_MS || e.ts > now + 60_000) continue;
+    day.rrun++;
+    if (e.target === 'cache' || e.target === 'pcache') day.cache++;
+    else if (e.target === 'local') day.local++;
+    else if (e.target === 'fallback-local') day.fallback++;
+    else if (e.target !== 'none') day.pool++;
+  }
+  return { at: now, day };
+}
+
+// ---------------------------------------------------------------------------- slot queue
+/**
+ * The runner's waiter list: rr_runner.pl join_waiters writes <rrRoot>/wait/<pid> ("<epoch>") while a
+ * run waits for a slot and leave_waiters removes it at the slot (the same list rd_pool's probe counts
+ * as `waiting`). A file whose pid is gone is a leftover, not a waiter (the probe's rule: kill 0, EPERM
+ * counts as alive). -> {queued, waitS: their mean age in s, null when none has a readable time}.
+ * Every platform; read-only (the runner prunes leftovers itself).
+ */
+export function waitQueue(dir, nowMs, alive = pidAlive) {
+  let names = [];
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink()) return { queued: 0, waitS: null };
+    names = fs.readdirSync(dir);
+  } catch {
+    return { queued: 0, waitS: null };
+  }
+  let queued = 0;
+  let ageSum = 0;
+  let aged = 0;
+  for (const f of names) {
+    if (!/^\d+$/.test(f) || !alive(Number(f))) continue;
+    queued++;
+    const t = Number(/^(\d+(?:\.\d+)?)/.exec(readBounded(path.join(dir, f), 64) ?? '')?.[1]);
+    if (Number.isFinite(t) && t > 0) {
+      ageSum += Math.max(0, nowMs / 1000 - t);
+      aged++;
+    }
+  }
+  return { queued, waitS: aged ? Math.round(ageSum / aged) : null };
+}
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === 'EPERM';
+  }
 }
 
 // ---------------------------------------------------------------------------- pool health
@@ -417,18 +506,41 @@ export function parseDoctor(text) {
   };
 }
 
-/** runs (parseRunsLog) + doctor -> PoolHealth at `now`. */
+/**
+ * runs (parseRunsLog) + doctor -> PoolHealth at `now`. Besides the outcome counts and the prediction
+ * error (1.0): wait1h = p50 / p90 of wait_s (submit to start: the client's worktree-lane and other-worker
+ * waits + this runner's slot wait) over the last hour's runs whose command started; setup1h = how those
+ * jobs found their worktree (warm = reused mirror); day = the last 24 h's jobs (ok + fail + infra) and
+ * the seconds runs spent waiting for a slot here (slot_s, else wait_s on rows before it existed). The
+ * three are null without a v2 tail in the window (an old runner).
+ */
 export function poolHealth(runs, doctor, now) {
   const counts = new Map();
   const cls1h = { ok: 0, fail: 0, infra: 0, left: 0, warm: 0 };
   const errs = [];
+  const waits = [];
+  const setup1h = { warm: 0, clone: 0, cold: 0 };
+  let setupN = 0;
+  let dayJobs = 0;
+  let daySlotS = 0;
+  let tails = 0;
   for (const r of runs) {
-    if (!r.ts || r.ts > now + 60_000) continue;
+    if (!r.ts || r.ts > now + 60_000 || r.ts <= now - DAY_MS) continue;
+    const cls = outcomeClass(r.outcome);
+    const job = cls === 'ok' || cls === 'fail' || cls === 'infra';
     if (r.ts > now - HOUR_MS) {
       counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1);
-      cls1h[outcomeClass(r.outcome)]++; // complete totals: the label list below is truncated
+      cls1h[cls]++; // complete totals: the label list below is truncated
+      if (r.cmdS !== null && r.waitS != null) waits.push(r.waitS);
+      if (job && r.setup) {
+        setup1h[r.setup]++;
+        setupN++;
+      }
     }
-    if (r.ts > now - DAY_MS && (r.outcome === 'rc=0' || r.outcome === 'rc=1') && r.cmdS !== null && r.cmdS >= 2 && r.predS != null && r.predS >= 0) {
+    if ('waitS' in r) tails++;
+    if (job) dayJobs++;
+    if (cls !== 'warm') daySlotS += r.slotS ?? r.waitS ?? 0;
+    if ((r.outcome === 'rc=0' || r.outcome === 'rc=1') && r.cmdS !== null && r.cmdS >= 2 && r.predS != null && r.predS >= 0) {
       errs.push(Math.abs(r.predS - r.cmdS) / r.cmdS);
     }
   }
@@ -436,7 +548,23 @@ export function poolHealth(runs, doctor, now) {
   const out1h = Object.fromEntries(sorted.slice(0, OUTCOMES_MAX));
   const rest = sorted.slice(OUTCOMES_MAX).reduce((a, [, c]) => a + c, 0);
   if (rest) out1h.other = (out1h.other ?? 0) + rest;
-  return { at: now, doctor, out1h, cls1h, pred: errs.length ? { err: Math.round(median(errs) * 1000) / 1000, n: errs.length } : null };
+  const r1 = (x) => Math.round(x * 10) / 10;
+  return {
+    at: now,
+    doctor,
+    out1h,
+    cls1h,
+    pred: errs.length ? { err: Math.round(median(errs) * 1000) / 1000, n: errs.length } : null,
+    wait1h: waits.length ? { p50: r1(quantile(waits, 0.5)), p90: r1(quantile(waits, 0.9)), n: waits.length } : null,
+    setup1h: setupN ? setup1h : null,
+    day: tails ? { jobs: dayJobs, slotS: Math.round(daySlotS) } : null,
+  };
+}
+
+/** Nearest-rank quantile (q in 0..1) of a non-empty list. */
+export function quantile(xs, q) {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
 }
 
 function median(xs) {
@@ -687,7 +815,8 @@ export function validateConfig(c) {
 export const NOTIFY_EVERY_MS = 3600_000;
 export const NOTIFY_SUMMARY_OVER = 3;
 
-const clock = (ms) => new Date(ms).toTimeString().slice(0, 8);
+/** "3:18 PM": 12-hour local time, like the dashboard (this machine's zone is its user's). */
+const clock = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 const minutes = (ms) => `${Math.max(1, Math.round(ms / 60_000))} min`;
 
 /**
@@ -876,32 +1005,6 @@ function jobCommand(pid) {
   return null;
 }
 
-/** Linux: rr_runner processes that hold no slot = queued; their mean age = wait. */
-function runnerQueue(busyPids, uptimeS) {
-  let queued = 0;
-  let ageSum = 0;
-  let dirs = [];
-  try {
-    dirs = fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d));
-  } catch {
-    return { queued: 0, waitS: null };
-  }
-  const hz = 100; // USER_HZ is 100 on every mainstream Linux
-  for (const d of dirs) {
-    const argv = procArgv(d);
-    if (!argv.some((a) => a.endsWith('rr_runner.pl') || a.endsWith('rr_runner'))) continue;
-    if (busyPids.has(Number(d))) continue;
-    // A runner whose parent is also a runner is a forked helper, not a job.
-    const stat = read(`/proc/${d}/stat`) ?? '';
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    const ppid = Number(fields[1]);
-    if (procArgv(ppid).some((a) => a.endsWith('rr_runner.pl'))) continue;
-    queued++;
-    ageSum += Math.max(0, uptimeS - Number(fields[19]) / hz);
-  }
-  return { queued, waitS: queued ? Math.round(ageSum / queued) : null };
-}
-
 export class Collector {
   constructor(cfg, platform = process.platform) {
     this.cfg = cfg;
@@ -917,6 +1020,9 @@ export class Collector {
     // rd-doctor's status file (written by root on Linux, by the user's launchd job on macOS)
     this.doctorFile = expandHome(cfg.doctorFile ?? process.env.RD_DOCTOR_STATUS ?? (this.linux ? '/run/rdocker/doctor' : path.join(this.rrRoot, 'state', 'doctor.json')));
     this.healthC = cached(async () => this.health(), HEALTH_EVERY_MS - 1000);
+    // agent hosts: where their rruns went (route.log), recomputed about once a minute
+    this.routeLog = expandHome(cfg.routeLog ?? '~/.local/state/rdocker/route.log');
+    this.routeC = cached(async () => this.route(), HEALTH_EVERY_MS - 1000);
     this.healthSent = null;
     this.peers = [];
     this.selfIps = [];
@@ -1047,7 +1153,7 @@ export class Collector {
       fs.readSync(fd, buf, 0, buf.length, start);
       let text = buf.toString('utf8');
       if (start > 0 && first) text = text.slice(text.indexOf('\n') + 1);
-      const runs = parseRunsLog(text).map(({ predS: _p, ...r }) => r);
+      const runs = parseRunsLog(text).map(frameRun);
       return first ? runs.slice(-15) : runs.slice(-50);
     } finally {
       fs.closeSync(fd);
@@ -1066,6 +1172,18 @@ export class Collector {
       if (older) runs = [...parseRunsLog(older), ...runs];
     }
     return poolHealth(runs, doctor, now);
+  }
+
+  /** RouteStats now, or null without a route.log (not an rrun client). */
+  route(now = Date.now()) {
+    const text = readTail(this.routeLog, HEALTH_READ_MAX);
+    if (text === null) return null;
+    let entries = parseRouteLog(text);
+    if (!entries.length || entries[0].ts > now - DAY_MS) {
+      const older = readTail(`${this.routeLog}.1`, HEALTH_READ_MAX - text.length);
+      if (older) entries = [...parseRouteLog(older), ...entries];
+    }
+    return routeStats(entries, now);
   }
 
   async frame({ withInfo = false, fast = false } = {}) {
@@ -1116,7 +1234,8 @@ export class Collector {
 
     const leaks = this.agentHost ? scanLeaks(await sh('ps', ['-eo', 'pid=,time=,args='], 3000), this.leakState, now) : [];
     const { jobs, deadSlots } = this.slots();
-    const q = this.linux ? runnerQueue(new Set(jobs.map((j) => j.pid).filter(Boolean)), uptime) : { queued: 0, waitS: null };
+    const q = waitQueue(path.join(this.rrRoot, 'wait'), now);
+    const route = this.agentHost ? await this.routeC() : null;
     const hist = this.hist;
     this.hist = [];
     const frame = {
@@ -1140,6 +1259,7 @@ export class Collector {
       hostMem: await this.hostMem(),
       pressure,
       ...(leaks.length ? { leaks } : {}),
+      ...(route ? { route } : {}), // agent hosts with a route.log; small, so every frame
       ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)
     };
     if (withInfo) frame.info = this.info();

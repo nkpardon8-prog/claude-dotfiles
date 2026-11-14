@@ -171,3 +171,111 @@ test('readBounded / readTail: regular files only, never through a symlink, never
   assert.equal(c.health(NOW), null);
   fs.rmSync(dir, { recursive: true });
 });
+
+// ---- slot queue, wait / setup / 24 h stats, client routes (1.2.0) -----------------------------
+
+/** A v2 line with explicit wait fields (`lock`/`slot` undefined = a row before lock_s/slot_s existed). */
+const tailLine = (agoMs, outcome, cmdS, { wait = 0, setup = 'warm', slot } = {}) =>
+  `${stamp(NOW - agoMs)} repo=dentall wt=w sha=s outcome=${outcome} prepare_s=1.0 cmd_s=${cmdS} argv=npx vitest run a` +
+  `\trun=r1 owner=- cls=normal wait_s=${wait} exit_reason=pass setup=${setup} pred_s=- client=abc pv=3 node=22` +
+  (slot === undefined ? '' : ` lock_s=0.0 slot_s=${slot}`);
+
+test('waitQueue: live pids in <rrRoot>/wait are waiters, mean age from their epoch; dead pids, junk names and a symlinked dir are not', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rdw-'));
+  const dir = path.join(root, 'wait');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, '101'), `${NOW / 1000 - 30}.250\n`);
+  fs.writeFileSync(path.join(dir, '102'), `${NOW / 1000 - 90}\n`);
+  fs.writeFileSync(path.join(dir, '103'), `${NOW / 1000 - 999}\n`); // its run is gone
+  fs.writeFileSync(path.join(dir, '104'), 'garbled'); // alive, no readable time: counted, not aged
+  fs.writeFileSync(path.join(dir, 'x.tmp'), `${NOW / 1000}\n`);
+  const alive = (pid) => pid !== 103;
+  assert.deepEqual(r.waitQueue(dir, NOW, alive), { queued: 3, waitS: 60 });
+  assert.deepEqual(r.waitQueue(path.join(root, 'missing'), NOW, alive), { queued: 0, waitS: null });
+  fs.symlinkSync(dir, path.join(root, 'link'));
+  assert.deepEqual(r.waitQueue(path.join(root, 'link'), NOW, alive), { queued: 0, waitS: null });
+  fs.rmSync(path.join(dir, '101'));
+  fs.rmSync(path.join(dir, '102'));
+  fs.rmSync(path.join(dir, '104'));
+  assert.deepEqual(r.waitQueue(dir, NOW, alive), { queued: 0, waitS: null });
+});
+
+test('waitQueue: the real process table (this pid alive, a reaped one not)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rdw-'));
+  fs.writeFileSync(path.join(dir, String(process.pid)), `${Date.now() / 1000 - 10}\n`);
+  const gone = spawnSync(process.execPath, ['-e', '0']).pid;
+  fs.writeFileSync(path.join(dir, String(gone)), `${Date.now() / 1000}\n`);
+  const q = r.waitQueue(dir, Date.now());
+  assert.equal(q.queued, 1);
+  assert.ok(q.waitS >= 9 && q.waitS <= 11);
+});
+
+test('runs.log tail: wait_s, slot_s and setup parsed; frames carry only the Run fields', () => {
+  const [a, b] = r.parseRunsLog([tailLine(0, 'rc=0', '5.0', { wait: 12.5, setup: 'clone', slot: 3.5 }), tailLine(0, 'rc=0', '5.0', { setup: '-' })].join('\n'));
+  assert.equal(a.waitS, 12.5);
+  assert.equal(a.slotS, 3.5);
+  assert.equal(a.setup, 'clone');
+  assert.equal(b.slotS, null);
+  assert.equal(b.setup, null);
+});
+
+test('poolHealth: wait p50/p90 over started runs, setup split over jobs, 24 h jobs and slot wait', () => {
+  const lines = [];
+  for (let i = 1; i <= 10; i++) lines.push(tailLine(60_000 * i, i <= 7 ? 'rc=0' : 'rc=1', '5.0', { wait: i * 10, setup: i <= 6 ? 'warm' : 'clone', slot: i }));
+  lines.push(tailLine(70_000, 'abandoned-setup', '-', { wait: 500, setup: '-', slot: 500 })); // waited, never started
+  lines.push(tailLine(80_000, 'warm', '-', { wait: 0, setup: 'warm', slot: 99 })); // a pre-warm: not a job, not a wait
+  lines.push(tailLine(3 * 3600_000, 'rc=0', '5.0', { wait: 40 })); // older than the hour; pre-slot_s row: wait_s counts
+  lines.push(tailLine(25 * 3600_000, 'rc=0', '5.0', { wait: 9999, slot: 9999 })); // older than the day
+  const h = r.poolHealth(r.parseRunsLog(lines.join('\n')), null, NOW);
+  assert.deepEqual(h.wait1h, { p50: 50, p90: 90, n: 10 });
+  assert.deepEqual(h.setup1h, { warm: 6, clone: 4, cold: 0 });
+  assert.deepEqual(h.day, { jobs: 11, slotS: 55 + 500 + 40 });
+});
+
+test('poolHealth: no v2 tail in the window (an old runner) -> wait1h, setup1h and day are null', () => {
+  const h = r.poolHealth(r.parseRunsLog([line(60_000, 'rc=0', '3.0'), line(120_000, 'rc=1', '3.0')].join('\n')), null, NOW);
+  assert.equal(h.wait1h, null);
+  assert.equal(h.setup1h, null);
+  assert.equal(h.day, null);
+  assert.equal(r.quantile([5], 0.9), 5);
+  assert.equal(r.quantile([1, 2, 3, 4], 0.5), 2);
+});
+
+test('route.log: one rrun per line by placement over 24 h; docker verbs and older lines ignored', () => {
+  const at = (agoMs) => {
+    const d = new Date(NOW - agoMs);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+  const text = [
+    `${at(60_000)} hp    rrun     npx vitest run rc=0 9.1s | /repo\tlock_s=0.0 slot_s=3.0`,
+    `${at(70_000)} laptop rrun     pnpm -r typecheck rc=1 20.0s | /repo`,
+    `${at(80_000)} cache rrun     npx tsc --noEmit rc=0 0.4s | /repo\tlock_s=0.0 cache_s=0.43`,
+    `${at(90_000)} pcache rrun     npx tsc --noEmit rc=0 0.4s | /repo`,
+    `${at(100_000)} local rrun     python3 -m unittest rc=exec 0.0s | /repo`,
+    `${at(110_000)} fallback-local rrun     npx tsc --noEmit rc=exec 4.1s | /repo`,
+    `${at(120_000)} none rrun     x rc=2 0.0s | /repo`,
+    `${at(130_000)} mini  exec     postgres | /repo`,
+    `${at(25 * 3600_000)} hp    rrun     old rc=0 1.0s | /repo`,
+    'garbage',
+  ].join('\n');
+  assert.deepEqual(r.routeStats(r.parseRouteLog(text), NOW), { at: NOW, day: { rrun: 7, pool: 2, cache: 2, local: 1, fallback: 1 } });
+});
+
+test('Collector frames: queued from <rrRoot>/wait; route on agent hosts only', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rdq-'));
+  fs.mkdirSync(path.join(root, 'wait'));
+  fs.writeFileSync(path.join(root, 'wait', String(process.pid)), `${Date.now() / 1000 - 5}\n`);
+  const routeLog = path.join(root, 'route.log');
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  fs.writeFileSync(routeLog, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} fallback-local rrun     x rc=exec 1.0s | /r\n`);
+  const worker = new r.Collector({ name: 'w', role: 'worker', rrRoot: root, routeLog, pingPeers: false, doctorFile: path.join(root, 'none') });
+  const wf = await worker.frame();
+  assert.equal(wf.queued, 1);
+  assert.ok(wf.waitS >= 4 && wf.waitS <= 6);
+  assert.equal('route' in wf, false);
+  const agent = new r.Collector({ name: 'a', role: 'agents', rrRoot: root, routeLog, pingPeers: false, doctorFile: path.join(root, 'none') });
+  const af = await agent.frame();
+  assert.equal(af.route.day.fallback, 1);
+});
