@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import types
 import time
 import unittest
 
@@ -697,6 +698,24 @@ class HangsAndOwners(RunBase):
         self.assertEqual(rd_run.timeout_s({}, "light", {}), 30 * 60)
         self.assertEqual(rd_run.timeout_s({}, "heavy", {"RRUN_TIMEOUT": "0"}), 0)
         self.assertEqual(rd_run.timeout_s({"rr_timeout_min": {"build": 5}}, "build", {}), 300)
+
+    def test_cap_rises_to_the_jobs_own_prediction(self):
+        """2026-11-13/14: 20 of 41 exit-124 runs were predicted (pred_s) to need longer than their class
+        cap - certain to be killed. The cap now covers 2x the prediction, capped, never lowered, and an
+        explicit RRUN_TIMEOUT (or 0 = no cap) always wins."""
+        cap = rd_run.job_cap_s
+        self.assertEqual(cap({}, "normal", None, {}), 30 * 60)            # no prediction: the class cap
+        self.assertEqual(cap({}, "normal", 120.0, {}), 30 * 60)           # short job: never lowered
+        self.assertEqual(cap({}, "normal", 4791.0, {}), 2 * 4791.0)       # hp 11-13 21:21: was killed at 30 min
+        self.assertEqual(cap({}, "db", 17821.6, {}), 240 * 60)            # bounded by rr_timeout_max_min
+        self.assertEqual(cap({"rr_timeout_max_min": 60}, "normal", 4791.0, {}), 60 * 60)
+        self.assertEqual(cap({}, "normal", 4791.0, {"RRUN_TIMEOUT": "10"}), 10 * 60)
+        self.assertEqual(cap({}, "normal", 4791.0, {"RRUN_TIMEOUT": "0"}), 0)
+        frames, _ = rd_run.runner_frames(
+            types.SimpleNamespace(cfg={}, entry=None, name="w"),
+            {"slug": "r", "wt12": "a" * 12, "sha": "b" * 40, "relcwd": ".", "policy": {}},
+            ["true"], {}, [], b"", [], [], {"cls": "normal", "need_gb": 0}, False, pred_s=4791.0)
+        self.assertEqual(json.loads(frames[3])["timeout_s"], int(2 * 4791.0))   # the runner and rd-doctor see it
 
     def test_owner_tag_status_and_mine(self):
         os.makedirs(os.path.join(self.home, ".claude", "session-status"))

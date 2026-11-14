@@ -130,12 +130,19 @@ class Emitted(test_run.RunBase):
         self.write_cfg()
         # 132: SIGILL on the worker (its CPU cannot run the code): infra, never the code's fail
         scenario(132, "infra", self.rrun("/bin/sh", "-c", "kill -ILL $$"))
-        # 127: a tool missing on the worker - infra, naming it, never "fix the code"
+        # 127: a tool missing on the worker (here it is installed: this repo's own node_modules/.bin, which
+        # is never shipped) - infra, naming it, never "fix the code"
+        test_run.wfile(os.path.join(self.wt, "node_modules", ".bin", "rr-no-such-tool"), "#!/bin/sh\n", 0o755)
         line = self.check(self.rrun("/bin/sh", "-c", "rr-no-such-tool --x"), 127, "infra")
         self.assertIn("`rr-no-such-tool` was not found on mini (exit 127)", line)
         self.assertIn("RRUN=0", line)
         self.assertNotIn("fix the code", line)
         seen[127] = line
+        # ... and one missing here too is the repo's own gap (2026-11-14: dentall `npm run lint` ->
+        # `eslint: not found`, eslint declared nowhere): fail, never "tell the owner the worker lacks it"
+        line = self.check(self.rrun("/bin/sh", "-c", "rr-absent-everywhere --x"), 127, "fail")
+        self.assertIn("not installed here either", line)
+        self.assertNotIn("RRUN=0", line)
         # 124: its wall-clock cap
         scenario(124, "infra", self.rrun("/bin/sh", "-c", "sleep 60", RRUN_TIMEOUT="0.02", timeout=60))
         # 65: the worker refuses an unsafe mirror dir (a symlink)
@@ -208,6 +215,22 @@ class NoTestDb(test_run.RunBase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("mention", r.stderr)
         self.assertTrue(self.last_lines(r)[-1].startswith("rrun: pass (exit 0"))
+
+    def test_node_heap_oom_adds_a_hint_never_changes_the_result(self):
+        """2026-11-13/14: 39 raw `npx tsc -p tsconfig.vitest.json` runs aborted (134) at node's heap limit
+        on hp and were rerun as is after "fix the code"; the repo's wrapper (8 GB heap) passed every run."""
+        oom = ("echo 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap "
+               "out of memory' >&2; kill -ABRT $$")
+        r = self.rrun("/bin/sh", "-c", oom)
+        self.assertEqual(r.returncode, 134, r.stderr)
+        cls, hint = self.last_lines(r)[-2:]
+        self.assertTrue(cls.startswith("rrun: fail (exit 134"), r.stderr)        # the class stays the command's
+        self.assertTrue(hint.startswith("rrun: node ran out of its JavaScript heap on mini"), r.stderr)
+        self.assertIn("NODE_OPTIONS=--max-old-space-size=8192", hint)
+        # a passing run that prints the words: no hint
+        r = self.rrun("/bin/sh", "-c", "echo 'JavaScript heap out of memory (a test fixture)'; exit 0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("ran out of its JavaScript heap", r.stderr)
 
     def test_scan_sees_stdout_before_started_and_the_unterminated_tail(self):
         sess = rd_run.Session({}, [], "0" * 32, rd_run.Timing(False))

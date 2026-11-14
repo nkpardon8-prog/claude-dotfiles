@@ -57,8 +57,9 @@ successful run a second ssh streams `tar` of the outputs from the worker's mirro
 the worktree (staged, then renamed into place) while the worktree's gate is still held exclusive.
 Hangs / waits (2026-11-11): the runner relays the command's output through its own pipes, so when the
 main process exits the leftovers get rr_exit_grace_s, then the group is TERMed / KILLed and the run
-ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>) ends a run
-with exit 124; silence only prints "no output for N min" with the last test file the output named
+ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>), raised for
+one run to 2x the scheduler's prediction for it on the chosen worker (rr_timeout_pred_x, at most
+rr_timeout_max_min; never lowered; job_cap_s), ends a run with exit 124; silence only prints "no output for N min" with the last test file the output named
 (rr_silent_min; RRUN_SILENT_MIN). A slot
 wait lasts what is left of rr_wait_min (-> 73), printed as "queued on <worker>: about N (k ahead)"; the
 worktree-lane wait is at most the job's cap (-> 72). Slot / lane waits print a line every
@@ -86,6 +87,7 @@ elsewhere is waited for (wait_inflight) and replayed; a result is shared after i
 (share_after). RRUN_CACHE=0 skips the pool tier entirely.
 """
 import fnmatch
+import glob
 import hashlib
 import io
 import json
@@ -93,6 +95,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -961,9 +964,41 @@ TEST_FILE_RE = re.compile(r"(?:^|[\s(])((?:[\w@.-]+/)*[\w@.-]+\.(?:test|spec)\.[
 # "sh: 1: pnpm: not found" / "bash: pnpm: command not found" / "env: 'pnpm': No such file or directory"
 NOT_FOUND_RE = re.compile(r"(?:^|[\s:])'?([\w.+@/-]+)'?: (?:command )?not found\s*$|^env: '?([\w.+@/-]+)'?: No such file",
                           re.M)
+# node died at its heap limit (exit 134, SIGABRT). 2026-11-13/14: 39 runs of a raw `npx tsc -p
+# tsconfig.vitest.json` in dentall aborted on hp (node gets 6 GB there) while the repo's own wrapper, which
+# sets 8 GB, passed every run; each got "fix the code" and was rerun as is, up to 5 times in a row
+HEAP_OOM_RE = re.compile(r"JavaScript heap out of memory|Ineffective mark-compacts near heap limit|Reached heap limit")
 NO_DB_RE = re.compile(r"Environment variable not found: (?:TEST_)?DATABASE_URL|(?:TEST_)?DATABASE_URL (?:is )?"
                       r"not (?:found|set|defined)|ECONNREFUSED (?:127\.0\.0\.1|::1|\[::1\]|localhost|0\.0\.0\.0)"
                       r":(?:5432|54\d\d|55\d\d\d|3306)\b")
+
+
+TOOL_NAME_RE = re.compile(r"^[\w.+@-]+$")
+
+
+def tool_here(tool, argv0, wt):
+    """Would `tool` (the name a worker's exit 127 named) resolve on this machine for this repo? True
+    when it is on PATH here or in a node_modules/.bin npm would put on PATH (the cwd up to the repo top,
+    or a package one or two levels down: `npm --prefix server` / `cd client && ...`); for a command
+    given as a path, when that path exists here. Unsure (no repo top, an odd name) = True: the 127
+    stays infra, the worker's gap."""
+    if not tool or not TOOL_NAME_RE.match(tool) or not wt or not wt.get("top"):
+        return True
+    top = wt["top"]
+    cwd = os.path.join(top, wt.get("relcwd") or "")
+    if "/" in argv0 and os.path.basename(argv0) == tool:
+        return os.path.exists(argv0 if os.path.isabs(argv0) else os.path.join(cwd, argv0))
+    if shutil.which(tool):
+        return True
+    dirs, d = [], os.path.abspath(cwd)
+    while True:
+        dirs.append(d)
+        if d == os.path.abspath(top) or os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+    for pat in ("*", "*/*"):
+        dirs += [p for p in glob.glob(os.path.join(top, pat)) if os.path.isdir(p) and "node_modules" not in p]
+    return any(os.path.exists(os.path.join(p, "node_modules", ".bin", tool)) for p in dirs)
 
 
 class StatusFilter:
@@ -1077,6 +1112,7 @@ class Session:
         self.scan_tail = {}                  # per stream: a line cut by a read boundary
         self.no_db_n = 0                     # lines of the command's output with the missing-test-DB signature
         self.missing = None                  # the last "<tool>: command not found" its output named (exit 127)
+        self.heap_oom = False                # its output has node's "JavaScript heap out of memory"
         self.worker_pv = None                # "<nonce> PV <n>": the worker's pool_version (before any prepare)
         self.node_major = None               # "<nonce> NODE <major|?>": the node this run really uses
         self.outdated = None                 # that version, when it is newer than ours: never GO
@@ -1161,6 +1197,7 @@ class Session:
         if files:
             self.last_file, self.last_file_at = files[-1], time.monotonic()
         self.no_db_n += sum(1 for ln in s.splitlines() if NO_DB_RE.search(ln))
+        self.heap_oom = self.heap_oom or bool(HEAP_OOM_RE.search(s))
         for m in NOT_FOUND_RE.finditer(s):           # exit 127: name the missing tool
             self.missing = os.path.basename(m.group(1) or m.group(2))
 
@@ -1757,6 +1794,25 @@ def timeout_s(cfg, cls, environ=None):
         return max(0.0, float(table.get(cls, TIMEOUT_MIN.get(cls, 30))) * 60.0)
     except (TypeError, ValueError):
         return TIMEOUT_MIN.get(cls, 30) * 60.0
+
+
+def job_cap_s(cfg, cls, pred_s=None, environ=None):
+    """The cap one attempt runs under: timeout_s, raised to rr_timeout_pred_x (2) x the scheduler's
+    prediction for this command on the chosen worker, at most rr_timeout_max_min (240). Without it a
+    job the pool itself predicted to need longer than its class cap was certain to be killed at the cap
+    (2026-11-13/14: 20 of 41 exit-124 runs had pred_s above their cap, e.g. pred 8087 s vs 1800 s,
+    ~1,100 agent-minutes, each rerun hitting the same wall). An explicit RRUN_TIMEOUT always wins, and
+    the cap is never lowered: it still ends hangs, only no longer below the job's own known length."""
+    env = os.environ if environ is None else environ
+    base = timeout_s(cfg, cls, env)
+    if base <= 0 or (env.get("RRUN_TIMEOUT") or "").strip() or not isinstance(pred_s, (int, float)):
+        return base
+    try:
+        x = float(cfg.get("rr_timeout_pred_x", 2.0))
+        top = float(cfg.get("rr_timeout_max_min", 240)) * 60.0
+    except (TypeError, ValueError):
+        x, top = 2.0, 240 * 60.0
+    return max(base, min(top, float(pred_s) * x))
 
 
 def wait_min(cfg):
@@ -3004,7 +3060,7 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
               "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
               "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True,
-              "owner": owner_info(), "timeout_s": int(timeout_s(cfg, job["cls"])),
+              "owner": owner_info(), "timeout_s": int(job_cap_s(cfg, job["cls"], extra.get("pred_s"))),
               "exit_grace": cfg.get("rr_exit_grace_s", 10),
               "wait_every": cfg.get("rr_status_every_s", 60),
               # detached run: survives a lost link (reattach()); uuid4 = unguessable
@@ -3077,7 +3133,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
                                   run_id=run_id, waited_s=round(time.monotonic() - t0, 1), pred_s=pred,
                                   lock_s=STAGES.get("lock_s", 0.0),
                                   **({"node_id": 1} if cache is not None else {}))
-    cap = timeout_s(cfg, job["cls"])
+    cap = job_cap_s(cfg, job["cls"], pred)
+    if cap > timeout_s(cfg, job["cls"]):
+        note("this job is predicted to take ~%s on %s, longer than its %s %s cap: its cap is %s for this run"
+             % (fmt_min(pred), h.name, fmt_min(timeout_s(cfg, job["cls"])), job["cls"], fmt_min(cap)))
     record(h.name, argv, None, 0, wt12=wt12, start=True, cap=cap, pred=pred)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
     sess.host_name, sess.timeout_s, sess.silent_s = h.name, cap, silent_s(cfg)
@@ -3108,7 +3167,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             return "lost", "lost %s before the command started (it never ran there)" % label(h)
         if att is not None:
             rc = att.final_rc
-            for k in ("exit_rc", "exit_at", "used_docker", "timed_out", "gone", "no_db_n"):
+            for k in ("exit_rc", "exit_at", "used_docker", "timed_out", "gone", "no_db_n", "heap_oom"):
                 setattr(sess, k, getattr(att, k))
     secs = time.monotonic() - t0
     if not sess.go_sent:
@@ -3166,6 +3225,14 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         elif rc != 0 and (sess.first_sig or sess.ints):
             rc = Rc(rc, "infra", "stopped by signal %d while it ran on %s" % (sess.first_sig or 2, h.name),
                     "rerun it if you still need the result")
+        elif rc == 127 and not tool_here(sess.missing or os.path.basename(argv[0]), argv[0], wt):
+            # the tool is not on this Mac either: the repo does not provide it (2026-11-14: dentall's
+            # `npm run lint` -> `eslint: not found`, eslint declared nowhere; 30+ such runs on hp were
+            # called "a tool missing on hp, tell the owner" and counted against the worker)
+            tool = sess.missing or os.path.basename(argv[0])
+            rc = Rc(127, "fail", "`%s` was not found on %s, and it is not installed here either (not on PATH, "
+                    "not in any node_modules/.bin of this repo): the repo does not provide it, not a pool "
+                    "problem" % (tool, h.name), "add it to the package's dependencies or fix the script")
         elif rc == 127:
             # the shell's "command not found": a tool missing on the worker (2026-11: pnpm), never the code's
             # verdict; the agent's way out is RRUN=0 (here) until the worker has it
@@ -3182,6 +3249,16 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             RESULT["after"].append("rrun: %s%d failure%s mention%s DATABASE_URL - likely no test DB on %s; rerun "
                                    "with npm run test:db" % (sess.tag, sess.no_db_n, "" if one else "s",
                                                              "s" if one else "", h.name))
+        if rc != 0 and sess.heap_oom:
+            # advisory too (the class stays the command's); never cached: a worker with more RAM (or a
+            # bigger NODE_OPTIONS heap, which is in the key) gets a different verdict
+            if cache is not None:
+                cache.taint("node ran out of its heap")
+            RESULT["after"].append("rrun: %snode ran out of its JavaScript heap on %s - the command needs more heap "
+                                   "than this worker gives node (rrun: 70%% of its RAM, at most 6 GB under 30 GB, "
+                                   "12 GB above, unless NODE_OPTIONS sets --max-old-space-size); rerun with "
+                                   "NODE_OPTIONS=--max-old-space-size=8192 or the repo's own wrapper script, not a "
+                                   "code fix" % (sess.tag, h.name))
     elif sess.gone:
         # the worker says the run's result is lost and cannot prove it never ran: it may have run,
         # so it is never re-run (not even a job safe to repeat)
@@ -3279,7 +3356,8 @@ def reattach(h, sess, lane=None):
         a = Session(cfg, attach_frames(sess.run_id, sess.nonce, prev.out_off, prev.err_off), sess.nonce,
                     sess.timing)
         for k in ("host_name", "tag", "timeout_s", "silent_s", "stdout_out", "stderr_out", "run_id",
-                  "out_off", "err_off", "started", "last_out", "last_file", "last_file_at", "no_db_n"):
+                  "out_off", "err_off", "started", "last_out", "last_file", "last_file_at", "no_db_n",
+                  "heap_oom"):
             setattr(a, k, getattr(prev, k))
         a.ready = a.go_sent = True           # GO went long ago: never again
         a.mux = False

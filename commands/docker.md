@@ -434,7 +434,11 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   file says where it is. A slot wait prints one full line, then one short line a minute
   (`rrun: still waiting for a slot on hp (3 min so far; next in line; expected wait ~2 min)`).
   **Hard cap per job class:** light / normal 30 min, heavy 60, db 90, build 60 (`rr_timeout_min`);
-  `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. Every `test:db:<x>`
+  `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. Without an explicit
+  `RRUN_TIMEOUT`, a run the scheduler predicts to take longer gets 2x that prediction on the chosen worker
+  (`rr_timeout_pred_x`, at most `rr_timeout_max_min` 240; never lowered), announced as `rrun: this job is
+  predicted to take ~N min on hp, longer than its 30 min normal cap: its cap is M min for this run`
+  (2026-11-14: 20 of 41 exit-124 runs had a prediction above their cap). Every `test:db:<x>`
   script (`test:db:migrated`, `test:db:rls`, ...) is a db job. At the cap the worker TERMs the
   command's process group (KILL 10 s later, then checks it is empty), frees the slot, logs `outcome=timeout rc=124` in `runs.log`, and
   rrun exits **124** (like `timeout(1)`) with `rrun: infra (exit 124 ...; hit its 30 min wall-clock cap
@@ -594,7 +598,7 @@ and runs a scenario that emits each one):
 | 65   | needs-human | the worker refused the request (bad input or an unsafe path, e.g. a symlinked mirror) |
 | 69   | infra       | the repo was missing on the worker; never ran |
 | 70   | infra       | the worker's runner failed; never ran |
-| 127  | infra       | a command was not found on the worker (`<tool>: command not found`; the line names the tool, e.g. pnpm): a tool missing on that worker, not the code - run it here with `RRUN=0 <command>` and tell the owner. On this machine (`RRUN=0`, a local run) a 127 stays the command's own `fail` |
+| 127  | infra       | a command was not found on the worker (`<tool>: command not found`; the line names the tool, e.g. pnpm): a tool missing on that worker, not the code - run it here with `RRUN=0 <command>` and tell the owner. A tool that is not installed on this Mac either (not on PATH, in no `node_modules/.bin` of the repo) is the repo's own gap: `fail` (`... not installed here either ...`), e.g. a lint script calling an undeclared eslint. On this machine (`RRUN=0`, a local run) a 127 stays the command's own `fail` |
 | 78   | infra       | installing dependencies on the worker failed (`npm ci` / `pnpm install` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
 | 79   | fail        | the DB lane's setup step (`pnpm db:migrate` / `pnpm db:provision`) failed on the worker; the command was not started - its redacted log tail is shown: fix the migration / provision script |
 

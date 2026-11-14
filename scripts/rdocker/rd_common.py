@@ -139,6 +139,10 @@ DEFAULTS = {
     # hard wall-clock cap on the command per job class (minutes; RRUN_TIMEOUT=<min|0> overrides for
     # one run, 0 = no cap): past it the worker kills the command's process group -> exit 124
     "rr_timeout_min": {"light": 30, "normal": 30, "heavy": 60, "db": 90, "build": 60},
+    # ... raised per run to rr_timeout_pred_x x the scheduler's prediction for the chosen worker (never
+    # lowered, at most rr_timeout_max_min; an explicit RRUN_TIMEOUT wins): rd_run.job_cap_s
+    "rr_timeout_pred_x": 2.0,
+    "rr_timeout_max_min": 240,
     "rr_exit_grace_s": 10,             # after the command's main process exits, its leftovers get this long
     "rr_silent_min": 1,                # "no output for N min" on stderr after this, then every 5x it;
                                        # never kills (RRUN_SILENT_MIN; 0 = off)
