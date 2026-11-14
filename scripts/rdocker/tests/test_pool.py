@@ -885,6 +885,49 @@ class PoolE2E(test_run.RunBase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("w2         unreachable", r.stdout)
 
+    # ---------------------------------------------------------------------------- Codex agents
+    # rd_run.codex_quick (2026-11-14): a Codex agent's job takes a worker only when one is free NOW;
+    # anything else runs here at once, as it would without rrun. A db job keeps every rule.
+    CODEX = {"CODEX_SANDBOX": "seatbelt"}
+
+    def test_codex_job_runs_on_a_free_worker(self):
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', **self.CODEX)
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=\n"), r.stderr)
+        self.assertEqual(self.target(), "w1")
+
+    def test_codex_job_never_queues_on_a_busy_pool(self):
+        self.set_fleet(w1_slots=1, w2_slots=1)
+        self.hold_slot("w1")
+        self.hold_slot("w2")
+        t0 = time.time()
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', **self.CODEX)
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn("no worker is free now (a Codex agent's job never waits for the pool) - running on the "
+                      "laptop instead", r.stderr)
+        self.assertEqual([ln.split()[2] for ln in self.route_lines()], ["local"])   # not a pool failure
+        # negative control: anyone else's job queues there (gives up after rr_wait_min: 73, never ran)
+        self.set_fleet(w1_slots=1, w2_slots=1, rr_wait_min=0.02)
+        r = self.rrun("/bin/sh", "-c", "echo ran", timeout=90)
+        self.assertEqual((r.returncode, r.stdout), (73, ""), r.stderr)
+
+    def test_codex_heavy_job_runs_here_when_the_pool_is_down(self):
+        marker = os.path.join(self.d, "ran")
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, "tsc", FAKE_SSH_DOWN_HOSTS="w1,w2", **self.CODEX)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read(marker), "x\n")
+        self.assertIn("rrun: pool unavailable (every worker is down (a Codex agent's job never waits for the "
+                      "pool)), ran LOCALLY on this Mac", r.stderr)
+        self.assertEqual([ln.split()[2] for ln in self.route_lines()], ["fallback-local"])   # the steward sees it
+        self.assertNotIn("receive-pack", self.read(self.sshlog))     # the probe said down: nothing was sent
+
+    def test_codex_db_job_keeps_the_db_rule(self):
+        marker = os.path.join(self.d, "db-ran")
+        r = self.rrun("/bin/sh", "-c", "touch %s; : test:db" % marker, FAKE_SSH_DOWN_HOSTS="w1,w2", **self.CODEX)
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("a db job never runs on this machine", r.stderr)
+        self.assertFalse(os.path.exists(marker))
+
 
 
 class Eligibility(PlanUnit):

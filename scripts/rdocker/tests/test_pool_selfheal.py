@@ -46,5 +46,36 @@ class SelfHeal(unittest.TestCase):
             self.assertFalse(rd_pool.ensure_ssh_blocks([], W, {}, self.p))
 
 
+class OnlyTheInstalledCopy(unittest.TestCase):
+    """A stage / scratch copy (its own fleet.json) never rewrites the real ssh blocks (2026-11-14)."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.bin = os.path.join(self.d, "bin")
+        os.makedirs(self.bin)
+        self.fleet = os.path.join(self.d, "fleet.json")
+        with open(self.fleet, "w") as f:
+            f.write("{}")
+
+    def check(self, target):
+        link = os.path.join(self.bin, "rrun")
+        if target:
+            os.symlink(target, link)
+        with mock.patch.object(rd_pool.rd_common, "BIN_DIR", self.bin), \
+                mock.patch.object(rd_pool.rd_common, "FLEET_PATH", self.fleet), \
+                mock.patch("rd_fleet.load", return_value=["F"]), \
+                mock.patch("rd_fleet.workers", return_value=W), \
+                mock.patch.object(rd_pool, "ensure_ssh_blocks") as eb:
+            self.assertEqual(rd_pool.load_workers({"fleet_path": self.fleet}), W)
+        return eb.called
+
+    def test_the_installed_copy_self_heals(self):
+        self.assertTrue(self.check(os.path.join(rd_pool.rd_common.HERE, "rrun")))
+
+    def test_another_copy_never_does(self):
+        self.assertFalse(self.check(os.path.join(self.d, "elsewhere", "rrun")))
+        os.unlink(os.path.join(self.bin, "rrun"))
+        self.assertFalse(self.check(None))                         # no rrun installed at all
+
+
 if __name__ == "__main__":
     unittest.main()

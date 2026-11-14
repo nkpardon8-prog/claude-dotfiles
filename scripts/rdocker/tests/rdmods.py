@@ -50,6 +50,10 @@ if _OWNED:
         os.chmod(_p, 0o755)
     atexit.register(shutil.rmtree, TEST_HOME, True)
 os.environ["RDOCKER_HOME"] = TEST_HOME
+# A suite run from a Codex agent inherits CODEX_SANDBOX*, which switches rrun to its Codex rules
+# (rd_run.codex_agent): only a test that sets them itself gets them.
+for _k in [k for k in os.environ if k.startswith("CODEX_SANDBOX")]:
+    del os.environ[_k]
 
 # A test that writes the REAL ~/rr/git turns this Mac into a "worker" for the rrun-route hook, which
 # then silently stops routing every agent's heavy commands here (2026-11-13: a push test did this for

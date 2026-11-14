@@ -1280,5 +1280,68 @@ class WorktreeLanes(RunBase):
         self.assertIn("receive-pack", self.read(self.sshlog))
 
 
+class CodexSandbox(RunBase):
+    """rrun inside a Codex sandbox (Codex sets CODEX_SANDBOX on every command; 2026-11-14): one the
+    pool cannot be reached from runs the command here, cleanly, before any state write (it used to
+    die with a PermissionError traceback, exit 1, the command never run); ssh never tries to create
+    a ControlMaster in the read-only ~/.ssh."""
+    NO_NET = {"CODEX_SANDBOX": "seatbelt", "CODEX_SANDBOX_NETWORK_DISABLED": "1"}
+
+    def test_ssh_never_creates_a_master_inside_codex(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"CODEX_SANDBOX": "seatbelt"}):
+            o = rd_run.ssh_opts()
+        self.assertEqual(o[:4], ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=no"])
+        self.assertFalse(any(x.startswith("ControlPersist") for x in o))
+        with mock.patch.dict("os.environ"):
+            os.environ.pop("CODEX_SANDBOX", None)
+            o = rd_run.ssh_opts()
+        self.assertIn("ControlMaster=auto", o)                     # negative control: everyone else
+        self.assertIn("ControlPersist=30m", o)
+
+    def test_no_network_runs_here_without_touching_ssh_or_state(self):
+        st = os.path.join(self.home, ".local", "state", "rdocker")
+        before = sorted(os.listdir(st)) if os.path.isdir(st) else []
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE rrun=$RRUN"; exit 3', **self.NO_NET)
+        self.assertEqual((r.returncode, r.stdout), (3, "mode=local rrun=0\n"), r.stderr)
+        self.assertIn("rrun: cannot use the pool here (this Codex sandbox has no network) - running on "
+                      "the laptop instead", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertFalse(os.path.exists(self.sshlog))               # no ssh at all
+        self.assertEqual(sorted(os.listdir(st)) if os.path.isdir(st) else [], before)
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', CODEX_SANDBOX="seatbelt")
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=\n"), r.stderr)   # network on: the pool
+
+    def test_unwritable_state_dir_runs_here(self):
+        st = os.path.join(self.home, ".local", "state", "rdocker")
+        os.makedirs(st, exist_ok=True)
+        os.chmod(st, 0o500)                     # empty: tearDown's rmtree removes it in any mode
+        try:
+            r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', CODEX_SANDBOX="seatbelt")
+        finally:
+            os.chmod(st, 0o700)
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)
+        self.assertIn("(this Codex sandbox cannot write ~/.local/state/rdocker)", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(os.listdir(st), [])                       # the probe file is gone too
+
+    def test_strict_and_db_jobs_never_run_here(self):
+        marker = os.path.join(self.d, "ran")
+        r = self.rrun("/bin/sh", "-c", "touch %s" % marker, RRUN_STRICT="1", **self.NO_NET)
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("rrun: infra (exit 75", r.stderr)
+        self.assertIn("RRUN_STRICT=1: not running it on this machine", r.stderr)
+        r = self.rrun("/bin/sh", "-c", "touch %s; : test:db" % marker, **self.NO_NET)
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("this Codex sandbox has no network; a db job never runs on this machine", r.stderr)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_where_says_it_would_run_here(self):
+        r = self.rrun("--where", "true", **self.NO_NET)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "rrun: would run on this machine: this Codex sandbox has no network\n")
+        self.assertFalse(os.path.exists(self.sshlog))
+
+
 if __name__ == "__main__":
     unittest.main()

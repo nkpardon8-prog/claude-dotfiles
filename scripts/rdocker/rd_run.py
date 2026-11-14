@@ -268,9 +268,16 @@ def ssh_opts(mux=True):
     """Options for every rrun ssh (runner session AND git, via GIT_SSH_COMMAND): our own rr-%C
     master, never rdocker's fwd.sock (a bulk push would starve its liveness checks). mux=False (a
     reattach after a lost link): a connection of its own - the shared master is what just died, and
-    it takes every session on it down together."""
-    share = ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=30m"] if mux \
-        else ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
+    it takes every session on it down together.
+    Inside a Codex sandbox (CODEX_SANDBOX set) ~/.ssh is read-only, so ssh cannot create a master
+    there (`unix_listener: cannot bind`, exit 255, 2026-11-14): ControlMaster=no on the same path uses
+    a live master when one exists and otherwise connects directly, never creating a socket."""
+    if not mux:
+        share = ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
+    elif codex_agent():
+        share = ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=no"]
+    else:
+        share = ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=30m"]
     return share + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S,
             "-o", "ServerAliveInterval=%d" % ALIVE_INTERVAL_S, "-o", "ServerAliveCountMax=%d" % ALIVE_COUNT]
 
@@ -1597,6 +1604,40 @@ def _ago(ts, now):
 POOL_DOWN_LINE = "pool unavailable (%s), ran LOCALLY on this Mac"
 
 
+def codex_agent():
+    """A Codex agent's command: Codex sets CODEX_SANDBOX on every command it runs."""
+    return bool(os.environ.get("CODEX_SANDBOX"))
+
+
+def codex_quick(job):
+    """A Codex agent's job that never waits for the pool (owner, 2026-11-14: Codex agents use the
+    pool only where it is quick and nothing fails): a worker takes it only when one can NOW; else it
+    runs here at once, exactly as it would without rrun - no slot queue (rr_wait_min), no wait for an
+    unreachable pool (rr_reconnect_wait_min), no heavy-job `never runs on this machine` (75), no 73.
+    A db job is the exception and keeps every rule (owner, 2026-11-13: it must never meet a real
+    database here): it queues, waits and ends 75 as anyone's does."""
+    return codex_agent() and (job or {}).get("cls") != "db"
+
+
+def sandbox_block():
+    """Inside a Codex sandbox -> why the pool is out of reach from here, else None. A sandbox with no
+    network (read-only, or workspace-write without [sandbox_workspace_write] network_access) cannot
+    ssh; one that cannot write STATE_DIR cannot take the worktree lanes (2026-11-14: PermissionError
+    traceback, exit 1, the command never ran). Either way the command simply runs here."""
+    if not codex_agent():
+        return None
+    if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1":
+        return "this Codex sandbox has no network"
+    probe = os.path.join(rd_common.STATE_DIR, ".sandbox-probe-%d" % os.getpid())
+    try:
+        os.makedirs(rd_common.STATE_DIR, exist_ok=True)
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        os.unlink(probe)
+    except OSError:
+        return "this Codex sandbox cannot write %s" % rd_common.STATE_DIR.replace(rd_common.HOME, "~", 1)
+    return None
+
+
 def run_local(argv, env_pairs, why=None, pool_down=False):
     """exec the command on the laptop (RDOCKER_MODE=local: its containers stay on the laptop too).
     pool_down: the pool failed (fallback): one loud line, before the exec (nothing of rrun runs after
@@ -1632,7 +1673,7 @@ def fallback(argv, env_pairs, why, t0, job=None, pool=False, pool_down=False):
     if os.environ.get("RRUN_STRICT") == "1":
         record("mini", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
         return infra(EXIT_NEVER_RAN, "%s; RRUN_STRICT=1: not running it on this machine" % why)
-    if (pool or pool_down) and job and job.get("never_local"):
+    if (pool or pool_down) and job and job.get("never_local") and not codex_quick(job):
         record("none", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
         return infra(EXIT_NEVER_RAN, "%s; a %s job never runs on this machine (the pool keeps it off "
                      "agent machines)" % (why, job["cls"]), "rerun it when a worker is back")
@@ -1906,6 +1947,10 @@ def _rrun(argv, env_args, environ0):
     t0 = time.monotonic()
     if not opts.where and (os.environ.get("RRUN_REMOTE") or os.environ.get("RRUN") == "0"):
         return run_local(argv, env_pairs)        # already on the mini / opted out: plain run
+    blocked = sandbox_block()
+    if blocked and opts.where:
+        note("would run on this machine: %s" % blocked)
+        return 0
     RESULT["job"] = not opts.where
     cfg = rd_common.load_cfg()
     timing = Timing(os.environ.get("RRUN_TIMING") == "1")
@@ -1922,6 +1967,14 @@ def _rrun(argv, env_args, environ0):
         # shim sends every top-level `npm run build` here) runs on this machine, silently
         return run_local(argv, env_pairs)
     job, wt = classify_job(cfg, wt, argv, outputs, os.getcwd())
+    if blocked:                                  # before any state write: none would succeed here
+        if os.environ.get("RRUN_STRICT") == "1" or not codex_quick(job):
+            return infra(EXIT_NEVER_RAN, "%s; %s" % (blocked, "RRUN_STRICT=1: not running it on this machine"
+                         if os.environ.get("RRUN_STRICT") == "1" else "a db job never runs on this machine"),
+                         "run it where the pool is reachable (a workspace-write session with network)")
+        return run_local(argv, env_pairs, "cannot use the pool here (%s)" % blocked)
+    if codex_quick(job):                         # never wait for the pool
+        cfg = dict(cfg, rr_wait_min=0, rr_reconnect_wait_min=0)
     refused = argv_refusal(cfg, wt, argv)
     if refused is not None:
         return refused
@@ -1975,6 +2028,13 @@ def _rrun(argv, env_args, environ0):
     ROUTE_EXTRA["client"] = client_sha() or "-"
     if not opts.where:
         trigger_warm(cfg, plan, wt, dshas, job)
+    if codex_quick(job) and not opts.where and (not plan.hosts or plan.pool and
+                                              not any(h.state == "free" for h in plan.hosts)):
+        down = bool(plan.hosts) and all(h.state == "down" for h in plan.hosts)
+        why = "every worker is down" if down else "no worker is free now" if plan.hosts \
+            else "no worker takes this job"
+        return fallback(argv, env_pairs, "%s (a Codex agent's job never waits for the pool)" % why, t0, job,
+                        plan.pool, pool_down=down)
     if not plan.hosts and not opts.where:
         # fleet.json's classes / max_cost_s / cold_ok leave no worker for this job: say so now
         # (waiting would not change it) - never a slot wait, never this machine
@@ -2507,6 +2567,8 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                                       "tell the owner (fleet.json); rerunning will not help")
                 i, failed, round_t0, slot_busy = 0, set(), time.monotonic(), False
                 continue
+            if codex_quick(ctx.job) and not threaded:
+                return "local", "%severy worker is busy (a Codex agent's job never waits for the pool)" % tag
             record("none", argv, EXIT_BUSY, time.monotonic() - t0)
             return "done", infra(EXIT_BUSY, "%sno worker had a free slot%s; never ran"
                                  % (tag, " for %s" % fmt_wait(total) if slot_busy else ""))

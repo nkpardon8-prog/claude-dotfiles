@@ -278,10 +278,10 @@ class HookBase(unittest.TestCase):
         # the default cwd: a git project with an npm lockfile (rrun needs a repo; workers `npm ci`)
         self.proj = project(self.home, "proj")
 
-    def hook(self, payload, *bins, **extra):
+    def hook(self, payload, *bins, args=(), **extra):
         env = rdmods.child_env(self.home, *(bins or (self.bin,)), **extra)
         raw = payload if isinstance(payload, str) else json.dumps(payload)
-        p = subprocess.run(["/usr/bin/python3", "-I", HOOK], input=raw, env=env, cwd=self.proj,
+        p = subprocess.run(["/usr/bin/python3", "-I", HOOK] + list(args), input=raw, env=env, cwd=self.proj,
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stderr, "")
@@ -961,3 +961,104 @@ class AutopullEnsure(HookBase):
         self.hook(self.bash("ls"))
         time.sleep(0.5)
         self.assertFalse(os.path.exists(marker))
+
+
+class CodexHook(HookBase):
+    """`rrun-route.py --codex` (Codex's PreToolUse hook, 2026-11-14): judged only when the session
+    transcript says THIS turn runs workspace-write with network and the rdocker state dir writable;
+    the rewrite carries permissionDecision "allow" (Codex applies updatedInput only with it)."""
+    CMD = "npx vitest run src/a.test.ts"
+    WANT = "rrun npx vitest run src/a.test.ts"
+
+    def state(self):
+        return os.path.join(self.home, ".local", "state", "rdocker")
+
+    def ws(self, **kw):
+        return dict({"type": "workspace-write", "writable_roots": [self.state()], "network_access": True,
+                     "exclude_tmpdir_env_var": False, "exclude_slash_tmp": False}, **kw)
+
+    def transcript(self, policy, turn="T1", filler=0, name="rollout.jsonl", raw=None):
+        path = os.path.join(self.home, name)
+        with open(path, "w") as f:
+            f.write(json.dumps({"timestamp": "t", "type": "session_meta", "payload": {"id": "S"}}) + "\n")
+            f.write(json.dumps({"timestamp": "t", "type": "turn_context", "payload": {"turn_id": "T0",
+                                "sandbox_policy": self.ws()}}) + "\n")      # an older turn: never used
+            if raw is not None:
+                f.write(raw)
+            else:
+                f.write(json.dumps({"timestamp": "t", "type": "turn_context",
+                                    "payload": {"turn_id": turn, "sandbox_policy": policy}}) + "\n")
+            line = json.dumps({"timestamp": "t", "type": "response_item", "payload": {"x": "y" * 1000}}) + "\n"
+            for _ in range(filler):
+                f.write(line)
+        return path
+
+    def codex(self, command, transcript, turn="T1", **extra):
+        payload = {"session_id": "S", "turn_id": turn, "transcript_path": transcript, "cwd": self.proj,
+                   "hook_event_name": "PreToolUse", "model": "m", "permission_mode": "bypassPermissions",
+                   "tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": "u"}
+        out = self.hook(payload, args=("--codex",), **extra)
+        if out is None:
+            return None
+        self.assertEqual(set(out), {"hookSpecificOutput"})
+        hso = out["hookSpecificOutput"]
+        self.assertEqual(hso, {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+                               "updatedInput": {"command": hso["updatedInput"]["command"]}})
+        return hso["updatedInput"]["command"]
+
+    def last_why(self):
+        with open(os.path.join(self.state(), "hook.log")) as f:
+            return json.loads(f.read().splitlines()[-1])["why"]
+
+    def test_workspace_write_with_network_routes(self):
+        self.assertEqual(self.codex(self.CMD, self.transcript(self.ws())), self.WANT)
+        # a writable root above the state dir (the whole home) counts too
+        self.assertEqual(self.codex(self.CMD, self.transcript(self.ws(writable_roots=[self.home]))), self.WANT)
+        # the same command through Claude's hook (no --codex): never a permission decision (rewritten())
+        self.assertEqual(self.rewritten(self.CMD), self.WANT)
+
+    def test_every_other_sandbox_stays_here(self):
+        cases = [
+            ({"type": "read-only"}, "codex-read-only"),
+            (self.ws(network_access=False), "codex-no-network"),
+            (self.ws(writable_roots=[]), "codex-state-read-only"),
+            (self.ws(writable_roots=[os.path.join(self.state(), "sub")]), "codex-state-read-only"),
+            ({"type": "danger-full-access"}, "codex-danger-full-access"),
+            ({"type": "external-sandbox", "network_access": "enabled"}, "codex-external-sandbox"),
+            ("workspace-write", "codex-no-context"),
+        ]
+        for policy, why in cases:
+            with self.subTest(policy=policy):
+                self.assertIsNone(self.codex(self.CMD, self.transcript(policy)))
+                self.assertEqual(self.last_why(), why)
+
+    def test_unknown_turn_or_unreadable_transcript_stays_here(self):
+        tp = self.transcript(self.ws())
+        self.assertIsNone(self.codex(self.CMD, tp, turn="T9"))       # never another turn's context
+        self.assertEqual(self.last_why(), "codex-no-context")
+        self.assertIsNone(self.codex(self.CMD, os.path.join(self.home, "missing.jsonl")))
+        self.assertEqual(self.last_why(), "codex-no-transcript")
+        self.assertIsNone(self.codex(self.CMD, None))
+        self.assertEqual(self.last_why(), "codex-no-transcript")
+        bad = self.transcript(None, raw='{"type": "turn_context", "payload": {"turn_id": "T1", "sandbox_\n')
+        self.assertIsNone(self.codex(self.CMD, bad))
+        self.assertEqual(self.last_why(), "codex-no-transcript")
+
+    def test_context_far_back_in_a_big_transcript(self):
+        # ~2.5 MB of later lines: the turn's context sits past the first 1 MB chunk read from the end
+        self.assertEqual(self.codex(self.CMD, self.transcript(self.ws(), filler=2500)), self.WANT)
+
+    def test_route_rules_are_the_same(self):
+        tp = self.transcript(self.ws())
+        for cmd in ("npm install", "npx vitest", "npm run dev", "npx vitest run --watch", "ls -la"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.codex(cmd, tp))
+        self.assertEqual(self.codex("npm test", tp), "rrun npm test")
+
+    def test_transcript_read_only_for_a_command_it_would_route(self):
+        # a directory as transcript_path fails to open: only a command decide() routes ever tries
+        d = os.path.join(self.home, "a-dir.jsonl")
+        os.makedirs(d)
+        self.assertIsNone(self.codex("git status", d))
+        self.assertIsNone(self.codex(self.CMD, d))
+        self.assertEqual(self.last_why(), "codex-no-transcript")

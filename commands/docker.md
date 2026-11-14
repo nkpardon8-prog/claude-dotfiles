@@ -267,12 +267,51 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   `script-veto`, `script-body`, `build`, `update-env`, `env-deny`, `state-secret`, `inspect`,
   `too-long`, `watch`, `veto-flag`, `tsc-emits`, `subst`, `subst-head`, `state`,
   `local-url`, `env-value`, `pipe-target`, `unsure-quoting`, `unsure-segment`, `head`, `no-git`,
-  `cwd-unknown`, `lockfile`, `pnpm-shape`, `error:<Type>`...), `cwd` and the command (URL userinfo,
+  `cwd-unknown`, `lockfile`, `pnpm-shape`, `error:<Type>`; Codex's `--codex` hook adds
+  `codex-read-only`, `codex-no-network`, `codex-state-read-only`, `codex-no-context`,
+  `codex-no-transcript`, `codex-<other sandbox type>`...), `cwd` and the command (URL userinfo,
   every `NAME=value` value, auth tokens and secret headers, `--password` / `--api-key` / `--token`
   values and `curl -u user:pw` redacted; only the first line of a command with a heredoc; cut at 300
   chars). 0600, rotated to `hook.log.1`
   past 5 MB; a failed write never changes or blocks the command. `jq -r .why hook.log | sort | uniq -c`
   answers "why did this stay local".
+- **Codex agents (2026-11-14):** Codex runs every command inside its sandbox (`CODEX_SANDBOX=seatbelt`),
+  and the sandbox decides what rrun can do. Read-only sessions, and workspace-write sessions without
+  network, block ssh and make `~/.local/state/rdocker` read-only.
+  - **Inside any Codex sandbox, rrun never breaks a command** (`rd_run.sandbox_block`). With no
+    network or no writable state dir it runs the command here at once:
+    `rrun: cannot use the pool here (this Codex sandbox has no network) - running on the laptop instead`.
+    Until 2026-11-14 it died with a `PermissionError` traceback (exit 1) and never ran the command.
+    Two exceptions end 75 instead: a db job, and `RRUN_STRICT=1`. Inside the sandbox ssh never creates
+    a ControlMaster, because `~/.ssh` is read-only there (`ControlMaster=no`: it uses a live `rr-%C`
+    master, or connects directly). The npm shim's top-level check needs `ps`, which the sandbox denies
+    (exit 126), so under Codex npm always runs locally.
+  - **A Codex agent's job never waits for the pool** (`rd_run.codex_quick`). It goes to a worker only
+    when one is free now. Otherwise it runs here at once: no slot queue, no wait for an unreachable
+    pool, and no 73. A heavy `tsc` also runs here instead of ending 75. A db job keeps every rule.
+    Measured with every worker down: before, 624 s and then exit 75 (never ran); now, 5 s and a local
+    run.
+  - **Automatic routing for Codex is BUILT BUT OFF.** It is installed by `scripts/codex-rrun-setup.py`
+    from `install-codex.sh`, and that call is not live. It would do three things:
+    - add one `$CODEX_HOME/hooks.json` PreToolUse entry, `rrun-route.py --codex` (10 s timeout);
+    - add a marked `config.toml` block: `[sandbox_workspace_write] network_access = true`,
+      `writable_roots = ["~/.local/state/rdocker"]` (absolute), plus `[hooks.state."<key>"]
+      trusted_hash`, Codex's own hash read through `app-server hooks/list`;
+    - route only when the session transcript's `turn_context` for THIS turn says workspace-write
+      with network and the state dir writable. Read-only and no-network sessions are untouched.
+    Codex 0.160 applies a hook's `updatedInput` only next to `permissionDecision: "allow"`. That
+    approves the rewrite only: the new command still goes through Codex's own review and sandbox
+    (tested). Codex cannot limit network to the worker IPs: its domain proxy is experimental, blocks
+    Tailscale's 100.x as private, and ssh does not use it. So it would open all outbound network for
+    workspace-write sessions.
+    **Why it is off:** a typical check is slower on the pool than here. Real `tsc --noEmit`, one
+    project: 23 s locally on this Mac (Nick's mini: a 24.5 s local median) against 66.6 s on hp
+    (hp's mean over 148 runs: 156 s). A tiny project took 0.5 s locally and about 2 s through rrun
+    (0.25 s on a cache hit).
+  - **Stage copies never rewrite the real ssh blocks** (`rd_pool.installed_here`). Only the rdocker
+    that `~/.local/bin/rrun` resolves into may self-heal `~/.ssh/config.d/rdocker`. On 2026-11-14 a
+    scratch copy with a test `fleet.json` replaced every worker's Host block twice; real rruns
+    restored it within 8-17 s.
 - **Logs:** laptop `~/.local/state/rdocker/route.log` (one line per decision, rrun lines with rc and
   seconds; rotated at 10 MB, ~1 week) and `daemon.log`; mini `~/rr/log/runs.log` (one line per run: time,
   repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since

@@ -90,7 +90,19 @@ Behavior:
     <RDOCKER_HOME or ~>/.local/state/rdocker/hook.log: time, session id, routed / local / skipped,
     a reason code, cwd, the redacted command (redact()). 0600, rotated at 5 MB, never raises.
   * Returns ONLY updatedInput (never a permission decision), so normal permission prompts still
-    apply to the rewritten command. Every other tool_input key is preserved.
+    apply to the rewritten command. Every other tool_input key is preserved. Codex is the one
+    exception: it needs permissionDecision "allow" beside updatedInput to apply it at all, and
+    still reviews and sandboxes the rewritten command as usual (see main()).
+  * Codex (2026-11-14): the same file is Codex's PreToolUse hook (`rrun-route.py --codex`, installed
+    into $CODEX_HOME/hooks.json by scripts/install-codex.sh; Codex >= 0.160 sends Claude's hook JSON,
+    tool_name "Bash", and applies updatedInput.command). Its commands run inside Codex's sandbox,
+    which the hook process is not in, so --codex reads THIS turn's sandbox from the session
+    transcript, only for a command decide() would route (codex_gate: the turn_context line whose
+    turn_id is the hook's): only workspace-write
+    with network_access and ~/.local/state/rdocker in writable_roots is judged at all; read-only,
+    no network, full access, an unreadable transcript or no matching turn -> left alone (reason
+    `codex-...` in the decision log). rrun's own sandbox_block() still runs anything it cannot send
+    to the pool here, so a stale answer costs a local run, never a broken one.
   * FAILS OPEN: any parse error or unexpected input -> exit 0 with no output (call unchanged).
 """
 import json
@@ -1306,7 +1318,59 @@ def decide(cmd, cwd, h):
     return "routed", "ok", new
 
 
+CODEX_SCAN_CHUNK = 1 << 20
+CODEX_SCAN_MAX = 32 << 20          # transcript bytes read back from the end for this turn's context
+
+
+def turn_context(path, turn_id):
+    """-> the payload of the transcript's turn_context line for turn_id (read backwards from the
+    end, at most CODEX_SCAN_MAX bytes), else None."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos, left, read = f.tell(), b"", 0
+        while pos > 0 and read < CODEX_SCAN_MAX:
+            n = min(CODEX_SCAN_CHUNK, pos)
+            pos -= n
+            read += n
+            f.seek(pos)
+            lines = (f.read(n) + left).split(b"\n")
+            left = lines.pop(0) if pos > 0 else b""          # maybe cut: finished by the next chunk
+            for line in reversed(lines):
+                if b'"turn_context"' not in line:
+                    continue
+                o = json.loads(line)
+                p = o.get("payload") if isinstance(o, dict) and o.get("type") == "turn_context" else None
+                if isinstance(p, dict) and p.get("turn_id") == turn_id:
+                    return p
+    return None
+
+
+def codex_gate(data, h):
+    """Codex hook: -> None when this turn's sandbox lets rrun reach the pool (workspace-write, network
+    on, the rdocker state dir writable), else the reason code it stays here."""
+    tp, tid = data.get("transcript_path"), data.get("turn_id")
+    if not isinstance(tp, str) or not tp or not isinstance(tid, str) or not tid:
+        return "codex-no-transcript"
+    try:
+        ctx = turn_context(tp, tid)
+    except (OSError, ValueError):
+        return "codex-no-transcript"
+    sp = ctx.get("sandbox_policy") if ctx else None
+    if not isinstance(sp, dict):
+        return "codex-no-context"
+    if sp.get("type") != "workspace-write":
+        return "codex-" + re.sub(r"[^a-z-]", "", str(sp.get("type") or "unknown"))[:24]
+    if sp.get("network_access") is not True:
+        return "codex-no-network"
+    state = os.path.realpath(os.path.join(h, ".local", "state", "rdocker"))
+    roots = [os.path.realpath(r) for r in sp.get("writable_roots") or [] if isinstance(r, str) and r]
+    if not any(state == r or state.startswith(r.rstrip("/") + "/") for r in roots):
+        return "codex-state-read-only"
+    return None
+
+
 def main():
+    codex = "--codex" in sys.argv[1:]
     try:
         data = json.load(sys.stdin)
         tool_input = data.get("tool_input") or {}
@@ -1323,6 +1387,9 @@ def main():
     cwd = data.get("cwd") if isinstance(data.get("cwd"), str) and data.get("cwd") else os.getcwd()
     try:
         decision, why, new = decide(cmd, cwd, h)
+        gate = codex_gate(data, h) if new and codex else None   # read only for a command it would route
+        if gate:
+            decision, why, new = "local", gate, None
     except Exception as e:                                    # fail open, but say so in the log
         decision, why, new = "local", "error:" + type(e).__name__, None
     if new or HEAVY_LOOK_RE.search(cmd):
@@ -1330,12 +1397,14 @@ def main():
         log_decision(h, sid, decision, why, cmd, cwd)
     if not new:
         return
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": {**tool_input, "command": new},
-        }
-    }))
+    out = {"hookEventName": "PreToolUse", "updatedInput": {**tool_input, "command": new}}
+    if codex:
+        # Codex applies updatedInput only beside permissionDecision "allow" (else: "updatedInput
+        # without permissionDecision:allow", the call runs unchanged). It approves the REWRITE only:
+        # the new command still meets Codex's own review and sandbox (2026-11-14, 0.160: an
+        # allow-rewritten `rm -f` was rejected exactly like the same command typed directly).
+        out["permissionDecision"] = "allow"
+    print(json.dumps({"hookSpecificOutput": out}))
 
 
 if __name__ == "__main__":

@@ -333,9 +333,20 @@ def load_workers(cfg):
     except Exception as e:          # an unusable fleet.json must never stop a run: say so, use cfg host
         note("fleet.json unusable (%s) - using %s" % (str(e).strip()[:200], cfg.get("host")))
         return None
-    if os.path.realpath(path) == os.path.realpath(getattr(rd_common, "FLEET_PATH", "") or "/nonexistent"):
+    if os.path.realpath(path) == os.path.realpath(getattr(rd_common, "FLEET_PATH", "") or "/nonexistent") \
+            and installed_here():
         ensure_ssh_blocks(fleet, ws, cfg)   # only the real registry may rewrite the real ssh blocks
     return ws or None
+
+
+def installed_here():
+    """True when this rdocker is the one installed for this user (~/.local/bin/rrun resolves into it).
+    A stage or scratch copy carries its own fleet.json, which is "the registry" from inside the copy:
+    it must never rewrite the real ~/.ssh/config.d/rdocker (2026-11-14: a scratch fleet of unreachable
+    test hosts replaced every worker's Host block, twice; real rruns self-healed it within seconds)."""
+    link = os.path.join(rd_common.BIN_DIR, "rrun")
+    return os.path.lexists(link) and \
+        os.path.dirname(os.path.realpath(link)) == os.path.realpath(rd_common.HERE)
 
 
 def ensure_ssh_blocks(fleet, ws, cfg, path=None):
