@@ -5,16 +5,20 @@
 # the box and runs it; see commands/dockersetup.md.
 #
 #   provision-linux.sh --ts-ip <tailscale ip> [--user rd] [--port 22] [--keys FILE] [--img-gb 30]
-#                      [--max-slots 2] [--heavy-slots 1] [--headless auto|yes|no] [--home] [--admin-user U] [--dry-run]
+#                      [--max-slots 2] [--heavy-slots 1] [--headless auto|yes|no] [--home] [--admin-user U]
+#                      [--rr-gb auto|N|0] [--dry-run]
 #
 # Recipe (2026-11-01, WSL): user rd; sshd on the Tailscale ip + loopback only; docker-ce with daemon.json
 # {ip 127.0.0.1, containerd snapshotter off, json-file 10m x3, builder gc 1GB}; a 30G ext4 loop image at
 # /var/lib/docker (so the janitor's 50/60% caps mean ~15/18 GB); journald 50M; chrony makestep; sudoers
 # for the janitor verbs; mise node 25 + pnpm 9. Plus: rd-tune (slot cap + reclaim timer), the reporter
 # units when shipped alongside, client keys from --keys. Windows-side keep-alive (S4U task) is NOT here.
+# ~/rr on a reflink XFS image (rd-rrfs.sh: package clones share blocks; --rr-gb auto = the largest image that
+# cannot overfill the disk, at most 300 GB, 120 on WSL whose real limit is the Windows drive; 0 = skip). A box
+# whose ~/rr already has data is not moved here: run rd-rrfs presync + cutover when it is idle.
 set -euo pipefail
 
-RD_USER=rd TS_IP="" PORT=22 KEYS="" IMG_GB=30 MAX_SLOTS=2 HEAVY_SLOTS=1 HEADLESS=auto DRY=0 IS_HOME=0 ADMIN_USER=""
+RD_USER=rd TS_IP="" PORT=22 KEYS="" IMG_GB=30 MAX_SLOTS=2 HEAVY_SLOTS=1 HEADLESS=auto DRY=0 IS_HOME=0 ADMIN_USER="" RR_GB=auto
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG=/var/lib/rdocker-docker.img
 
@@ -41,6 +45,7 @@ while [ $# -gt 0 ]; do
     --heavy-slots) HEAVY_SLOTS=${2:?}; shift 2 ;;
     --headless) HEADLESS=${2:?}; shift 2 ;;
     --admin-user) ADMIN_USER=${2:?}; shift 2 ;;
+    --rr-gb) RR_GB=${2:?}; shift 2 ;;
     --home) IS_HOME=1; shift ;;
     --dry-run) DRY=1; shift ;;
     *) die "unknown argument: $1" ;;
@@ -50,6 +55,7 @@ done
 [[ "$RD_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "bad --user"
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "bad --port"
 [[ "$IMG_GB$MAX_SLOTS$HEAVY_SLOTS" =~ ^[0-9]+$ ]] || die "--img-gb/--max-slots/--heavy-slots must be numbers"
+[[ "$RR_GB" =~ ^(auto|[0-9]+)$ ]] || die "--rr-gb must be auto or a number"
 [ -z "$KEYS" ] || [ -r "$KEYS" ] || die "cannot read --keys $KEYS"
 [ "$(id -u)" = 0 ] || [ "$DRY" = 1 ] || die "run as root: sudo bash $0 ..."
 [ -d /run/systemd/system ] || [ "$DRY" = 1 ] || die "systemd is required (on WSL: [boot] systemd=true in /etc/wsl.conf)"
@@ -238,6 +244,28 @@ if [ "$DRY" != 1 ]; then
   as_rd "$RD_HOME/.local/bin/mise" use -g node@25 pnpm@9
   grep -qs 'rdocker: mise' "$RD_HOME/.bashrc" || printf '%s\n' '# rdocker: mise (node for non-interactive ssh too)' 'export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"' >> "$RD_HOME/.bashrc"
   as_rd mkdir -p "$RD_HOME/rr"
+fi
+
+# 8b. ~/rr on a reflink XFS image (rd-rrfs.sh) - before anything starts writing ~/rr --------------------------
+say rr-volume
+if [ -f "$SRC/rd-rrfs.sh" ]; then
+  put_file /usr/local/bin/rd-rrfs 755 < "$SRC/rd-rrfs.sh" || true
+  if [ "$RR_GB" != 0 ] && [ "$DRY" != 1 ]; then
+    if [ -n "$(ls -A "$RD_HOME/rr" 2>/dev/null)" ] && ! mountpoint -q "$RD_HOME/rr"; then
+      echo "RDPROV note ~/rr already has data: move it when idle with rd-rrfs create --gb N; rd-rrfs presync; rd-rrfs cutover"
+    else
+      gb=$RR_GB
+      if [ "$gb" = auto ]; then
+        gb=$(RD_RRFS_USER=$RD_USER /usr/local/bin/rd-rrfs max-gb); cap=300; [ "$IS_WSL" = 1 ] && cap=120
+        [ "$gb" -gt "$cap" ] && gb=$cap
+      fi
+      if [ "$gb" -ge 40 ] 2>/dev/null; then
+        RD_RRFS_USER=$RD_USER /usr/local/bin/rd-rrfs create --gb "$gb" && systemctl start rd-rrfs.service
+      else
+        echo "RDPROV note no room for a ~/rr volume (max ${gb} GB < 40): ~/rr stays on the root disk"
+      fi
+    fi
+  fi
 fi
 
 # 9. rd-tune (optimizer) + reporter units ----------------------------------------------------------------------------

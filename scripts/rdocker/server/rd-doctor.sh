@@ -19,7 +19,8 @@
 #                    label or without the run label. "Gone" = no live run owns the token (see CT_PL).
 #  reporter          rd-reporter not active -> restart (Linux user unit; macOS launchctl kickstart when the
 #                    com.rdocker.reporter label is loaded). At most once per 5 min.
-#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost rc=N | deps-failed | rc=134) in the
+#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost rc=N | deps-failed | rc=134 |
+#                    error rc=70: the runner's own pre-start failure, e.g. a ~/rr it cannot write) in the
 #                    last DOCTOR_INFRA_WINDOW_S of runs.log, or memory / disk critical -> drain: write the
 #                    drain marker and slots.cap = 0 (the runner and the pool probe then admit nothing; jobs
 #                    already running are untouched). Re-open after DOCTOR_REOPEN_OK healthy ticks in a
@@ -27,7 +28,8 @@
 #                    macOS: rows logged within DOCTOR_WAKE_GRACE_S of the last wake or boot are not counted -
 #                    a lid close cuts every running job (no heartbeat while asleep), and each one is logged
 #                    `lost rc=N` at once on wake; that is the sleep, not a sick worker.
-#  disk              ~/rr (and /var/lib/docker) below DOCTOR_DISK_CRIT_PCT % free -> a `critical` line
+#  disk              ~/rr (and /var/lib/docker, and the disk holding rd-rrfs's ~/rr image) below
+#                    DOCTOR_DISK_CRIT_PCT % free -> a `critical` line
 #                    (at most every 10 min). rd-tune owns pruning; the doctor never deletes data.
 #  colima            macOS only: rd's Colima socket is there but `docker info` has not answered for
 #                    DOCTOR_COLIMA_BAD_N ticks in a row (a VM that came back wedged from sleep), no slot is
@@ -54,7 +56,7 @@
 # Rules on/off: DOCTOR_RULES (space list of the rule names above). Thresholds: the DOCTOR_* defaults below.
 # `rd-doctor --lift` removes a doctor drain now (an uninstall runs it); `--source` only defines the functions.
 # Test hooks (env): RD_OS (linux|darwin), RD_DOCTOR_CONF, RD_CONF (tune.conf), RD_RR_ROOT, RD_STATE_DIR,
-# RD_DOCTOR_STATUS, RD_DRAIN_FILE, RD_PS_CMD (an executable printing what `ps -A -o pid=,ppid=,pgid=,uid=,
+# RD_DOCTOR_STATUS, RD_DRAIN_FILE, RD_RRFS_IMG, RD_PS_CMD (an executable printing what `ps -A -o pid=,ppid=,pgid=,uid=,
 # etime=,stat=,args=` prints), RD_DOCKER (docker binary), RD_MEMINFO, RD_MEM_PCT, RD_DF_CMD (prints what
 # `df -Pk <path>` does), RD_NO_SERVICES=1 (no reporter rule), RD_DOCTOR_DRY, RD_WAKE_TIME (epoch of the last
 # wake), RD_COLIMA (colima binary), RD_COLIMA_SOCK (rd's Colima docker socket).
@@ -91,6 +93,9 @@ else
   STATE="${RD_STATE_DIR:-$HOME/.local/state/rdocker-doctor}"
 fi
 LOG="$RR/log/doctor.log"
+# rd-rrfs: ~/rr can be a sparse XFS image; the disk under it must keep room too (the drain counts the lower of
+# the two, so a full root disk stops new jobs before the image runs out of blocks to allocate)
+RRFS_IMG="${RD_RRFS_IMG:-/var/lib/rdocker-rr.xfs}"
 CAP_FILE="$RR/slots.cap"
 RD_UID=$(id -u "$RD_USER" 2>/dev/null || echo -1)
 RD_GID=$(id -g "$RD_USER" 2>/dev/null || echo -1)
@@ -445,7 +450,9 @@ while (my $l = <$fh>) {
     next if $now - $t > $win || $t - $now > 60 || $t < ($floor || 0);
     # truthful labels (2026-11-11): only a STARTED run lost for good is "lost rc=N"; a bare "lost" is the
     # old label of a client that left before the start (now abandoned-setup / moved): not a worker fault
-    $n++ if $l =~ /\soutcome=(?:lost rc=\d+|deps-failed)\s/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
+    # error rc=70: the runner failed before the start for its own reasons (a perl error, an unwritable ~/rr,
+    # the run-local Postgres not coming up) - 2026-11-13 a root-owned ~/rr/w2 failed 15 runs in a row unseen
+    $n++ if $l =~ /\soutcome=(?:lost rc=\d+|deps-failed|error rc=70)\s/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
 }
 print "$n\n";
 '
@@ -518,7 +525,7 @@ rule_drain() {
 # ---------------------------------------------------------------------------------------- disk (f)
 rule_disk() {
   local p pct
-  for p in "$RR" /var/lib/docker; do
+  for p in "$RR" /var/lib/docker $([ -f "$RRFS_IMG" ] && dirname "$RRFS_IMG"); do
     [ "$p" = /var/lib/docker ] && { [ "$OS" = linux ] && [ -d "$p" ] && [ -z "${RD_RR_ROOT:-}" ] || continue; }
     pct=$(disk_free_pct "$p"); [ -n "$pct" ] || continue
     [ "$pct" -lt "$DOCTOR_DISK_CRIT_PCT" ] || continue
@@ -651,6 +658,10 @@ main() {
     return 0
   fi
   MEMP=$(mem_free_pct); DISKP=$(disk_free_pct "$RR")
+  if [ -f "$RRFS_IMG" ]; then
+    local ip; ip=$(disk_free_pct "$(dirname "$RRFS_IMG")")
+    [ -n "$ip" ] && { [ -z "$DISKP" ] || [ "$ip" -lt "$DISKP" ]; } && DISKP=$ip
+  fi
   rule_slots
   rule_on hung-job && rule_hung
   rule_on orphan-container && rule_containers

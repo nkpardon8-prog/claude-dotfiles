@@ -1131,6 +1131,8 @@ unchanged) when the Docker host is Linux (e.g. Ubuntu 24.04, systemd dockerd, us
 to `/var/run/docker.sock` (`setup-mini` itself is mac-only; configure the Linux host by hand).
 `server_docker_bin` (default `/usr/bin/docker` on linux) names the server's docker CLI. rr_runner.pl
 falls back to `/usr/bin/docker`, reads memory/load from `/proc`, and clones the deps store with
-`cp -a --reflink=auto`. Never prompts: only `sudo -n`. sudoers (`visudo -f /etc/sudoers.d/rdocker`):
+`cp -a --reflink=auto`. On the Linux workers `~/rr` is a reflink-capable XFS image
+(`server/rd-rrfs.sh`, mounted at boot by `rd-rrfs.service`), so a deps-store clone shares blocks and takes
+~1 s instead of 10-35 s; `rd-rrfs rollback` / `drop-old` manage it. Never prompts: only `sudo -n`. sudoers (`visudo -f /etc/sudoers.d/rdocker`):
 
     <user> ALL=(root) NOPASSWD: /usr/bin/systemctl start docker, /usr/bin/systemctl restart docker, /usr/bin/journalctl --vacuum-size=*, /usr/sbin/fstrim -a

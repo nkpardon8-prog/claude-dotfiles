@@ -478,6 +478,12 @@ class Drain(DoctorBase):
         self.assertFalse(st["drained"])
         self.assertIn("drain undrain worker healthy 3 checks in a row (slots.cap -> 4)", self.log())
 
+    def test_runner_pre_start_errors_drain(self):
+        """error rc=70 = the runner's own failure before the start (2026-11-13: an unwritable ~/rr/w2)."""
+        self.runs((10, "error rc=70"), (20, "error rc=70"), (30, "error rc=70"), (40, "error rc=2"))
+        self.doctor()
+        self.assertIn("infra=3/300s", read(self.drain))
+
     def test_old_or_command_failures_do_not_drain(self):
         # bare "lost" (pre-2026-11-11 label of a client that left before the start), abandoned-setup,
         # moved and warm are not worker faults; only "lost rc=N" (started, never reattached) is
@@ -495,6 +501,21 @@ class Drain(DoctorBase):
         self.df = self.fake_df(2)
         self.doctor()
         self.assertIn("disk_free=2%", read(self.drain))
+
+    def test_disk_under_the_rr_image_counts_too(self):
+        """rd-rrfs: ~/rr on a sparse image; its own fs can look fine while the disk under it is full."""
+        imgdir = os.path.join(self.tmp, "varlib")
+        os.makedirs(imgdir)
+        img = write(os.path.join(imgdir, "rr.xfs"), "")
+        self.df = self.stub("fake-df-split", 'case "$1" in %s) f=3 ;; *) f=50 ;; esac\n'
+                            "echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n"
+                            "echo \"fake 1000000 0 $((f * 10000)) 0%% /\"" % imgdir)
+        self.doctor(RD_RRFS_IMG=img)
+        self.assertIn("disk_free=3%", read(self.drain))
+        self.assertIn("disk critical %s free=3%%" % imgdir, self.log())
+        os.unlink(self.drain)
+        self.doctor(RD_RRFS_IMG=os.path.join(imgdir, "absent.xfs"))     # no image: only ~/rr counts
+        self.assertFalse(os.path.exists(self.drain))
 
     def test_unhealthy_tick_resets_the_streak(self):
         self.doctor(RD_MEM_PCT="3")
