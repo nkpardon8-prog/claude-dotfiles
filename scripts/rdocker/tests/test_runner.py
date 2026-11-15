@@ -1067,15 +1067,20 @@ class RunnerTest(unittest.TestCase):
 
 
     # ------------------------------------------------------------------ share switch (rented workers)
-    def share(self, level):
-        """Point RR_SHARE_FILE at a file in the test dir with `level` (None = no file) -> env_extra."""
+    NICK = dict(RR_SYSCTL_hw_logicalcpu="18", RR_SYSCTL_hw_ncpu="18", RR_SYSCTL_hw_memsize=str(64 << 30))
+    AIR = dict(RR_SYSCTL_hw_logicalcpu="10", RR_SYSCTL_hw_ncpu="10", RR_SYSCTL_hw_memsize=str(16 << 30))
+
+    def share(self, level, mac=None):
+        """Point RR_SHARE_FILE at a file in the test dir with `level` (None = no file) -> env_extra. The
+        machine is pinned (default: a Mac like nickmbp, 18 threads / 64 GB), so the level's caps never
+        depend on the Mac running the suite."""
         f = os.path.join(self.d, "share")
         if level is None:
             if os.path.exists(f):
                 os.unlink(f)
         else:
             wfile(f, level + "\n")
-        return {"RR_SHARE_FILE": f}
+        return dict(mac or self.NICK, RR_SHARE_FILE=f)
 
     def test_share_switch_off_refuses_at_once_some_halves_slots_max_or_none_full(self):
         os.makedirs(os.path.join(self.root, "slots"))
@@ -1145,6 +1150,155 @@ class RunnerTest(unittest.TestCase):
             return []
         with open(self.maclog) as f:
             return [ln for ln in f.read().splitlines() if ln.startswith(prefix)]
+
+    # ---------------------------------------------------- share levels: caps, memory guard, owner stop
+    def test_memory_guard_refuses_a_new_job_at_once_on_a_mac(self):
+        """macOS memory pressure up, or free memory under the floor after the job's need: 73 + UNAVAIL
+        memory before anything is prepared (the client moves on); Linux never has the guard."""
+        for extra in ({"RR_SYSCTL_kern_memorystatus_vm_pressure_level": "4"},
+                      {"RR_SYSCTL_kern_memorystatus_vm_pressure_level": "2"},
+                      {"RR_SYSCTL_kern_memorystatus_level": "30"}):           # 16 GB: 4.8 GB free - 2 < 3.2
+            kw = dict(self.share("medium", self.AIR), RR_OS="darwin", **extra)
+            t0 = time.time()
+            r = self.run_runner(["true"], need_gb=2, wait_min=1, env_extra=kw)
+            self.assertEqual(r.rc, 73, (extra, r.err))
+            self.assertLess(time.time() - t0, 10)
+            self.assertIn("%s UNAVAIL memory" % self.nonce, r.err)
+            self.assertIn("owner needs its memory now", r.err)
+            self.assertNotIn("%s READY" % self.nonce, r.err)
+            self.assertEqual(self.calls(), [])                              # nothing prepared or run
+        kw = dict(self.share("medium", self.AIR), RR_OS="darwin", RR_SYSCTL_kern_memorystatus_level="30")
+        self.assertEqual(self.run_runner(["true"], need_gb=1, env_extra=kw).rc, 0)   # a 1 GB job still fits
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\n")
+        wfile(os.path.join(proc, "cpuinfo"), "processor : 0\n")
+        kw = dict(self.share("medium"), RR_OS="linux", RR_PROC=proc, RR_SYSCTL_kern_memorystatus_vm_pressure_level="4")
+        self.assertEqual(self.run_runner(["true"], env_extra=kw).rc, 0)
+
+    def test_a_busy_mac_waits_but_a_mac_under_pressure_refuses(self):
+        """A full worker is waited for; memory pressure is never queued behind (share_gate runs on every pass
+        of the slot wait, the same as a share switched off while waiting)."""
+        os.makedirs(os.path.join(self.root, "slots"))
+        kw = dict(self.share("high", self.AIR), RR_OS="darwin")
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            r = self.run_runner(["true"], slots=1, wait_min=0.03, env_extra=kw)
+            self.assertEqual(r.rc, 73, r.err)
+            self.assertIn("%s BUSY" % self.nonce, r.err)                     # waited its budget, busy
+            self.assertNotIn("UNAVAIL", r.err)
+            t0 = time.time()
+            r = self.run_runner(["true"], slots=1, wait_min=1, env_extra=dict(
+                kw, RR_SYSCTL_kern_memorystatus_vm_pressure_level="4"))
+            self.assertIn("%s UNAVAIL memory" % self.nonce, r.err)          # refused at once, never queued
+            self.assertLess(time.time() - t0, 10)
+
+    def test_ram_cap_holds_a_new_job_while_the_jobs_use_it_up(self):
+        """ram=4: this user's processes (the jobs) + the new job's need must fit under 4 GB, else it waits
+        (gate=mem) like a full worker; under the cap it runs."""
+        kw = dict(self.share("cpu=100 ram=4", self.AIR), RR_OS="darwin", RR_USED_MB="3000")
+        r = self.run_runner(["true"], need_gb=2, wait_min=0.02, env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertIn("gate=mem", r.err)
+        self.assertNotIn("UNAVAIL", r.err)                                  # waits, not refused
+        kw["RR_USED_MB"] = "1500"
+        self.assertEqual(self.run_runner(["true"], need_gb=2, env_extra=kw).rc, 0)
+        kw = dict(self.share("medium", self.AIR), RR_OS="darwin", RR_USED_MB="9000")   # medium: 8 GB of 16
+        self.assertEqual(self.run_runner(["true"], need_gb=1, wait_min=0.02, env_extra=kw).rc, 73)
+        kw = dict(self.share(None, self.AIR), RR_OS="darwin", RR_USED_MB="90000")      # no switch: no cap
+        self.assertEqual(self.run_runner(["true"], need_gb=1, env_extra=kw).rc, 0)
+
+    def test_level_scales_slots_and_heavy_slots_by_cpu_and_ram(self):
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "0"), "a") as l0, \
+                open(os.path.join(self.root, "slots", "1"), "a") as l1:
+            fcntl.flock(l0, fcntl.LOCK_EX)
+            fcntl.flock(l1, fcntl.LOCK_EX)
+            for level, rc in (("high", 0), ("medium", 73), ("cpu=75", 0), ("cpu=75 ram=4", 73), ("cpu=50 ram=6", 73)):
+                r = self.run_runner(["true"], slots=4, wait_min=0.02, env_extra=self.share(level, self.AIR))
+                self.assertEqual(r.rc, rc, (level, r.err))     # 4 slots: high 4, medium 2, 75 % 3, 4 GB 2, 50 % 2
+        with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            hv = dict(slots=4, heavy_slots=2, cls="heavy", wait_min=0.02)
+            self.assertEqual(self.run_runner(["true"], env_extra=self.share("high", self.AIR), **hv).rc, 0)   # 12 GB: 2
+            r = self.run_runner(["true"], env_extra=self.share("medium", self.AIR), **hv)
+            self.assertEqual(r.rc, 73, r.err)                                # 8 GB: 1 heavy (held)
+        t0 = time.time()
+        r = self.run_runner(["true"], env_extra=self.share("cpu=100 ram=4", self.AIR), slots=4, heavy_slots=1,
+                            cls="heavy", wait_min=5)
+        self.assertEqual(r.rc, 73, r.err)                                    # 4 GB: no heavy slot at all ...
+        self.assertIn("%s UNAVAIL ram-cap" % self.nonce, r.err)             # ... refused, never a 5 min wait
+        self.assertLess(time.time() - t0, 10)
+        self.assertNotIn(" WAIT ", r.err)
+
+    def test_cpu_share_follows_the_level(self):
+        """Each test job gets cores / slots workers: the level's cores over the level's slots."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "cpuinfo"), "".join("processor\t: %d\n\n" % i for i in range(16)))
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 33554432 kB\nMemAvailable: 16000000 kB\n")
+        for level, want in ((None, 2), ("high", 2), ("medium", 2), ("cpu=100 ram=4", 8), ("cpu=25", 2),
+                            ("cpu=50 ram=2", 8)):
+            open(self.log, "w").close()
+            r = self.run_runner(["npx", "vitest", "run"], slots=8,
+                                env_extra=dict(self.share(level), RR_OS="linux", RR_PROC=proc))
+            self.assertEqual(r.rc, 0, r.err)
+            got = [c for c in self.calls() if c.startswith("npx ")][-1]
+            self.assertEqual(got, "npx vitest run --maxWorkers=%d" % want, level)
+
+    def test_node_heap_stays_under_the_ram_cap(self):
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 32000000 kB\nMemAvailable: 16000000 kB\n")
+        show = ["/bin/sh", "-c", 'printf "%s" "$NODE_OPTIONS"']
+        for level, want in ((None, 12288), ("cpu=100 ram=4", 3072), ("ram=1", 1024), ("medium", 11718)):
+            r = self.run_runner(show, env_extra=dict(self.share(level), RR_OS="linux", RR_PROC=proc))
+            self.assertEqual(r.out, "--max-old-space-size=%d" % want, (level, r.err))
+
+    def test_owner_stop_refuses_a_job_before_go_like_share_off(self):
+        """rd-worker-mac's USR1 (the owner's Off now): a run that has not started is refused (73 + UNAVAIL
+        share=off), so the client moves on and nothing ran."""
+        os.makedirs(os.path.join(self.root, "slots"))
+
+        def usr1(p):
+            end = time.time() + 10
+            while b" WAIT " not in b"".join(self.err_so_far) and time.time() < end:
+                time.sleep(0.05)
+            p.send_signal(signal.SIGUSR1)
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            t0 = time.time()
+            r = self.run_runner(["true"], slots=1, wait_min=5, action=usr1, env_extra=self.share("high"))
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn("%s UNAVAIL share=off" % self.nonce, r.err)
+        self.assertIn("owner stopped its jobs", r.err)
+        self.assertNotIn("%s STARTED" % self.nonce, r.err)
+
+    def test_owner_stop_ends_a_running_command_as_interrupted(self):
+        marker = os.path.join(self.d, "began")
+
+        def usr1(p):
+            self.wait_for(marker, 20)
+            p.send_signal(signal.SIGUSR1)
+        t0 = time.time()
+        r = self.run_runner(["/bin/sh", "-c", "touch %s; sleep 60; echo finished" % marker], action=usr1,
+                            env_extra=self.share("high"), timeout=60)
+        self.assertLess(time.time() - t0, 40)
+        self.assertNotEqual(r.rc, 0, r.err)
+        self.assertNotIn("finished", r.out)
+        self.assertIn("interrupted rc=", self.runs_log()[-1])
+
+    def test_mac_colima_on_the_air_is_sized_to_its_cores_and_ram_cap(self):
+        for level, want in (("medium", "--cpu 5 --memory 8"), ("high", "--cpu 10 --memory 8"),
+                            ("cpu=75 ram=4", "--cpu 7 --memory 4"), ("low", "--cpu 2 --memory 4")):
+            kw = dict(self.mac_docker(), **self.share(level, self.AIR))
+            if os.path.exists(os.path.join(self.d, "engine-up")):
+                os.unlink(os.path.join(self.d, "engine-up"))
+            r = self.run_runner(["true"], cls="db", env_extra=kw)
+            self.assertEqual(r.rc, 0, r.err)
+            self.assertEqual(self.mac_calls("colima start")[-1],
+                             "colima start %s --disk 120 --vm-type vz --vz-rosetta" % want, level)
 
     def test_mac_db_job_starts_colima_sized_by_the_share_level(self):
         kw = dict(self.mac_docker(), **self.share("some"))

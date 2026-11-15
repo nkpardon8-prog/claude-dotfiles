@@ -74,12 +74,19 @@
 # RR_SHARE_FILE, RR_COLIMA (default /opt/homebrew/bin/colima), RR_COLIMA_TIMEOUT (default 120 s),
 # RR_NODE_V_S (the `node -v` bound, default 5 s).
 #
-# Share switch (a worker's owner rents it in or out; see share_level): off = take no new job (exit 73
-# with "<nonce> UNAVAIL share=off", the client moves on); some = half the slots and heavy slots;
-# max (or no share file: every Linux worker) = full. On a Mac worker with Colima, a db job (and any
-# docker call through the shim) first makes sure the engine answers, starting Colima sized by the
-# level (exit 73 + "UNAVAIL docker" when it does not come up in time); with the share off and no slot
-# busy, the Colima this runner started is stopped in the background when a job ends.
+# Share switch (a worker's owner rents it in or out; the share-spec block and take_slot): off = take no new
+# job (exit 73 with "<nonce> UNAVAIL share=off", the client moves on); low / medium / high or a custom
+# cpu=<%> ram=<GB> = that share of the slots, heavy slots, cores (fair_share) and memory (the RAM cap:
+# slots and the node heap sized to it, a new job waits while the jobs already use it up); no share file
+# (every Linux worker) = full. Old words: some = medium, max = high (the same slots and VM as before).
+# A Mac worker also guards its owner's apps: a new job is refused (73 + "UNAVAIL memory") while macOS
+# memory pressure is not normal or free memory would drop under the floor (share_guard); running jobs
+# are never touched. SIGUSR1 (rd-worker-mac, the owner's "Off now (stop jobs)") stops a run: before GO
+# it is refused like share off, after GO its command is stopped like a client KILL (runs.log interrupted).
+# On a Mac worker with Colima, a db job (and any docker call through the shim) first makes sure the
+# engine answers, starting Colima sized by the level (exit 73 + "UNAVAIL docker" when it does not come
+# up in time); with the share off and no slot busy, the Colima this runner started is stopped in the
+# background when a job ends.
 use strict;
 use warnings;
 use POSIX qw(setsid WNOHANG _exit SIGINT SIGTERM SIGHUP SIG_BLOCK SIG_SETMASK);
@@ -99,7 +106,7 @@ my $ROOT = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
 my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
 my $COLIMA = $ENV{RR_COLIMA} || '/opt/homebrew/bin/colima';
-my %VM = (max => [12, 24, 120], some => [6, 12, 120]);    # colima --cpu / --memory GB / --disk GB per share level
+my $VM_DISK_GB = 120;    # colima --disk; --cpu / --memory come from the share level (share_caps)
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
 # fair_share: the env vars vitest 3-5 read for its worker count; config words that mean "a limit is set"
 my @VITEST_ENV = qw(VITEST_MAX_WORKERS VITEST_MAX_THREADS VITEST_MAX_FORKS);
@@ -119,7 +126,9 @@ our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
 my %reaped;
 my ($t_slot, $t_ready, $t_spawn);    # run log timings: slot taken, READY (prepare done), command spawned
 my $t_wait0;                          # run log: when the slot wait began (wait_s)
-my $unavail = 0;                      # we answered UNAVAIL (share off / no docker): refused, not busy
+my $unavail = 0;                      # we answered UNAVAIL (share off / memory / no docker): refused, not busy
+my $caps;                             # share_caps of the level this run's slot was taken under (take_slot)
+my $owner_stop = 0;                   # SIGUSR1: the worker's owner stopped the jobs here (rd-worker-mac)
 my $moved = 0;                        # the client sent MOVE before GO: it re-planned elsewhere (runs.log "moved")
 my $setup_kind;                       # runs.log setup=: warm (packages there) / clone (from the store) / cold (npm install ran)
 my $node_major;                       # runs.log node=: `node -v` major on this run's PATH (undef = not known)
@@ -148,13 +157,30 @@ sub status {
     $unavail = 1 if $_[0] =~ /^UNAVAIL/;
     print STDERR "$nonce $_[0]\n";
 }
-sub fail { my ($msg, $code) = @_; print STDERR "rrun-runner: $msg\n" if defined $msg; die { code => $code // 70 } }
+sub fail {
+    my ($msg, $code) = @_;
+    # the owner stopped the jobs here before this one started: the share-off refusal, whatever stopped it
+    # (the client moves on; nothing ran)
+    ($msg, $code) = ("this worker's owner stopped its jobs; not taking new ones", 73) if $owner_stop && !$started
+        && $role eq 'runner' && !$unavail && do { status('UNAVAIL share=off'); 1 };
+    print STDERR "rrun-runner: $msg\n" if defined $msg;
+    die { code => $code // 70 };
+}
 
 # A signal to the runner itself (sshd hangup, kill): stop the command and still clean up.
 for my $s (qw(INT TERM HUP)) {
     $SIG{$s} = sub { $lost = 1; die { code => 128 + POSIX->can("SIG$s")->() } unless $supervising };
 }
 $SIG{PIPE} = 'IGNORE';    # a dead ssh must not kill us before cleanup (reset to default for children)
+# The owner's "Off now (stop jobs)": rd-worker-mac (root) sends USR1 to rd's runners. Before GO: refused
+# (fail turns it into 73 + UNAVAIL share=off); a started command is stopped like a client KILL.
+$SIG{USR1} = sub {
+    return if $role eq 'follower';    # the keeper it follows got its own USR1
+    $owner_stop = $killed = 1;        # a started command: supervise stops it (client_lost)
+    return if $started;
+    $intr++;                          # a prepare step under supervise stops; every later check fails (73)
+    fail(undef, 73) unless $supervising;
+};
 
 my $rc = eval { main() };
 if (!defined $rc) {
@@ -453,10 +479,119 @@ sub read_stdin {
     $inbuf = substr($inbuf, -8) if length $inbuf > 8;    # no valid line is longer
 }
 
+# >>> share-spec: kept verbatim in rr_runner.pl and share/rdocker-share.sh; rd_pool.PROBE splices it from
+# rr_runner.pl (tests/test_share.py fails when the copies differ). No single quotes in this block: the
+# share script runs it from a quoted shell string.
+#
+# The share switch of the owner, one short line in the share file:
+#   off | low | medium | high     presets (the old words: some = medium, max = high)
+#   cpu=<10-100> ram=<1-256>      custom, either or both: the percent of the cores jobs may use, and the
+#                                 most memory (GB) they may use together (no cpu= = 100, no ram= = no cap)
+#   preset   cpu   RAM cap (share of the memory of this machine)
+#   low       25 %   25 %
+#   medium    50 %   50 %
+#   high     100 %   75 %
+# No file = no switch: every slot, no cap (a Linux worker, as before). A file that is not a small regular
+# file, or says anything else, = off (the intent of the owner wins).
+# (tables live in subs: the runner calls main() before any file-level assignment below it has run)
+sub share_presets { (low => [25, 25], medium => [50, 50], high => [100, 75]) }
+sub share_aliases { (some => "medium", max => "high") }
+# -> undef (no file) or its text ("" when it cannot be read safely: off). Never through a symlink, never a
+# FIFO or a device (opened non-blocking, must be a regular file), at most 64 bytes.
+sub share_read {
+    my ($f) = @_;
+    my @st = lstat $f;
+    return undef if !@st && $!{ENOENT};
+    my ($v, $h) = ("");
+    sysread($h, $v, 65) if @st && -f _ && sysopen($h, $f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $h;
+    length $v > 64 ? "" : $v;
+}
+# share_read text -> {level => off|low|medium|high|custom|max, cpu => percent, ram => GB, ram_pct => percent}
+# (level max = no file at all). Off refuses before any cap counts: its counts stay whole (cpu 100), so the
+# jobs still running there are all counted.
+sub share_spec {
+    my ($t) = @_;
+    return { level => "max", cpu => 100 } unless defined $t;
+    my ($off, %preset, %alias) = ({ level => "off", cpu => 100 }, share_presets());
+    %alias = share_aliases();
+    (my $s = $t) =~ s/^\s+|\s+$//g;
+    $s = $alias{$s} // $s;
+    return $off if $s eq "off";
+    return { level => $s, cpu => $preset{$s}[0], ram_pct => $preset{$s}[1] } if $preset{$s};
+    my %v;
+    for (split /\s+/, $s) {
+        my ($k, $n) = /^(cpu|ram)=(\d{1,3})$/ or return $off;
+        return $off if exists $v{$k} || ($k eq "cpu" ? $n < 10 || $n > 100 : $n < 1 || $n > 256);
+        $v{$k} = $n + 0;
+    }
+    %v ? { level => "custom", cpu => $v{cpu} // 100, ram => $v{ram} } : $off;
+}
+# share_caps(spec, slots, heavy_slots or undef, logical cpus, RAM MB) -> what the level allows:
+#   slots, heavy   the fleet counts x cpu % (floor, at least 1; 0 stays 0), then at most one job per 2 GB of
+#                  the RAM cap and one heavy job per 6 GB (rd_pool NEED_GB; 0 = no heavy job here)
+#   cores          logical cpus x cpu % (floor, at least 1): what the jobs together may keep busy (fair_share)
+#   ram_mb         the RAM cap: ram= GB, or the preset share of the machine; undef = none
+#   vm_cpu, vm_mem a Colima VM: 12 CPU / 24 GB x cpu % (some = 6 / 12, max = 12 / 24, as before), never more
+#                  than the cores, the RAM cap or half the machine
+sub share_caps {
+    my ($sp, $slots, $heavy, $ncpu, $tot) = @_;
+    my $pct = $sp->{cpu};
+    my $scale = sub { defined $_[0] && $_[0] > 0 ? (int($_[0] * $pct / 100) || 1) : $_[0] };
+    my $ram = defined $sp->{ram} ? $sp->{ram} * 1024
+            : defined $sp->{ram_pct} && $tot ? int($tot * $sp->{ram_pct} / 100) : undef;
+    my %c = (slots => $scale->($slots), heavy => $scale->($heavy), ram_mb => $ram,
+             cores => $ncpu ? (int($ncpu * $pct / 100) || 1) : undef);
+    if (defined $ram) {
+        my ($m, $hm) = (int($ram / 2048) || 1, int($ram / 6144));
+        $c{slots} = $m if defined $c{slots} && $c{slots} > $m;
+        $c{heavy} = $hm if defined $c{heavy} && $c{heavy} > $hm;
+    }
+    $c{vm_cpu} = int(12 * $pct / 100) || 1;
+    $c{vm_cpu} = $c{cores} if $c{cores} && $c{vm_cpu} > $c{cores};
+    $c{vm_mem} = int(24 * $pct / 100) || 1;
+    for my $m ((defined $ram ? int($ram / 1024) : ()), ($tot ? int($tot / 2048) : ())) {
+        $c{vm_mem} = $m if $m >= 1 && $c{vm_mem} > $m;
+    }
+    \%c;
+}
+# The memory guard: a Mac worker is a personal Mac, so a new job starts only while macOS memory pressure
+# is normal and, after the need of the job (MB), free memory stays above a floor (20 % of RAM, at most 4 GB).
+# -> "" (take it) or why not: "pressure" / "memory". Running jobs are never touched. Linux: always "".
+# A reading that cannot be had does not block (like the need_gb gate).
+sub share_floor_mb { my $f = int($_[0] / 5); $f > 4096 ? 4096 : $f }
+sub share_guard {
+    my ($os, $need) = @_;
+    return "" if $os eq "linux";
+    my ($pl) = sysctl_n("kern.memorystatus_vm_pressure_level") =~ /^(\d+)/;
+    return "pressure" if defined $pl && $pl > 1;
+    my ($lvl) = sysctl_n("kern.memorystatus_level") =~ /^(\d+)/;
+    my ($tot) = sysctl_n("hw.memsize") =~ /^(\d+)/;
+    return "" unless defined $lvl && $tot;
+    my $mb = int($tot / 1048576);
+    int($mb * $lvl / 100) - ($need // 0) < share_floor_mb($mb) ? "memory" : "";
+}
+# Memory (RSS, MB) of the processes of this user - the jobs, their DBs, a Colima VM: what counts against the RAM
+# cap. undef when ps cannot be read. RR_USED_MB overrides (tests).
+sub share_used_mb {
+    return $ENV{RR_USED_MB} + 0 if ($ENV{RR_USED_MB} // "") =~ /^\d+$/;
+    my $uid = $< + 0;
+    my @kb = `/bin/ps -U $uid -o rss= 2>/dev/null` or return undef;
+    my $s = 0;
+    $s += $_ for map { /^\s*(\d+)/ ? $1 : 0 } @kb;
+    int($s / 1024);
+}
+# sysctl -n <name> ("" when unknown). RR_SYSCTL_<name, dots as _> overrides (tests).
+sub sysctl_n {
+    (my $k = "RR_SYSCTL_$_[0]") =~ tr/./_/;
+    return $ENV{$k} if defined $ENV{$k};
+    my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`;
+    defined $v ? $v : "";
+}
+# <<< share-spec
+
 # Slots 0..slots_base-1 are always usable; the extra ones up to `slots` only while the mini has room:
 # free memory (kern.memorystatus_level, the % memory_pressure prints) >= spare_min_free_pct and the
 # 1-min load per CPU <= spare_max_load. An unreadable reading counts as "no room" (fail safe).
-sub sysctl_n { my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`; defined $v ? $v : '' }
 # Linux: same three readings from /proc ($RR_PROC overrides the dir, for tests); free level =
 # MemAvailable/MemTotal*100 (the kern.memorystatus_level analogue).
 sub proc_readings {
@@ -503,8 +638,7 @@ sub mem_total_mb {
         my ($kb) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
         return defined $kb ? int($kb / 1024) : undef;
     }
-    my $b = `/usr/sbin/sysctl -n hw.memsize 2>/dev/null`;
-    return $b =~ /^(\d+)/ ? int($1 / 1048576) : undef;
+    return sysctl_n('hw.memsize') =~ /^(\d+)/ ? int($1 / 1048576) : undef;
 }
 
 sub node_heap {
@@ -516,15 +650,22 @@ sub node_heap {
     my $cap = $tot >= 30720 ? 12288 : 6144;
     $mb = $cap if $mb > $cap;
     $mb = 2048 if $mb < 2048;
+    # a RAM cap (share level): one job's heap never takes more than 3/4 of it (at least 1 GB)
+    if (defined(my $ram = ($caps // {})->{ram_mb})) {
+        my $r = int($ram * 3 / 4);
+        $r = 1024 if $r < 1024;
+        $mb = $r if $mb > $r;
+    }
     $env->{NODE_OPTIONS} = join ' ', grep { length } $opts, "--max-old-space-size=$mb";
 }
 
 # ----------------------------------------------------------------------------- cpu share
 # vitest and jest start about one worker per logical CPU, so N jobs on one worker run ~N x threads
 # workers (nickmbp: load 44 with 3 jobs), and the pool's overload hold-off then parks the worker.
-# Each test job gets share = max(1, floor(threads / slots)); slots = the header's `slots` (fleet
-# max_slots) lowered by slots.cap. The share switch's halving is left out on purpose: half the jobs
-# x threads/slots = half the machine, which is what "some" means. Applied to the argv the runner
+# Each test job gets share = max(1, floor(cores / slots)); cores = the threads the share level lets the
+# jobs use (share_caps: all of them without a switch), slots = the header's `slots` (fleet max_slots) as
+# the level allows them, lowered by slots.cap. So the jobs together keep about `cores` busy: medium on
+# an 18-thread Mac = 4 jobs x 2 = 9 of 18 (the same as before for some/max). Applied to the argv the runner
 # spawns, never the header's: the laptop's cache key and shard split use the requested argv.
 #   `vitest run ...`  -> --maxWorkers=<share> right after `run` (vitest 3-5; the CLI value still
 #                        yields to fileParallelism:false / poolOptions limits in the config)
@@ -550,10 +691,11 @@ sub logical_cpus {
 # -> the per-job worker count, or undef when there is nothing to cap
 sub cpu_share {
     my $threads = logical_cpus() // return undef;
-    my $n = $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1;
+    my $c = $caps // caps_of(share_now());
+    my $n = $c->{slots} || 1;
     my $cap = slots_cap();
     $n = $cap if defined $cap && $cap >= 1 && $cap < $n;
-    my $share = int($threads / $n) || 1;
+    my $share = int(($c->{cores} // $threads) / $n) || 1;
     $share < $threads ? $share : undef;
 }
 
@@ -666,10 +808,18 @@ sub fair_share {
     $argv;
 }
 
+sub need_mb { int(($h{need_gb} // 0) * 1024) }
+# The memory gate before a slot: the job's need_gb must be available, and with a RAM cap (share level) the
+# jobs already here plus this one must fit under it (share_used_mb: this user's processes). Unreadable = go.
 sub mem_ok {
-    my $need = $h{need_gb} or return 1;
+    my $need = need_mb();
+    if (defined(my $cap = ($caps // {})->{ram_mb})) {
+        my $used = share_used_mb();
+        return 0 if defined $used && $used + $need > $cap;
+    }
+    return 1 unless $need;
     my $mb = mem_avail_mb();
-    return !defined $mb || $mb >= $need * 1024;
+    return !defined $mb || $mb >= $need;
 }
 # rd-tune's live cap on concurrent runs ($ROOT/slots.cap: a number); undef = no cap file.
 sub slots_cap {
@@ -678,21 +828,25 @@ sub slots_cap {
     my ($c) = slurp($f) =~ /^\s*(\d+)/;
     $c;
 }
-# The owner's share switch: one word, off | some | max. RR_SHARE_FILE, else /Users/Shared/rdocker/share
-# on macOS (the owner writes it with `rdocker share`), else $ROOT/share. No file = max (so a worker
-# without one behaves exactly as before); a file that exists but is unreadable or says anything else
-# = off (the owner's intent wins). Same rule as rd_pool's PROBE.
+# The owner's share switch (the share-spec block: format, presets, caps, memory guard). RR_SHARE_FILE, else
+# /Users/Shared/rdocker/share on macOS (the owner writes it with `rdocker-share`), else $ROOT/share. No
+# file = everything (a worker without one behaves exactly as before). Read live, so a level change counts
+# for the next job and for a job still waiting for its slot. Same rule as rd_pool's PROBE.
 sub share_file { $ENV{RR_SHARE_FILE} || ($OS eq 'darwin' ? '/Users/Shared/rdocker/share' : "$ROOT/share") }
-sub share_level {
-    my $f = share_file();
-    return 'max' unless -e $f || -l $f;
-    my ($v) = slurp($f) =~ /^\s*(off|some|max)\s*$/;
-    $v // 'off';
-}
-sub share_cap { my ($n, $lvl) = @_; $lvl eq 'some' && $n > 0 ? (int($n / 2) || 1) : $n }
+sub share_now { share_spec(share_read(share_file())) }
+sub share_level { share_now()->{level} }
+sub header_slots { $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1 }
+sub caps_of { share_caps($_[0], header_slots(), $h{heavy_slots}, logical_cpus(), mem_total_mb()) }
 sub share_off {
     status('UNAVAIL share=off');
     fail("this worker's owner has turned sharing off; not taking new jobs", 73);
+}
+# The memory guard said no (share_guard): refused like share off, so the client moves on at once.
+sub share_paused {
+    my ($why) = @_;
+    status('UNAVAIL memory');
+    fail("this Mac's owner needs its memory now (" . ($why eq 'pressure' ? 'macOS memory pressure is up'
+        : 'free memory would drop under the floor') . "); not taking new jobs", 73);
 }
 
 # A heavy job (cls=heavy with heavy_slots in the header) also holds one heavy-<i> flock.
@@ -797,22 +951,40 @@ sub timeout_field {
     defined $t ? 'timeout_s=' . (int($t) + ($t > int($t) ? 1 : 0)) : ();
 }
 
-sub take_slot {
-    my $dir = mk("$ROOT/slots");
-    my $share = share_level();
-    share_off() if $share eq 'off';
-    my $n = share_cap($h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1, $share);
-    $h{heavy_slots} = share_cap($h{heavy_slots}, $share) if defined $h{heavy_slots};
+# The slots, heavy slots and RAM cap the share level allows now (re-read on every pass of the slot wait:
+# a level change counts at once), the memory guard first. Sets $caps; -> (slots, base slots).
+sub share_gate {
+    my $sp = share_now();
+    share_off() if $sp->{level} eq 'off';    # also switched off while we waited: move on now
+    if (my $why = share_guard($OS, need_mb())) { share_paused($why) }
+    my $fleet_heavy = $h{heavy_slots};
+    $caps = caps_of($sp);
+    $h{heavy_slots} = $caps->{heavy} if defined $h{heavy_slots};
+    # a heavy job (~6 GB) where the RAM cap leaves no heavy slot at all: refused now, never a wait for a
+    # slot that cannot exist (the probe reports heavy_cap 0, so a probed plan never sends one here)
+    if (($h{cls} // '') eq 'heavy' && ($fleet_heavy // 0) > 0 && defined $h{heavy_slots} && $h{heavy_slots} == 0) {
+        status('UNAVAIL ram-cap');
+        fail("this Mac's share level caps the jobs' memory under 6 GB: no heavy job here", 73);
+    }
+    my $n = $caps->{slots};
     my $cap = slots_cap();
     $n = $cap if defined $cap && $cap < $n;    # 0 = drained: wait (then 73) like a full mini
     my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
         && $h{slots_base} < $n ? $h{slots_base} : $n;
+    ($n, $base);
+}
+
+sub take_slot {
+    my $dir = mk("$ROOT/slots");
+    my $heavy0 = $h{heavy_slots};    # the fleet's count: each pass scales it afresh
+    share_gate();
     $t_wait0 = time;
     my $deadline = time + 60 * ($h{wait_min} // 30);
     my $every = num_or($h{wait_every}, 60) || 60;
     my ($said, @held);
     while (1) {
-        share_off() if share_level() eq 'off';    # switched off while we waited: move on now
+        $h{heavy_slots} = $heavy0;
+        my ($n, $base) = share_gate();
         my $spare = $base < $n && spare_room();
         my $heavy_ok = take_heavy($dir);
         my $gate = $heavy_ok && mem_ok();
@@ -1851,7 +2023,7 @@ sub finish {
     my ($rc) = @_;
     POSIX::_exit($rc // 70) if $$ != $OWNER_PID;    # a helper fork unwound into here: not ours to clean up
     return if $role eq 'follower';    # it owns nothing: the keeper (or nobody, on a reattach) cleans up
-    local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
+    local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP USR1);    # cleanup must not be cut short
     eval { end_node_probe() };    # a signal during node_version(): its probe must not outlive us
     eval { delete_env_files(0) };
     eval { pg_down() };                # the lane's Postgres goes whatever the result (never KEPT)
@@ -2266,7 +2438,8 @@ sub colima_timeout { ($ENV{RR_COLIMA_TIMEOUT} // '') =~ /^(\d+)$/ ? $1 : 120 }
 # finds it up. Used before a db job (below) and by the docker shim on its first call.
 sub write_docker_up {
     my ($path) = @_;
-    my ($cpu, $mem, $disk) = @{ $VM{ share_level() } || $VM{max} };
+    my $c = $caps // caps_of(share_now());
+    my ($cpu, $mem, $disk) = ($c->{vm_cpu}, $c->{vm_mem}, $VM_DISK_GB);
     for ($REAL_DOCKER, $COLIMA, $ROOT) { fail("docker-up: path must not contain a quote", 65) if /'/ }
     my $sh = <<'SH';
 #!/bin/sh
@@ -2337,7 +2510,7 @@ sub colima_stop_if_off {
     return if $pid;
     eval {    # the child never returns into the runner's own cleanup, whatever happens here
         setsid();
-        $SIG{$_} = 'IGNORE' for qw(HUP INT TERM);
+        $SIG{$_} = 'IGNORE' for qw(HUP INT TERM USR1);
         open STDIN, '<', '/dev/null';
         mkdir "$ROOT/log", 0700;
         open(STDOUT, '>>', "$ROOT/log/colima.log") or open(STDOUT, '>', '/dev/null');

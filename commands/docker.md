@@ -670,7 +670,8 @@ fleet.json) is used once it answers.
   addition) = while it is down, and another worker could take the job (free or busy), it is left out of
   the job's order entirely (no connect attempt, no note); `rrun --where` adds `optional: not tried`,
   `rrun --jobs` lists it as `away`, and rd-steward records it as `away (optional)` with **no finding**.
-  When it answers it is a normal candidate. Non-optional workers keep the usual handling (tried last
+  When it answers it is a candidate that ranks on its predicted finish + 15 % (`rr_optional_margin`), so it
+  never wins a tie with a regular worker (the Air vs hp or the laptop), only a clear lead. Non-optional workers keep the usual handling (tried last
   when down, steward `unreachable` finding). ROLLOUT: a client older than this rejects the unknown field (whole
   fleet.json, one-host fallback), so add the field only once every client runs this code.
 
@@ -747,7 +748,7 @@ fleet.json) is used once it answers.
   time (`rr_overload_ratio`, 0 = off) counts as busy even with a free slot, and its compute estimate is
   multiplied by load/threads: it gets a job only when it would still finish first (2026-11-10: the WSL
   laptop, 8 threads, reached load 19). `rrun --where` marks it `(overloaded: held off)`.
-- **Test jobs get a fair CPU share.** The runner caps each vitest/jest job (each shard too) at max(1, threads / slots) workers, using `--maxWorkers=N` for `vitest run` / `jest`, or `VITEST_MAX_WORKERS/_THREADS/_FORKS` for an `npm test`/`npm run` script that is one plain vitest command. It skips the cap when you set a worker/pool flag or those env vars yourself, or when a vitest/jest config in the cwd names a limit (e.g. `fileParallelism: false`), and for an npm script running jest. Capped runs end with `[cpu_share=N ...]` in `runs.log`, and the cache key is unchanged.
+- **Test jobs get a fair CPU share.** The runner caps each vitest/jest job (each shard too) at max(1, cores / slots) workers (cores = the threads the worker's share level allows, all of them without a switch; slots = as the level allows them), using `--maxWorkers=N` for `vitest run` / `jest`, or `VITEST_MAX_WORKERS/_THREADS/_FORKS` for an `npm test`/`npm run` script that is one plain vitest command. It skips the cap when you set a worker/pool flag or those env vars yourself, or when a vitest/jest config in the cwd names a limit (e.g. `fileParallelism: false`), and for an npm script running jest. Capped runs end with `[cpu_share=N ...]` in `runs.log`, and the cache key is unchanged.
 - **Vitest shards (default on).** `vitest run` with no file arguments (or only dirs / globs) and 2+
   free workers is split with vitest's own `--shard=i/n`, in shares proportional to each worker's
   **predicted rate** for this job (1 / its predicted run): shards go one at a time to the worker that
@@ -777,23 +778,46 @@ fleet.json) is used once it answers.
 ## Rentable Mac workers / share switch
 
 A Mac can be a pool **worker** (never the home): fleet.json `os: "mac"`, role `worker`, e.g. `nickmbp`
-(Nick's M5 Max, `rd-nickmbp`, port 2222). Jobs run as a hidden non-admin `rd` user with its own sshd
-(key-only, Tailscale-only); nothing touches the owner's account. It stays `enabled: true`: whether it
-takes jobs is the **owner's live switch**, read on the worker before every job (no fleet.json push).
+(Nick's M5 Max, `rd-nickmbp`, port 2222) and `airm4` (the owner's MacBook Air M4, `rd-airm4`, port 2222;
+opt-in, `optional: true`, no `db` class: no Docker on a 16 GB Air). Jobs run as a hidden non-admin `rd`
+user with its own sshd (key-only, Tailscale-only); nothing touches the owner's account. It stays
+`enabled: true`: whether it takes jobs is the **owner's live switch**, read on the worker before every job
+(no fleet.json push, no reinstall).
 
-- **Switch:** the owner runs `rdocker-share off|some|max|status` (`share/rdocker-share.sh`; optional
-  SwiftBar/xbar menu `share/rdocker-share.1m.sh`; install note `share/README.md`). It writes
-  `/Users/Shared/rdocker/share` (one word; on Linux `~/rr/share`; `RR_SHARE_FILE` overrides).
-  **No file = max**, so Linux workers behave as before. A file with anything else = off.
+- **Switch:** the owner runs `rdocker-share off|low|medium|high|cpu <10-100>|ram <GB>|stop|status`
+  (`share/rdocker-share.sh`), or uses the SwiftBar menu (`share/rdocker-share.1m.sh`; `share/README.md`).
+  It writes `/Users/Shared/rdocker/share`, one line (on Linux `~/rr/share`; `RR_SHARE_FILE` overrides): a
+  preset word or `cpu=<10-100> ram=<GB>` (either or both). Old words: `some` = medium, `max` = high.
+  **No file = everything**, so Linux workers behave as before. A file with anything else = off. The rules
+  live once, in the `share-spec` block of `rr_runner.pl` (copied verbatim into `rdocker-share.sh`, spliced
+  into the pool probe; a test keeps the copies equal).
 - **What each level means:** `off` = no new jobs (running ones finish): the probe reports state `off`
   (`rrun --where` shows it, plus a `share` column), it is tried last, and its runner refuses at once
   (exit 73 + `UNAVAIL share=off`, also when switched off while a job waits for a slot), so rrun moves to
-  the next worker. `some` = half the slots and heavy slots (floor, min 1). `max` = all.
+  the next worker. Presets: `low` = 25 % of the cores + a RAM cap of 25 % of the memory, `medium` = 50 % +
+  50 %, `high` = all + 75 %; custom = the given CPU % and GB. The CPU % scales the slots and heavy slots
+  (floor, min 1) and the cores the jobs share (fair CPU share above); the RAM cap allows one job per 2 GB
+  and one heavy job per 6 GB (0 = no heavy job there: heavy-ineligible like fleet `heavy_slots: 0`, and the
+  runner refuses one at once with 73 + `UNAVAIL ram-cap`), caps one job's node heap at 3/4 of it, and a new job
+  waits (`gate=mem`) while the `rd` user's processes already use it up; the probe's `mem_room_mb` lets the
+  scheduler see it. On nickmbp (18 threads, 64 GB) `some` / `max` give exactly the old slots and VM.
+- **Memory guard (every Mac worker):** a new job starts only while macOS memory pressure is normal and free
+  memory stays above a floor (20 % of RAM, at most 4 GB) after the job's need; otherwise the runner refuses
+  at once (73 + `UNAVAIL memory`: "its owner's own apps need the memory now") and the probe reports
+  `paused` (state `paused`, ranked with `off`). Running jobs are never stopped for it.
+- **Off now (stop jobs):** `rdocker-share stop` (or the menu item) writes off plus a request that the root
+  daemon `rd-worker-mac` turns into USR1 for the `rd` user's runners only: a job before GO is refused like
+  share off (it moves on, nothing ran), a started command is stopped like a client KILL (runs.log
+  `interrupted`, never a pool failure).
+- **A Mac that is worker and agent (the Air):** `rd_pool.is_self` leaves a fleet worker whose ip is one of
+  this machine's own addresses out of its plan, so agents on the Air never send their own jobs to the Air
+  through the pool (they go to the other workers, or run locally, as on any agent Mac).
 - **Docker on a Mac worker = Colima as `rd`, on purpose.** This is the scoped exception to "never start
   Colima" (that rule is for CLIENT Macs). Before a db job, or on a job's first docker call through the
   rrun shim, the runner checks `docker info`; if the engine is not answering it runs `colima start
-  --vm-type vz --vz-rosetta` (linux/amd64 images work) sized by the level (max 12 CPU / 24 GB, some
-  6 / 12; disk 120 GB) under the `~/rr/colima.lock` mkdir lock. No engine within 120 s
+  --vm-type vz --vz-rosetta` (linux/amd64 images work) sized by the level (12 CPU / 24 GB x the CPU %:
+  max 12 / 24, some 6 / 12 as before, never more than the cores, the RAM cap or half the memory; disk
+  120 GB) under the `~/rr/colima.lock` mkdir lock. No engine within 120 s
   (`RR_COLIMA_TIMEOUT`) = exit 73 + `UNAVAIL docker`, and the job moves on; the start keeps going in
   the background (a cold start is about 90 s), so the next job finds it up. An already-running Colima
   (also one started by hand) is used as is; a level change resizes it only on its next start.
@@ -802,9 +826,15 @@ takes jobs is the **owner's live switch**, read on the worker before every job (
 - **Stays in the pool by itself (sticky share).** The share level survives sleep, wifi changes,
   Tailscale reconnects and reboots; nothing but the owner's switch turns it off (capacity can only dip
   for a while: the overload hold-off, the doctor's self-lifting health pause). One root installer,
-  `sudo sh share/install-worker-mac.sh` (re-runnable), sets up the switch, rd-doctor, the power sampler,
+  `sudo sh share/setup-mac-worker.sh` (re-runnable; THE way to set up or re-provision a Mac worker: the
+  share switch seeded off FIRST, before any account or sshd (folder owned by the owner or root, else it
+  refuses; an existing setting is kept, so a Mac with no share file ends up off), the `rd` user, its keys
+  from fleet.json `client_keys`, the sshd on 2222 bound to the Tailscale address only, no forwarding,
+  reloaded only when its config changed, `DenyUsers rd` for macOS Remote Login (drop-in), node per
+  `pool_node_major`, `--docker` for colima + docker, SwiftBar + the plugin), which ends with
+  `share/install-worker-mac.sh`: the switch, rd-doctor, the power sampler,
   the owner's reporter refresh and `com.rdocker.worker` (`share/rd-worker-mac.sh`, RunAtLoad + KeepAlive):
-  while sharing is some/max it holds `caffeinate -s` (AC only: plugged in = no idle sleep; lid closed or on
+  while sharing is on (any level but off) it holds `caffeinate -s` (AC only: plugged in = no idle sleep; lid closed or on
   battery = normal sleep), and it re-kicks `com.rdocker.sshd` (bound to the Tailscale address only) when
   that address is up but nothing listens. rd-doctor on macOS ignores `lost` rows logged within 5 min of a
   wake (the lid close's own losses, `DOCTOR_WAKE_GRACE_S`) and stops a Colima VM whose engine no longer

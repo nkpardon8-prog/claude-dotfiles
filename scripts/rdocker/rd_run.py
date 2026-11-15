@@ -1092,7 +1092,7 @@ class Session:
         self.ints = 0
         self.wake = threading.Event()
         self.done = threading.Event()
-        self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / no docker)
+        self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / memory / no docker)
         self.exit_rc = None                  # "<nonce> EXIT <rc>": the command's own exit code
         self.used_docker = False             # "<nonce> DOCKER": the command called docker (cache: never saved)
         self.on_ready = None                 # called on READY, before GO (cache: drop the prepare's output)
@@ -3187,6 +3187,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             res = ("lost", "lost %s before the command started" % label(h))
         elif rc == 73 and sess.unavail:    # refused before anything ran: always safe to move on
             why = {"share=off": "its owner turned sharing off",
+                   "memory": "its owner's own apps need the memory now",
+                   "ram-cap": "its share level's RAM cap leaves no room for a heavy job",
                    "docker": "its Docker engine did not start"}.get(sess.unavail, sess.unavail)
             res = ("busy", "%s is not taking jobs (%s)" % (h.name, why))
         elif rc == 73:                     # no slot within the job's whole wait (rr_wait_min)

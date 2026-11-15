@@ -147,6 +147,78 @@ class PlanUnit(unittest.TestCase):
         p, _ = self.plan([worker("a", 1.0), worker("b", 0.5)], {"a": probe(), "b": probe(speed=2.0)})
         self.assertEqual(self.names(p), ["b", "a"])
 
+    def test_optional_worker_never_wins_a_tie_but_wins_when_clearly_faster(self):
+        """The Air (optional) vs hp: same speed -> hp first; a little faster (< 15 %) -> still hp; clearly
+        faster -> the Air. rr_optional_margin 0 = a plain eta race again."""
+        fleet = lambda air: [dict(worker("air", air), optional=True), worker("hp", 1.0)]   # noqa: E731
+        for air, first in ((1.0, "hp"), (1.1, "hp"), (1.5, "air")):
+            p, _ = self.plan(fleet(air), {"air": probe(), "hp": probe()})
+            self.assertEqual(self.names(p)[0], first, air)
+        p, _ = self.plan(list(reversed(fleet(1.0))), {"air": probe(), "hp": probe()})
+        self.assertEqual(self.names(p)[0], "hp")                     # not fleet order: the margin
+        self.cfg["rr_optional_margin"] = 0
+        p, _ = self.plan(fleet(1.1), {"air": probe(), "hp": probe()})
+        self.assertEqual(self.names(p)[0], "air")
+
+    def test_a_mac_under_memory_pressure_is_paused_and_its_room_counts(self):
+        """Probe paused (macOS memory pressure): state paused, no eta, ranked with the off ones. mem_room_mb
+        (the RAM cap / free-memory floor): a job that does not fit is low-mem there."""
+        p, _ = self.plan([worker("mac", 3.0), worker("hp", 1.0)],
+                         {"mac": dict(probe(), paused="pressure"), "hp": probe(slots_busy=2, slots_cap=2)})
+        st = {h.name: (h.state, h.eta) for h in p.hosts}
+        self.assertEqual(st["mac"], ("paused", None))
+        self.assertEqual(self.names(p), ["hp", "mac"])
+        lines = rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p)
+        p, _ = self.plan([worker("mac", 3.0), worker("hp", 1.0)],
+                         {"mac": dict(probe(), share="custom", mem_room_mb=1500), "hp": probe()})
+        self.assertEqual({h.name: h.state for h in p.hosts}["mac"], "low-mem")   # a vitest job needs 2 GB
+        self.assertEqual(self.names(p), ["hp", "mac"])
+        p, _ = self.plan([worker("mac", 3.0), worker("hp", 1.0)],
+                         {"mac": dict(probe(), share="custom", mem_room_mb=6000), "hp": probe()})
+        self.assertEqual(self.names(p)[0], "mac")
+        p, _ = self.plan([worker("mac", 3.0)], {"mac": dict(probe(), paused="pressure")}, probe=True)
+        self.assertIn("pick: mac (its owner's Mac needs its memory now: nothing starts there)",
+                      rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p))
+        self.assertTrue(lines)
+
+    def test_this_machine_is_never_its_own_pool_worker(self):
+        """An agent on the Air never sends its jobs to the Air's own worker: a fleet worker whose ip is one
+        of this machine's addresses is left out of its pool (rd_pool.is_self)."""
+        me, others = dict(worker("air"), ip="100.100.204.127"), [worker("hp"), worker("lap")]
+        answers = {"air": probe(), "hp": probe(), "lap": probe()}
+        os.environ["RR_SELF_IPS"] = "100.100.204.127"
+        try:
+            p, m = self.plan([me] + others, answers)
+            self.assertEqual(sorted(self.names(p)), ["hp", "lap"])
+            self.assertEqual(sorted(c.args[0].name for c in m.call_args_list), ["hp", "lap"])   # never probed
+            with self.assertRaisesRegex(ValueError, "this machine itself"):
+                rd_pool.pick_hosts(self.cfg, force="air")
+        finally:
+            os.environ["RR_SELF_IPS"] = ""
+        p, _ = self.plan([me] + others, answers)                                    # elsewhere: a worker
+        self.assertEqual(sorted(self.names(p)), ["air", "hp", "lap"])
+        # the real check: a UDP bind to the address (nothing is sent)
+        os.environ.pop("RR_SELF_IPS")
+        try:
+            self.assertTrue(rd_pool.is_self({"ip": "127.0.0.1"}))
+            self.assertFalse(rd_pool.is_self({"ip": "192.0.2.77"}))                  # TEST-NET: never ours
+            self.assertFalse(rd_pool.is_self({"ip": ""}))
+        finally:
+            os.environ["RR_SELF_IPS"] = ""
+
+    def test_a_ram_cap_with_no_heavy_slot_makes_the_worker_heavy_ineligible(self):
+        """fleet heavy_slots 1, but the share level's RAM cap (under 6 GB) leaves heavy_cap 0 in the probe: the
+        same hard rule as fleet heavy_slots 0, so no heavy job ever queues there."""
+        heavy = rd_pool.classify(["npx", "tsc", "--noEmit"])
+        p, _ = self.plan([dict(worker("air", 3.0), optional=True), worker("hp", 1.0)],
+                         {"air": dict(probe(heavy_cap=0), share="custom", mem_room_mb=4000), "hp": probe()}, job=heavy)
+        self.assertEqual(self.names(p), ["hp"])
+        self.assertEqual([(h.name, w) for h, w in p.ineligible],
+                         [("air", "has no heavy-job slot now (its share level's RAM cap is under 6 GB)")])
+        p, _ = self.plan([dict(worker("air", 3.0), optional=True), worker("hp", 1.0)],
+                         {"air": dict(probe(heavy_cap=0), share="custom"), "hp": probe()})
+        self.assertIn("air", self.names(p))                               # a normal job still goes there
+
     def test_warm_slower_worker_beats_cold_faster_one(self):
         p, _ = self.plan([worker("fast", 1.0), worker("slow", 0.7)],
                          {"fast": probe(warm_git=0, warm_deps=0), "slow": probe()})
@@ -493,24 +565,51 @@ class ProbeShareSwitch(unittest.TestCase):
     """The PROBE's share switch: RR_SHARE_FILE / ~/rr/share; Colima stop on a Mac worker."""
     setUp, run_probe = ProbeSnippet.setUp, ProbeSnippet.run_probe     # same fake ~/rr + /proc
 
-    def test_levels_halve_slots_and_missing_file_is_max(self):
+    def test_levels_scale_slots_and_missing_file_is_max(self):
         req = {"slots": 8, "heavy_slots": 6, "slug": "", "deps": []}
         o = self.run_probe(req)
         self.assertEqual((o["share"], int(o["slots_cap"]), int(o["heavy_cap"])), ("max", 8, 6))
+        self.assertNotIn("ram_cap_mb", o)                                            # no switch: no cap
         share = os.path.join(self.d, "share-file")
         self.env["RR_SHARE_FILE"] = share
-        for text, want in (("some\n", ("some", 4, 3)), ("max", ("max", 8, 6)), ("off\n", ("off", 8, 6)),
-                           ("bogus", ("off", 8, 6))):
+        # a 64 GB worker (nickmbp's size): the old words give the old counts
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 67108864 kB\nMemAvailable: 33554432 kB\n")
+        for text, want in (("some\n", ("medium", 4, 3)), ("max", ("high", 8, 6)), ("off\n", ("off", 8, 6)),
+                           ("bogus", ("off", 8, 6)), ("low", ("low", 2, 1)), ("cpu=75 ram=8", ("custom", 4, 1))):
             test_run.wfile(share, text)
             o = self.run_probe(req)
             self.assertEqual((o["share"], int(o["slots_cap"]), int(o["heavy_cap"])), want, text)
         test_run.wfile(share, "some")
         o = self.run_probe({"slots": 1, "heavy_slots": 1})
         self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (1, 1))         # floor, min 1
+        self.assertEqual((o["share_cpu"], o["ram_cap_mb"]), (50, 32768))
+        # an 8 GB worker: the preset RAM cap bites (medium = 4 GB: 2 jobs, no heavy one)
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 4194304 kB\n")
+        o = self.run_probe(req)
+        self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"]), o["ram_cap_mb"]), (2, 0, 4096))
         # no RR_SHARE_FILE on Linux: ~/rr/share
         del self.env["RR_SHARE_FILE"]
         test_run.wfile(os.path.join(self.root, "share"), "off")
         self.assertEqual(self.run_probe(req)["share"], "off")
+
+    def test_mac_reports_its_memory_room_and_the_pressure_pause(self):
+        share = os.path.join(self.d, "share-file")
+        test_run.wfile(share, "cpu=100 ram=4")
+        self.env.update(RR_SHARE_FILE=share, RR_OS="darwin", RR_SYSCTL_hw_memsize=str(16 << 30),
+                        RR_SYSCTL_hw_ncpu="10", RR_SYSCTL_kern_memorystatus_level="60", RR_USED_MB="1000")
+        o = self.run_probe({"slots": 4, "heavy_slots": 1})
+        self.assertEqual((o["share"], o["ram_cap_mb"], o["mem_room_mb"]), ("custom", 4096, 3096))   # cap - used
+        self.assertNotIn("paused", o)
+        self.env["RR_USED_MB"] = "0"
+        test_run.wfile(share, "high")                                   # 12 GB cap: free memory - floor is less
+        o = self.run_probe({"slots": 4})
+        self.assertEqual(o["mem_room_mb"], 9830 - 3276)
+        self.env["RR_SYSCTL_kern_memorystatus_vm_pressure_level"] = "4"
+        self.assertEqual(self.run_probe({"slots": 4})["paused"], "pressure")
+        test_run.wfile(share, "off")
+        o = self.run_probe({"slots": 4})
+        self.assertEqual(o["share"], "off")
+        self.assertNotIn("paused", o)                                   # off says it all
 
     def fake_colima(self):
         log = os.path.join(self.d, "colima.log")

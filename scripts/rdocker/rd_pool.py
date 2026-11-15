@@ -19,7 +19,9 @@ runs.log (see "evidence" below; 2026-11-11, replacing a bench-speed scalar and c
             (probe "waiting") served first
     risk  = p_infra there x (setup + run / 2 lost + a rerun on the best other worker)
     free  = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
-            owner's share switch (some = half; off = state "off", no eta, tried last)
+            owner's share switch (rr_runner.pl share-spec: low / medium / high / cpu=% ram=GB scale the
+            slots and cap the memory - probe mem_room_mb counts as the memory there; off = state "off",
+            no eta, tried last; a Mac under memory pressure = state "paused", the same)
     overload: load1 / ncpu >= rr_overload_ratio (1.5) at probe time => "busy" even with a free
             slot, and run x= load1 / ncpu (a worker already oversubscribed is held off, not piled on)
 Each job logs its prediction (runs.log pred_s, the evidence run seconds), so it can be checked.
@@ -39,7 +41,9 @@ is where the job waits for its slot (rd_run: the whole rr_wait_min there, no bou
 when another worker becomes clearly better). Nothing is cached between plan() calls but the
 down memo (probe_all): a worker that did not answer is skipped, unprobed, for 60 s, then 120 s, then
 probed again (`rrun --where` always probes); any answer clears it. An "optional": true worker that is down is left out of the
-order (it is a nice addition, often away) and never warned about. shardable() / shard_assign() split a `vitest run`
+order (it is a nice addition, often away) and never warned about; when it answers it ranks on its eta +
+rr_optional_margin (15 %), so it never wins a tie with a regular worker. A worker that is this machine
+itself (is_self: its fleet ip is one of ours) is left out of this machine's pool entirely. shardable() / shard_assign() split a `vitest run`
 across the free workers in shares proportional to their predicted rate (rd_run.run_shards runs them);
 a worker with "shards": false in fleet.json never gets a shard, only whole jobs.
 
@@ -53,6 +57,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import threading
@@ -77,6 +82,8 @@ HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker 
 # slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
 # 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
 OVERLOAD_RATIO = 1.5
+# an optional worker's eta counts this much longer when ranked (rr_optional_margin): never preferred on a tie
+OPTIONAL_MARGIN = 0.15
 _SHARD_ARG_RE = re.compile(r"(?:^|\s)--shard[= ]?(\d+)/(\d+)(?:\s|$)")
 # rr_outputs: {"<repo name or slug>": {"<package dir relative to the repo>": ["dist", ...]}}
 # Builds are only sent to the pool for a mapped package dir; outputs are copied back.
@@ -329,7 +336,7 @@ def load_workers(cfg):
         return None
     try:
         fleet = rd_fleet.load(cfg)
-        ws = list(rd_fleet.workers(fleet))
+        ws = [w for w in rd_fleet.workers(fleet) if not is_self(w)]
     except Exception as e:          # an unusable fleet.json must never stop a run: say so, use cfg host
         note("fleet.json unusable (%s) - using %s" % (str(e).strip()[:200], cfg.get("host")))
         return None
@@ -337,6 +344,31 @@ def load_workers(cfg):
             and installed_here():
         ensure_ssh_blocks(fleet, ws, cfg)   # only the real registry may rewrite the real ssh blocks
     return ws or None
+
+
+def is_self(entry):
+    """True when a fleet worker is this machine itself: its ip is one of this machine's own addresses (a UDP
+    bind to it succeeds; nothing is sent). An agent on a Mac that is also a worker (the Air) never sends its
+    own jobs there through the pool - that is an ssh round trip into a second account on the same CPU and
+    memory, under the owner's share switch meant for lending to OTHER machines; the job runs on the other
+    workers, or locally as on any agent Mac. RR_SELF_IPS (comma list) replaces the check (tests)."""
+    ip = str(_f(entry, "ip", "") or "")
+    if not ip:
+        return False
+    env = os.environ.get("RR_SELF_IPS")
+    if env is not None:
+        return ip in [x.strip() for x in env.split(",")]
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return False
+    try:
+        s.bind((ip, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
 
 
 def installed_here():
@@ -423,14 +455,28 @@ def host_for(cfg, entry):
 
 # ---------------------------------------------------------------------------- probe
 
+def share_spec_pl():
+    """The share-spec block of rr_runner.pl (format, presets, caps, memory guard), comment lines dropped:
+    the probe applies exactly the runner's rules, from the one copy the runner ships with every run.
+    None when rr_runner.pl (or its block) is missing: importing rd_pool must never fail on it (the docker
+    daemon imports it too); probe_one then answers why instead of probing."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rr_runner.pl")) as f:
+            m = re.search(r"^# >>> share-spec.*?^# <<< share-spec\n", f.read(), re.S | re.M)
+    except OSError:
+        return None
+    return re.sub(r"(?m)^\s*#.*\n", "", m.group(0)) if m else None
+
+
 # Read-only snapshot of a worker, one JSON line. stdin: {"slots", "heavy_slots", "slug",
-# "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC / RR_SYS: same overrides as the runner (tests).
+# "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC / RR_SYS / RR_SYSCTL_* / RR_USED_MB: same overrides as the
+# runner (tests).
 PROBE = r'''
-use strict; use warnings; use JSON::PP; use POSIX (); use Fcntl qw(:flock O_RDONLY O_RDWR O_NOFOLLOW);
+use strict; use warnings; use JSON::PP; use POSIX (); use Fcntl qw(:flock O_RDONLY O_RDWR O_NOFOLLOW O_NONBLOCK);
 my $R = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $q = eval { local $/; JSON::PP->new->decode(<STDIN> // "{}") } || {};
 sub slurp { open(my $f, "<", $_[0]) or return ""; local $/; <$f> // "" }
-sub sc { my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`; defined $v ? $v : "" }
+''' + (share_spec_pl() or "@NO-SHARE-SPEC@") + r'''
 my %o = (os => ($ENV{RR_OS} || $^O));
 if ($o{os} eq "linux") {
     my $p = $ENV{RR_PROC} // "/proc";
@@ -444,14 +490,14 @@ if ($o{os} eq "linux") {
         my ($v) = slurp($_) =~ /^(\d+)/; $max = $v if defined $v && (!defined $max || $v > $max) }
     $o{temp} = $max / 1000 if defined $max;
 } else {
-    my ($lvl) = sc("kern.memorystatus_level") =~ /^(\d+)/; my ($tot) = sc("hw.memsize") =~ /^(\d+)/;
+    my ($lvl) = sysctl_n("kern.memorystatus_level") =~ /^(\d+)/; my ($tot) = sysctl_n("hw.memsize") =~ /^(\d+)/;
     if (defined $lvl && $tot) { $o{mem_free_pct} = $lvl + 0; $o{mem_avail_mb} = int($tot / 1048576 * $lvl / 100) }
-    ($o{load1}) = sc("vm.loadavg") =~ /([\d.]+)/; ($o{ncpu}) = sc("hw.ncpu") =~ /^(\d+)/;
+    ($o{load1}) = sysctl_n("vm.loadavg") =~ /([\d.]+)/; ($o{ncpu}) = sysctl_n("hw.ncpu") =~ /^(\d+)/;
 }
 # x86: the CPU's x86-64 level (1-4) from its feature flags; none on ARM (rd_pool.no_newer_cpu)
 {
     my $fl = $o{os} eq "linux" ? (slurp(($ENV{RR_PROC} // "/proc") . "/cpuinfo") =~ /^flags\s*:([^\n]*)/m)[0]
-           : lc(join " ", map { sc("machdep.cpu.$_") } qw(features extfeatures leaf7_features));
+           : lc(join " ", map { sysctl_n("machdep.cpu.$_") } qw(features extfeatures leaf7_features));
     my %mac = ("sse4.1" => "sse4_1", "sse4.2" => "sse4_2", "avx1.0" => "avx", sse3 => "pni", lahf => "lahf_lm",
                lzcnt => "abm");
     my $f = " " . join(" ", map { $mac{$_} // $_ } split ' ', $fl // "") . " ";
@@ -465,13 +511,29 @@ if ($o{os} eq "linux") {
 }
 sub busy { my ($f) = @_; sysopen(my $h, $f, O_RDONLY | O_NOFOLLOW) or return 0;
     return 0 if flock($h, LOCK_SH | LOCK_NB); 1 }
-# the owner's share switch (same rule as rr_runner.pl share_level): no file = max; off/some/max; else off
+# the owner's share switch (rr_runner.pl's share-spec block, spliced in above): the level word (max = no
+# file), its cpu % and RAM cap, and the memory guard. mem_room_mb: what a new job may still use here (the
+# RAM cap minus what this user's processes use, and free memory over the guard's floor); paused: the
+# guard refuses every new job now (macOS memory pressure is up).
 my $shf = $ENV{RR_SHARE_FILE} || ($o{os} eq "darwin" ? "/Users/Shared/rdocker/share" : "$R/share");
-my $share = "max";
-if (-e $shf || -l $shf) { ($share) = slurp($shf) =~ /^\s*(off|some|max)\s*$/; $share //= "off" }
+my $shs = share_spec(share_read($shf));
+my $share = $shs->{level};
 $o{share} = $share;
-sub half { my ($v) = @_; $share eq "some" && $v > 0 ? (int($v / 2) || 1) : $v }
-my $n = half(($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1);
+my $tot_mb;
+if ($o{os} eq "linux") { my ($t) = slurp(($ENV{RR_PROC} // "/proc") . "/meminfo") =~ /^MemTotal:\s*(\d+)/m; $tot_mb = int($t / 1024) if $t }
+else { my ($t) = sysctl_n("hw.memsize") =~ /^(\d+)/; $tot_mb = int($t / 1048576) if $t }
+my $hs = ($q->{heavy_slots} // "") =~ /^(\d+)$/ ? $1 : undef;
+my $caps = share_caps($shs, ($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1, $hs, $o{ncpu}, $tot_mb);
+if ($share ne "off") {
+    $o{share_cpu} = $shs->{cpu} + 0;
+    $o{ram_cap_mb} = $caps->{ram_mb} if defined $caps->{ram_mb};
+    my @room;
+    if (defined $caps->{ram_mb}) { my $u = share_used_mb(); push @room, $caps->{ram_mb} - $u if defined $u }
+    if ($o{os} ne "linux" && defined $o{mem_avail_mb} && $tot_mb) { push @room, $o{mem_avail_mb} - share_floor_mb($tot_mb) }
+    if (@room) { my ($m) = sort { $a <=> $b } @room; $o{mem_room_mb} = $m > 0 ? $m : 0 }
+    $o{paused} = "pressure" if share_guard($o{os}, 0) eq "pressure";
+}
+my $n = $caps->{slots};
 my ($cap) = -l "$R/slots.cap" ? () : slurp("$R/slots.cap") =~ /^\s*(\d+)/;
 $n = $cap if defined $cap && $cap < $n;
 $o{slots_cap} = $n; $o{slots_busy} = 0; my @ages;
@@ -504,8 +566,8 @@ if (!-l "$R/wait" && opendir(my $wd, "$R/wait")) {
     for (readdir $wd) { next unless /^(\d+)$/; $nw++ if kill(0, $1) || $!{EPERM} }
 }
 $o{waiting} = $nw;
-if (($q->{heavy_slots} // "") =~ /^(\d+)$/) {
-    my $hc = half($1);
+if (defined $hs) {
+    my $hc = $caps->{heavy};
     $o{heavy_cap} = $hc; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $hc - 1 }
 # Mac worker, share off, no slot held at all: stop its Colima in the background (rr_runner.pl's
 # colima_stop_if_off does the same at job end). Never on Linux, never without colima installed.
@@ -728,6 +790,8 @@ def clear_down(h):
 
 def probe_one(host, req, timeout):
     """ssh the PROBE to host -> (dict, rtt_s) or (None, why)."""
+    if "@NO-SHARE-SPEC@" in PROBE:   # a broken install: never probe with half the rules
+        return None, "rr_runner.pl is missing next to rd_pool.py (reinstall rdocker)"
     cmd = ssh_base() + [host.cfg["host"], "%sexec /usr/bin/perl -e %s" % (remote_env(host.cfg), shlex.quote(PROBE))]
     t = time.monotonic()
     try:
@@ -1091,7 +1155,9 @@ def eligibility(host, job, cost_s=None, probed=False, cfg=None):
         return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
     if job["cls"] == "heavy" and (_f(host.entry, "heavy_slots") == 0 or
                                   (host.probe is not None and _num(host.probe.get("heavy_cap")) == 0)):
-        return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so, or the probe (share some)
+        if _f(host.entry, "heavy_slots") != 0:     # the fleet has some: the share level's RAM cap allows none
+            return "has no heavy-job slot now (its share level's RAM cap is under 6 GB)"
+        return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so
     if not probed:
         return None
     if host.probe is not None and not host.probe.get("warm_deps"):
@@ -1201,7 +1267,7 @@ def queue_wait(host, job, ahead=None, now=None):
 
 def score(host, job, cfg=None, model=None):
     """-> (eta seconds or None when the host cannot take the job at all now, free slots). Lower is
-    better. Sets host.state (down/off/busy/low-mem/free) and, with an eta, host.eta and its parts:
+    better. Sets host.state (down/off/paused/busy/low-mem/free) and, with an eta, host.eta and its parts:
 
         eta = setup + queue + rank + rtt + risk     (risk: plan() adds it once every host is scored)
         run = Model.predict / (cpu_share * mem_factor)   (the evidence's run at the load seen now: pred_s)
@@ -1221,8 +1287,14 @@ def score(host, job, cfg=None, model=None):
     if p.get("share") == "off":          # the owner paused this worker: no new jobs
         host.state = "off"
         return None, 0
+    if p.get("paused"):                  # a Mac whose own apps need the memory now: its runner refuses
+        host.state = "paused"
+        return None, 0
     free, _ = slot_releases(host, job)
     mem = _num(p.get("mem_avail_mb"))
+    room = _num(p.get("mem_room_mb"))    # share level RAM cap / the Mac's free-memory floor, when it has one
+    if room is not None:
+        mem = room if mem is None else min(mem, room)
     if mem is not None and mem < job["need_gb"] * 1024:
         host.state = "low-mem" if free > 0 else "busy"
         return None, free
@@ -1332,7 +1404,8 @@ def pick_hosts(cfg, force=None):
     if force:
         sel = [h for h in hosts if force in (h.name, h.cfg.get("host"))]
         if not sel:
-            raise ValueError("no worker named %r (have: %s)" % (force, ", ".join(h.name for h in hosts)))
+            raise ValueError("no worker named %r (have: %s%s)" % (force, ", ".join(h.name for h in hosts),
+                             "; a worker that is this machine itself never takes its own jobs" if workers else ""))
         return sel, False
     return hosts, len(hosts) >= 2
 
@@ -1366,8 +1439,11 @@ def rank(hosts, cfg, pool):
     queued, with an eta) by its predicted FINISH (queue wait + setup + run), so a busy worker whose
     queue clears soon beats a free slow one and a free fast one beats waiting. A slow worker (over its
     max_cost_s) comes first only when it wins by the margin (slow_wins), else after the others. Then
-    workers with no eta (busy with no slot of the kind / short of memory), down, off (refuses: 73)."""
-    by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
+    workers with no eta (busy with no slot of the kind / short of memory), down, off or paused (refuses:
+    73). An optional worker (someone's own Mac, a nice addition) ranks on its eta + rr_optional_margin
+    (15 %): it goes before a regular worker only when it finishes clearly sooner, never on a tie."""
+    om = _num(cfg.get("rr_optional_margin"), OPTIONAL_MARGIN)
+    by_eta = lambda h: ((h.eta * (1 + om) if optional(h) else h.eta), optional(h), h.rtt or 0)  # noqa: E731
     live = [h for h in hosts if h.eta is not None and h.state in ("free", "busy")]
     fast = sorted((h for h in live if not h.slow), key=by_eta)
     best = fast[0].eta if fast else None
@@ -1376,7 +1452,7 @@ def rank(hosts, cfg, pool):
     cap = lambda h: _num((h.probe or {}).get("slots_cap"), h.cfg.get("rr_slots", 1)) * h.speed  # noqa: E731
     full = sorted((h for h in hosts if h.state in ("busy", "low-mem") and h.eta is None), key=lambda h: -cap(h))
     down = sorted((h for h in hosts if h.state == "down"), key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
-    off = [h for h in hosts if h.state == "off"]
+    off = [h for h in hosts if h.state in ("off", "paused")]
     return sorted(fast + won, key=by_eta) + [h for h in slow if h not in won] + full + down + off
 
 
@@ -1655,6 +1731,8 @@ def where_report(cfg, job, p, shards=None):
     else:
         lines.append("pick: %s%s" % (first.name, " (its owner turned sharing off: nothing runs there now)"
                                      if first.state == "off"
+                                     else " (its owner's Mac needs its memory now: nothing starts there)"
+                                     if first.state == "paused"
                                      else (" (earliest finish ~%s)" % fmt_s(first.eta)) if p.pool and first.eta is not None
                                      else "" if p.pool or first.probe is None or first.state == "free"
                                      else " (only host: queues there)" if first.state != "down"

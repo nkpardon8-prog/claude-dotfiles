@@ -68,6 +68,29 @@
       "optional": true
     },
     {
+      "name": "airm4",
+      "alias": "rd-airm4",
+      "ip": "100.100.204.127",
+      "port": 2222,
+      "user": "rd",
+      "os": "mac",
+      "roles": [
+        "worker"
+      ],
+      "speed": 3.6,
+      "max_slots": 4,
+      "heavy_slots": 1,
+      "mem_gb": 16,
+      "enabled": true,
+      "optional": true,
+      "classes": [
+        "light",
+        "normal",
+        "heavy",
+        "build"
+      ]
+    },
+    {
       "name": "mini-a",
       "alias": "rd-mini-a",
       "ip": "100.78.43.6",

@@ -1,52 +1,117 @@
 # rdocker share switch (for the owner of a Mac worker)
 
-Your Mac runs rdocker jobs as a separate non-admin user `rd`. You decide how much it gets:
+Your Mac runs rdocker jobs as a separate non-admin user `rd`. You decide how much it gets, from the menu
+bar or the command line:
 
 ```sh
-rdocker-share max      # all job slots; Docker VM 12 CPU / 24 GB
-rdocker-share some     # half the job slots; Docker VM 6 CPU / 12 GB
-rdocker-share off      # no new jobs (running ones finish); the Docker VM stops once idle
-rdocker-share status   # current level and how many jobs run right now
+rdocker-share off       # no new jobs (running ones finish); the Docker VM stops once idle
+rdocker-share low       # 25 % of the cores, jobs may use up to 25 % of the memory together
+rdocker-share medium    # 50 % of the cores, up to 50 % of the memory      (old word: some)
+rdocker-share high      # all the cores, up to 75 % of the memory          (old word: max)
+rdocker-share cpu 75    # custom: 75 % of the cores (keeps the RAM cap you have)
+rdocker-share ram 4     # custom: jobs may use at most 4 GB together (keeps the CPU share)
+rdocker-share stop      # off now AND stop the jobs running here (within about 15 s)
+rdocker-share status    # what it is now, jobs running, paused-for-memory
 ```
 
-It takes effect on the next job, with no restart and no admin password. The level is stored in
-`/Users/Shared/rdocker/share` (one word; delete the file = max). It is **sticky**: sleep, a wifi change,
-a Tailscale reconnect or a reboot never change it, and no timer, idle rule or battery rule turns it off.
-Only you do (`rdocker-share off` or the menu's Off). `rdocker-share level` prints just the word.
-What can lower capacity on its own, temporarily: the pool's overload hold-off (a busy Mac gets fewer
-jobs) and the doctor's health pause (below), which reopens by itself.
+On a 16 GB, 10-core Air: low = 2 cores / 4 GB, medium = 5 / 8 GB, high = 10 / 12 GB. On Nick's 64 GB
+MacBook the old `some` / `max` give exactly what they gave before (half / all the job slots, the Docker VM
+6 CPU / 12 GB or 12 / 24).
 
-## Everything in one go (once, with sudo; safe to re-run)
+It takes effect on the next job, with no restart and no admin password. The setting is stored in
+`/Users/Shared/rdocker/share`, one line: a preset word, or `cpu=<10-100> ram=<GB>` (either or both; no
+`cpu=` = 100, no `ram=` = no cap). No file = everything (how Linux workers run); anything it cannot read =
+off. It is **sticky**: sleep, a wifi change, a Tailscale reconnect or a reboot never change it, and no
+timer, idle rule or battery rule turns it off. Only you do.
+
+What a setting means for the jobs (the runner and the pool's probe read the same rules: the `share-spec`
+block of `rr_runner.pl`, copied verbatim into `rdocker-share.sh`):
+
+- **CPU %** = how many cores the jobs may keep busy together (each test job gets cores / slots workers)
+  and how many jobs at once (the fleet's slots x the percent, at least 1).
+- **RAM cap** = the most memory the jobs may use together: at most one job per 2 GB of it and one heavy job
+  (a full `tsc`, ~6 GB) per 6 GB (under 6 GB: no heavy job at all - the pool never plans one there, and the
+  runner refuses one at once, `UNAVAIL ram-cap`), one job's node heap at most 3/4 of it, and a new job waits while the
+  jobs already here use it up (the `rd` user's memory, measured). A Docker VM is never bigger than the cap.
+- **Your apps first, always:** a new job starts only while macOS memory pressure is normal and free memory
+  stays above a floor (20 % of RAM, at most 4 GB) after the job's own need. Otherwise the Mac refuses it at
+  once (`UNAVAIL memory`) and the pool sends it elsewhere; the menu shows "paused for memory". Running jobs
+  are never stopped for this.
+
+What can lower capacity on its own, temporarily: the memory guard above, the pool's overload hold-off (a
+busy Mac gets fewer jobs) and the doctor's health pause (below), which reopens by itself.
+
+## The menu bar (SwiftBar)
+
+`rdocker-share.1m.sh` is a [SwiftBar](https://swiftbar.app) (or xbar) plugin, refreshed every minute and
+after each click. Title: `⚙ 75% · 4G` (CPU share · RAM cap), `· 2▶` while 2 team jobs run here, `⏸` while
+the memory guard holds new jobs back, `⚙ off` when off. The menu:
+
+- what is set now (cores, RAM cap), team jobs running here, paused-for-memory with the reason
+- Off / Low / Medium / High, one click each (the current one ticked)
+- Custom > CPU 25 / 50 / 75 / 100 % and RAM cap 2 / 4 / 6 / 8 GB, picked independently (each keeps the
+  other's current value; from Off they start from Medium's)
+- Off now (stop jobs)
+
+The jobs count comes from `rd-worker-mac` (root), which writes `/Users/Shared/rdocker/status` every 15-45 s:
+you cannot read the `rd` user's files yourself.
+
+## Setting up a Mac worker (once, with sudo; safe to re-run)
+
+One way for every Mac (a new one, or re-provisioning Nick's), from the unpacked bundle (`share/` +
+`server/rd-doctor.sh` + `reporter/` + `fleet.json`):
 
 ```sh
-sudo sh install-worker-mac.sh     # from the unpacked bundle: share/ + server/rd-doctor.sh + reporter/
+sudo sh share/setup-mac-worker.sh            # add --docker on a Mac that takes db jobs (Colima)
 ```
 
-It installs `rdocker-share` in `/usr/local/bin`, the doctor and power daemons (below), refreshes your
-reporter (LaunchAgent `com.rdocker.reporter`) when it is installed, and adds `com.rdocker.worker`
-(`rd-worker-mac.sh`, a root LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
+**First**, before any account, key or sshd: `/Users/Shared/rdocker` (yours or root's, no group/world write;
+owned by anyone else = it refuses) with the switch seeded **off** when there is none, checked, or the install
+stops (no file means everything on a Mac, so an install cut short can never leave a worker nobody opted
+into). An existing setting is kept, so re-running it on a Mac that has **no** share file (Nick's, if it was
+deleted) turns that Mac **off** until its owner picks a level. Then it creates the hidden standard user `rd`
+(random password nobody knows), writes its `authorized_keys` from fleet.json `client_keys` (as `rd`: root
+never writes inside its home), and runs a separate key-only sshd for `rd` alone on port 2222 **bound to this
+Mac's Tailscale address only** (it refuses any address outside 100.64.0.0/10 or not up right now; no TCP,
+socket, agent or X11 forwarding, no tunnels; LaunchDaemon `com.rdocker.sshd`, reloaded only when its config
+changed, so running jobs keep their links). macOS Remote Login is not switched on or off, but its sshd gets
+`DenyUsers rd` (drop-in `/etc/ssh/sshd_config.d/100-rdocker-deny-rd.conf`; the install refuses when the
+main config does not read that folder), so `rd` can only ever log in through its own sshd. Then: node for `rd`'s jobs (brew's
+node; fleet.json `pool_node_major`, a mismatch is reported, never upgraded for you), with `--docker` colima +
+docker via brew, SwiftBar (brew cask when missing) with the plugin in its plugin folder, and finally
+`install-worker-mac.sh` (below). It ends with `LISTEN-OK <ip>:2222 only` and a status summary. It never
+changes system settings (sleep, firewall, Remote Login).
 
-- **Awake while lent out:** share some/max -> it holds `caffeinate -s`, an assertion that is valid only on
-  AC power: plugged in, the Mac does not idle-sleep; on battery, or with the lid closed, it sleeps as usual
-  (asleep = unreachable, and the pool routes around it). Share off -> released.
+Without `--docker` the Mac has no Docker for jobs: its fleet.json entry leaves out the `db` class (the Air).
+
+`install-worker-mac.sh` (also on its own, to refresh the daemons; it makes the same share-folder owner
+check) installs `rdocker-share` in `/usr/local/bin` (for you and the menu) and a root-owned copy in
+`/usr/local/libexec` that the root daemon runs (never through PATH: `/usr/local/bin` is yours on an Intel
+Homebrew Mac), the doctor and power daemons (below), refreshes your reporter (LaunchAgent
+`com.rdocker.reporter`) when it is installed, and adds `com.rdocker.worker` (`rd-worker-mac.sh`, a root
+LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
+
+- **Awake while lent out:** sharing on (any level but off) -> it holds `caffeinate -s`, an assertion that is
+  valid only on AC power: plugged in, the Mac does not idle-sleep; on battery, or with the lid closed, it
+  sleeps as usual (asleep = unreachable, and the pool routes around it). Share off -> released.
 - **ssh back after Tailscale:** the worker's sshd (`com.rdocker.sshd`) listens on the Tailscale address only,
   and Tailscale comes up after the boot daemons and can drop and return on wake or a wifi change. When that
   address is up but nothing listens on it for 2 ticks, it runs `launchctl kickstart -k system/com.rdocker.sshd`
   (or bootstraps the plist when the job is not loaded). Log: `/var/log/rd-worker-mac.log` (changes only).
+- **Menu status and Off now:** it writes the jobs count for the menu, and on `rdocker-share stop` (the menu's
+  "Off now (stop jobs)") sends USR1 to `rd`'s runners only (never your own local `rrun`): a job that had not
+  started is refused like share off (the pool moves it elsewhere), a running one is stopped (runs.log
+  `interrupted`, not a pool failure).
 
 It never touches the share level, the `rd` user, the sshd config or Tailscale.
 
-## Install (once, as yourself)
+## This Mac is a worker AND an agent (the Air)
 
-```sh
-sudo install -m 755 rdocker-share.sh /usr/local/bin/rdocker-share   # or any dir on your PATH
-```
-
-Optional menu-bar toggle: install [SwiftBar](https://swiftbar.app) (or xbar), then copy
-`rdocker-share.1m.sh` into its plugin folder and `chmod +x` it. The menu shows the level and has
-Off / Some / Max items. The plugin finds the command next to itself or at `/usr/local/bin/rdocker-share`.
-
-Nothing is installed for you; both scripts are plain shell and touch only the share file.
+Agents on a Mac never send their own jobs to that same Mac through the pool (`rd_pool.is_self`: a fleet
+worker whose ip is one of this Mac's own addresses is left out of its plan); they run on the other workers,
+or locally, as on any agent Mac. Other machines' jobs still come in. The Air's entry (`airm4`) is
+`"optional": true`: when it is away or asleep nothing waits for it or warns about it, and it ranks on its
+predicted finish + 15 % (`rr_optional_margin`), so it never wins a tie with hp or the laptop.
 
 ## Self-healing watchdog (rd-doctor, once, with sudo)
 

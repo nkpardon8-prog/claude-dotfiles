@@ -52,6 +52,29 @@ class Fleet(unittest.TestCase):
                      "ControlPath ~/.ssh/rr-%C", "IdentityFile ~/.ssh/rdocker_ed25519"):
             self.assertIn("  " + line + "\n", block)
 
+    def test_live_air_worker_is_an_optional_mac_without_docker_jobs(self):
+        """airm4: the owner's MacBook Air lent to the pool (opt-in, menu bar): optional (nothing waits for it),
+        the agent entry `air` is the same machine (same Tailscale ip: is_self keeps its own jobs off it), no
+        db class (no Colima on a 16 GB Air)."""
+        with open(os.path.join(rd_common.HERE, "fleet.json")) as f:
+            fl = [rd_fleet.entry(m) for m in json.load(f)["machines"]]
+        w, agent = rd_fleet.get(fl, "airm4"), rd_fleet.get(fl, "air")
+        self.assertEqual((w["os"], w["roles"], w["user"], w["port"], w["alias"], w["enabled"], w["optional"]),
+                         ("mac", ["worker"], "rd", 2222, "rd-airm4", True, True))
+        self.assertEqual(agent["roles"], ["agent"])
+        self.assertEqual(w["ip"], agent["ip"])
+        self.assertNotIn("db", w["classes"])
+        self.assertEqual((w["max_slots"], w["heavy_slots"], w["mem_gb"]), (4, 1, 16))
+        self.assertNotIn("history_since", w)                     # a fresh machine: the evidence model learns it
+        hp = rd_fleet.get(fl, "hp")
+        self.assertGreater(w["speed"], 0)
+        self.assertIn("airm4", [m["name"] for m in rd_fleet.workers(fl)])
+        text = rd_fleet.render_ssh_blocks(fl, rd_common.merge_cfg({}))
+        block = text[text.index("Host rd-airm4\n"):].split("\n\n")[0]
+        for line in ("HostName %s" % w["ip"], "Port 2222", "User rd", "HostKeyAlias rd-airm4"):
+            self.assertIn("  " + line + "\n", block)
+        self.assertTrue(hp["enabled"])
+
     def test_a_mac_may_be_a_worker_but_never_the_home(self):
         mac = {"name": "mbp", "alias": "rd-mbp", "ip": "100.1.1.9", "port": 2222, "user": "rd", "os": "mac",
                "roles": ["worker"], "max_slots": 8, "heavy_slots": 6, "enabled": True}

@@ -2,19 +2,31 @@
 # rd-worker-mac: keeps a Mac worker in the pool through sleep, wifi changes, Tailscale reconnects and reboots.
 # Runs as root from the LaunchDaemon com.rdocker.worker (RunAtLoad + KeepAlive; install-worker-mac.sh). Every
 # RD_TICK_S (15 s):
-#   awake  share some|max -> hold `caffeinate -s`: an AC-only assertion, so a plugged-in Mac does not idle-sleep
-#          while it is lent out. On battery, or with the lid closed, the Mac sleeps as usual (asleep = unreachable;
-#          the pool routes around it). Share off -> released. This never reads anything but the owner's switch
-#          (`rdocker-share level`) and never writes it: only the owner turns sharing off.
+#   awake  sharing on (any level but off) -> hold `caffeinate -s`: an AC-only assertion, so a plugged-in Mac does
+#          not idle-sleep while it is lent out. On battery, or with the lid closed, the Mac sleeps as usual (asleep
+#          = unreachable; the pool routes around it). Share off -> released. It reads the owner's switch
+#          (`rdocker-share level`) and never writes it: only the owner changes sharing.
+#   status jobs running here (rd's held slots, which the owner cannot read) -> RD_STATUS_FILE ("jobs=N", "ts=")
+#          for the owner's menu bar and `rdocker-share status`; rewritten when it changes, else every 45 s.
+#   stop   the owner's "Off now (stop jobs)" (`rdocker-share stop` writes off + RD_STOP_REQ) -> USR1 to rd's
+#          runners (rr_runner.pl: before GO refused like share off, a started command stopped like a client
+#          KILL - runs.log `interrupted`), now and once more on the next tick; the request file is removed.
+#          Only the rd user's `rrun-runner` processes, never the owner's own (a local rrun is one too).
 #   sshd   com.rdocker.sshd listens on the Tailscale address only, and Tailscale comes up after launchd at boot,
 #          and can drop and return on wake, a wifi change or a reconnect. When that address is on an interface
 #          but nothing listens on it for 2 ticks in a row -> `launchctl kickstart -k system/com.rdocker.sshd` (a
 #          plist that is not loaded is bootstrapped). While the address is not up, nothing is done.
 # Logs only changes (stdout; the plist sends it to /var/log/rd-worker-mac.log).
 # Env (tests): RD_SHARE_CMD, RD_SSHD_CONF, RD_SSHD_PLIST, RD_IFCONFIG, RD_LSOF, RD_LAUNCHCTL, RD_CAFFEINATE,
-# RD_TICK_S, RD_TICKS (stop after that many ticks; 0 = run forever).
+# RD_TICK_S, RD_TICKS (stop after that many ticks; 0 = run forever), RD_USER, RD_SLOTS_DIR, RD_STATUS_FILE,
+# RD_STOP_REQ, RD_PKILL.
 set -u
-SHARE=${RD_SHARE_CMD:-/usr/local/bin/rdocker-share}
+SHARE=${RD_SHARE_CMD:-/usr/local/libexec/rdocker-share}   # root-owned copy (install-worker-mac.sh), never PATH
+RDU=${RD_USER:-rd}
+SLOTS=${RD_SLOTS_DIR:-/Users/$RDU/rr/slots}
+STATUS=${RD_STATUS_FILE:-/Users/Shared/rdocker/status}
+REQ=${RD_STOP_REQ:-/Users/Shared/rdocker/stop-jobs}
+PKILL=${RD_PKILL:-/usr/bin/pkill}
 CONF=${RD_SSHD_CONF:-/etc/ssh/rdocker/sshd_config}
 PLIST=${RD_SSHD_PLIST:-/Library/LaunchDaemons/com.rdocker.sshd.plist}
 LABEL=com.rdocker.sshd
@@ -39,12 +51,12 @@ release() { mine && kill "$cpid" 2>/dev/null; cpid=""; }
 trap 'release; exit 0' TERM INT HUP
 awake() {
   lvl=$("$SHARE" level 2>/dev/null)
-  case $lvl in off|some|max) ;; *) lvl=unknown ;; esac
+  case $lvl in off|low|medium|high|custom|max) ;; *) lvl=unknown ;; esac
   [ "$lvl" != "$last_lvl" ] && log "share level $lvl"
   last_lvl=$lvl
   [ -n "$cpid" ] && ! mine && cpid=""
   case $lvl in
-    some|max)
+    low|medium|high|custom|max)
       if [ -z "$cpid" ]; then
         "$CAFF" -s -w $$ & cpid=$!
         log "awake hold (caffeinate -s pid $cpid: no idle sleep while plugged in and sharing)"
@@ -74,10 +86,51 @@ sshd_heal() {
   miss=-2    # give it a minute before the next try
 }
 
+# ----------------------------------------------------------------------------------------------- status
+last_status="" status_at=0
+jobs_here() {   # held slots: a .who (never a symlink) whose pid is alive
+  n=0
+  for w in "$SLOTS"/*.who; do
+    [ -f "$w" ] && [ ! -L "$w" ] || continue
+    pid=$(awk '{ print $3; exit }' "$w" 2>/dev/null)
+    case $pid in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null && n=$((n + 1))
+  done
+  echo "$n"
+}
+status() {
+  j=$(jobs_here) now=$(date +%s)
+  [ "$j" = "$last_status" ] && [ $((now - status_at)) -lt 45 ] && return 0
+  d=$(dirname "$STATUS")
+  [ -d "$d" ] && [ ! -L "$d" ] || return 0
+  t=$(mktemp "$d/.status.XXXXXX") || return 0   # a fresh name (O_EXCL): never through a planted file
+  if printf 'jobs=%s\nts=%s\n' "$j" "$now" > "$t" && chmod 644 "$t" && mv -f "$t" "$STATUS"; then
+    [ "$j" != "$last_status" ] && log "jobs running here: $j"
+    last_status=$j status_at=$now
+  else rm -f "$t"; fi
+}
+
+# ------------------------------------------------------------------------------------------------- stop
+again=0
+stop_jobs() {
+  if [ -f "$REQ" ] && [ ! -L "$REQ" ]; then
+    rm -f "$REQ"
+    "$PKILL" -USR1 -U "$RDU" -f '^rrun-runner' 2>/dev/null
+    log "stop: the owner stopped the jobs here (USR1 to $RDU's runners)"
+    again=1
+  elif [ -L "$REQ" ]; then rm -f "$REQ"
+  elif [ "$again" = 1 ]; then
+    "$PKILL" -USR1 -U "$RDU" -f '^rrun-runner' 2>/dev/null   # a keeper forked after the first one
+    again=0
+  fi
+}
+
 n=0
 log "start (tick ${TICK}s)"
 while :; do
+  stop_jobs
   awake
+  status
   sshd_heal
   n=$((n + 1))
   [ "$TICKS" -gt 0 ] && [ "$n" -ge "$TICKS" ] && break

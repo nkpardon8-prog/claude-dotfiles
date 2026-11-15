@@ -21,9 +21,10 @@ import types
 MARKER = ".rdocker-test-home"
 # Real binaries no test may reach: the ssh master / the mini, launchd, AppleScript, `open -a`,
 # Tailscale, any real docker (~/.local/bin/docker is the LIVE shim -> the mini), and tmutil (the
-# rrun runner excludes its root from Time Machine; a test must never touch the real TM settings).
+# rrun runner excludes its root from Time Machine; a test must never touch the real TM settings), and pkill
+# (rd-worker-mac's "Off now" signals the rd user's runners; a test must never signal a real process).
 GUARDED = ("ssh", "osascript", "launchctl", "open", "colima", "tailscale", "Tailscale", "docker",
-           "tmutil")
+           "tmutil", "pkill")
 STUB_EXIT = 97
 
 
@@ -70,6 +71,9 @@ def _rr_git_leak_check():
 
 
 atexit.register(_rr_git_leak_check)
+# rd_pool.is_self: the machine running the suite must never drop a test fleet's worker as "itself" (the
+# Air is a worker in the real fleet.json). The self-exclusion tests set their own value.
+os.environ["RR_SELF_IPS"] = ""
 if not os.environ.get("PATH", "").startswith(STUB_BIN + ":"):
     os.environ["PATH"] = STUB_BIN + ":" + os.environ.get("PATH", "")
 
@@ -91,6 +95,14 @@ def child_env(home, *bins, **extra):
     # Mac) and manage a real /opt/homebrew/bin/colima: a test sees neither unless it asks for them.
     e.update(RR_SHARE_FILE=os.path.join(TEST_HOME, "no-share-file"),
              RR_COLIMA=os.path.join(TEST_HOME, "no-colima"))
+    # The share level's memory guard and RAM cap read this Mac's live memory pressure, free memory and
+    # the test user's own processes (as a worker they are rd's): pinned here, so no test depends on how
+    # busy the machine running the suite is. A test of the guard sets its own.
+    e.update(RR_SYSCTL_kern_memorystatus_vm_pressure_level="1", RR_SYSCTL_kern_memorystatus_level="60",
+             RR_USED_MB="0")
+    # rd-worker-mac's menu status file, the owner's stop request and its pkill: never the real ones
+    e.update(RD_STATUS_FILE=os.path.join(TEST_HOME, "no-status-file"), RD_STOP_REQ=os.path.join(TEST_HOME, "no-stop-req"),
+             RD_SLOTS_DIR=os.path.join(TEST_HOME, "no-slots"), RD_PKILL=os.path.join(STUB_BIN, "pkill"))
     e.update(extra)
     return e
 

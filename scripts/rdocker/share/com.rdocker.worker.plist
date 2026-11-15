@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- rd-worker-mac on a Mac worker: root LaunchDaemon, starts at boot and is restarted if it ever exits.
+     Also writes the jobs count for the owner's menu bar and carries out his "Off now (stop jobs)".
      Holds the AC-only keep-awake while sharing is on and re-kicks com.rdocker.sshd when Tailscale returns.
      Installed by install-worker-mac.sh. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
