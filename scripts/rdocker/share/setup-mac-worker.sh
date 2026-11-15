@@ -71,6 +71,7 @@ OUID=$(id -u "$OWNER")
 as_owner() { sudo -u "$OWNER" -H env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 "$@"; }
 BREW=""; for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && BREW=$b && break; done
 say() { echo "setup-mac-worker: $*"; }
+cd / || exit 1   # the steps that run as rd or the owner must not inherit an unreadable cwd
 
 # ---------------------------------------------------------------------------------- 0. the Tailscale address
 TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
@@ -143,10 +144,12 @@ grep -q '^Include /etc/ssh/sshd_config.d/\*' "$MAIN" || {
 printf '# rdocker: the worker account logs in only through its own sshd (com.rdocker.sshd), never Remote Login\nDenyUsers %s\n' \
   "$RD_USER" > "$DROP.tmp"
 /bin/chmod 644 "$DROP.tmp"; /bin/mv -f "$DROP.tmp" "$DROP"
-/usr/sbin/sshd -t || { rm -f "$DROP"; say "the main sshd rejected $DROP; refusing"; exit 1; }
 D=/etc/ssh/rdocker
 /usr/bin/install -d -m 755 "$D"
 [ -f "$D/ssh_host_ed25519_key" ] || /usr/bin/ssh-keygen -q -t ed25519 -N '' -f "$D/ssh_host_ed25519_key"
+# A Mac that never had Remote Login on has no system host keys, and `sshd -t` then fails before it checks the
+# config: test the main config with the worker's own host key instead (it only checks syntax, nothing listens).
+/usr/sbin/sshd -t -h "$D/ssh_host_ed25519_key" || { rm -f "$DROP"; say "the main sshd rejected $DROP; refusing"; exit 1; }
 CONF="$D/sshd_config" PL=/Library/LaunchDaemons/com.rdocker.sshd.plist
 sum() { [ -f "$1" ] && /sbin/md5 -q "$1" 2>/dev/null || echo none; }
 before="$(sum "$CONF") $(sum "$PL")"
