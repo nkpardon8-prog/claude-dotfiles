@@ -344,7 +344,7 @@ class Setup(unittest.TestCase):
         self.assertIn("grep -q '^Include /etc/ssh/sshd_config.d/\\*' \"$MAIN\" || {", t)     # else refuse
         self.assertIn("DROP=/etc/ssh/sshd_config.d/100-rdocker-deny-$RD_USER.conf", t)
         self.assertIn("DenyUsers %s", t)
-        self.assertIn("/usr/sbin/sshd -t || { rm -f \"$DROP\"", t)
+        self.assertIn("/usr/sbin/sshd -t -h \"$D/ssh_host_ed25519_key\" || { rm -f \"$DROP\"", t)
         for line in ("AllowTcpForwarding no", "AllowStreamLocalForwarding no", "X11Forwarding no",
                      "PermitTunnel no", "AllowAgentForwarding no"):
             self.assertIn(line + "\n", t)
