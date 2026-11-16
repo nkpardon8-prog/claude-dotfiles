@@ -86,6 +86,19 @@ handoff_log() {
   ac_log "handoff:$1"
 }
 
+# ac_notify <message> — a failure the owner must SEE, not just a log line: logged as `notify`
+# and shown as a macOS notification (message passed as argv, never interpolated into the
+# script). Under AUTO_COMPACT_TEST_NO_FIRE only the log line is written.
+ac_notify() {
+  ac_log "notify $1"
+  [ -n "${AUTO_COMPACT_TEST_NO_FIRE:-}" ] && return 0
+  command -v osascript >/dev/null 2>&1 || return 0
+  osascript -e 'on run argv' \
+    -e 'display notification (item 1 of argv) with title "Auto-compact" sound name "Basso"' \
+    -e 'end run' "$1" >/dev/null 2>&1 &
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # _ac_resolve_tty_basename_via_ppid
 #
