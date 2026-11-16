@@ -90,7 +90,7 @@ start_compact() {
       q=$(cat "$STUB_QUEUED"); rm -f "$STUB_QUEUED" "$STUB_HELD_FILE"
       tx "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>${q%% *}</command-name>\"}}"
     fi
-  ) &
+  ) </dev/null >/dev/null 2>&1 &   # detached from runpane's stdout, like the real compaction
 }
 case "$1 $2" in
   "workspace state")
