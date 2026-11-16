@@ -192,8 +192,6 @@ for l in reversed(lines):
             print("idle"); sys.exit()
         if s.startswith(("<local-command", "<command-name>", "<command-message>")):
             continue
-        if isinstance((d.get("message") or {}).get("content"), list) and s.startswith("tool_result"):
-            print("busy"); sys.exit()
         print("busy"); sys.exit()
 print("unknown")
 ' 2>/dev/null || printf 'unknown'
