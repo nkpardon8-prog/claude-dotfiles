@@ -308,7 +308,7 @@ STUB_ENTER_IGNORED=99 hook "test-panel_1"
 wait_helper
 expect "/compact typed exactly twice" "$([ "$(compact_types)" = "2" ] && echo 1)"
 expect "box empty at the end (no stray /compact)" "$([ -z "$(cat "$STUB_HELD_FILE" 2>/dev/null)" ] && echo 1)"
-expect "logged pane-gave-up" "$(grep -q "pane-gave-up sid=$SID reason=compact-not-accepted-after-2-tries" "$LOG" && echo 1)"
+expect "logged pane-gave-up" "$(grep -q "pane-gave-up sid=$SID .*reason=compact-not-accepted-after-2-tries" "$LOG" && echo 1)"
 expect "visible notification" "$(grep -q "notify Auto-compact did not run" "$LOG" && echo 1)"
 expect "sentinel + attempts retired" "$([ ! -f "$SP" ] && [ ! -f "${SP}.attempts" ] && echo 1)"
 expect "no resume typed" "$(grep -q 'post-compact-resume' "$STUB_LOG" && echo 0 || echo 1)"
@@ -329,7 +329,7 @@ reset; write_pane_sentinel
 STUB_COMPACT=cancel hook "test-panel_1"
 wait_helper
 expect "accepted first" "$(grep -q "pane-compact-accepted sid=$SID" "$LOG" && echo 1)"
-expect "logged gave-up compaction-stopped-before-finishing" "$(grep -q "pane-gave-up sid=$SID reason=compaction-stopped-before-finishing" "$LOG" && echo 1)"
+expect "logged gave-up compaction-stopped-before-finishing" "$(grep -q "pane-gave-up sid=$SID .*reason=compaction-stopped-before-finishing" "$LOG" && echo 1)"
 expect "/compact NOT retyped" "$([ "$(compact_types)" = "1" ] && echo 1)"
 expect "visible notification" "$(grep -q "notify " "$LOG" && echo 1)"
 expect "sentinel retired" "$([ ! -f "$SP" ] && echo 1)"
