@@ -355,14 +355,19 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   `./prisma` or the dir its postinstall's `--schema` names) the package's own postinstall reruns if it
   runs `prisma generate`, else `npx prisma generate`; no schema found -> nothing to generate.
   **Local packages** (`file:` / `link:` dependencies that are directories inside the repo, found in
-  that dir's `package.json` and, transitively, in theirs) are linked, not installed, so their build
-  output (an ignored `dist/`) lives outside `node_modules` and outside the lockfile. rrun hashes each
-  one's source (tracked + untracked-not-ignored files, so dirty edits count; ignored files and
-  `node_modules` do not) and, when it changed without an `npm ci` (or `node_modules` came from the
-  shared store), reruns what `npm ci` would: each local package's own `preinstall` / `install` /
-  `postinstall` / `prepare`, dependencies first, then the depending package's (`rrun: local package
-  source changed (...) - rebuilding`). A failed rebuild is exit 78; the command never runs on a stale
-  build. Before 2026-11-07 it did (dentall `server` -> `@summit/staff-signin-core`: `... is not a function`).
+  that dir's `package.json` and, transitively, in theirs, plus any `node_modules` entry, top level or
+  `@scope/*`, that is a symlink resolving inside the repo, as npm workspaces link them) are linked, not
+  installed, so their build output (an ignored `dist/`) lives outside `node_modules` and outside the
+  lockfile. rrun hashes each one's source (tracked + untracked-not-ignored files, so dirty edits count;
+  ignored files and `node_modules` do not) plus which of its declared entries (`types` / `typings` /
+  `main` / `exports` targets) are missing, and, when that changed without an `npm ci` (or
+  `node_modules` came from the shared store), reruns what `npm ci` would: each local package's own
+  `preinstall` / `install` / `postinstall` / `prepare`, dependencies first, then the depending
+  package's (`rrun: local package source changed or unbuilt (...) - rebuilding`). An entry the build
+  itself never makes is remembered, not rebuilt every run. A failed rebuild is exit 78; the command
+  never runs on a stale or missing build. Before 2026-11-07 it did (dentall `server` ->
+  `@summit/staff-signin-core`: `... is not a function`); a 2026-11-09 auto-sync silently dropped that
+  fix until 2026-11-15 (TS2307 on a worker with a store-cloned `node_modules`).
 - **Env:** laptop vars matching `rr_env_pass` (`CI`, `DEBUG`, `TEST_DB_*`, `VITEST_*`, `RR_NODE`) pass
   through; add more with `-e NAME=VALUE`, or `-e NAME` to forward that variable's value from rrun's own
   environment (keeps it out of argv; unset → skipped with a notice). Values travel on stdin, never in `ps`. The remote command sees
