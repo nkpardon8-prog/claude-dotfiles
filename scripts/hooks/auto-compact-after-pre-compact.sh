@@ -113,10 +113,12 @@ find "$HOME/.claude/progress" -maxdepth 1 -type f \
 # field) fall through to the unchanged code below.
 #
 # Same anti-loop contract as the Terminal path: atomic mv claim, then RETAIN with an
-# incremented `.attempts` counter (give-up at 3); post-compact-primer.sh retires the sentinel
-# on a confirmed compaction. Delivery itself runs in a DETACHED helper (new session via
-# setsid) so this hook returns and Claude goes idle — the helper waits for an idle empty
-# composer, submits /compact, waits for a confirmed compaction, then submits the resume.
+# incremented `.attempts` counter (give-up at 3: notifies, spawns nothing); post-compact-primer.sh
+# retires the sentinel on a confirmed compaction. Delivery itself runs in a DETACHED helper (new
+# session via setsid) so this hook returns and Claude goes idle — the helper waits for true idle
+# (transcript + screen) and an empty prompt box, types /compact once, proves it was accepted
+# (retrying once after clearing its own text), queues the resume, and confirms the compaction.
+# The helper retires the sentinel itself on a final failure, so later Stops type nothing.
 # ---------------------------------------------------------------------------
 if [ "$(ac_read_sentinel_delivery "$SENTINEL" 2>/dev/null)" = "pane" ]; then
   PANE_FIELDS=$(ac_read_sentinel_pane "$SENTINEL") || {
