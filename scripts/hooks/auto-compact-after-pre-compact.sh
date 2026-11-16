@@ -179,6 +179,10 @@ EOF
   if [ "$_att" -ge 3 ]; then
     rm -f "$_att_file" 2>/dev/null || true
     ac_log "give-up sid=$REAL_SID delivery=pane panel=$PANE_PANEL attempts=$_att (dispatched /compact $_att times with no confirmed compaction; sentinel consumed to stop retrying - native auto-compact remains the backstop)"
+    ac_notify "Auto-compact gave up for session ${REAL_SID:0:8} after $((_att - 1)) tries. Run /compact then /post-compact-resume $REAL_SID yourself."
+    # Given up means nothing more is typed: no helper for this Stop.
+    rm -f "$PANE_LOCK" 2>/dev/null
+    exit 0
   elif mv -f "$PANE_CLAIM" "$SENTINEL" 2>/dev/null; then
     printf '%s\n' "$_att" > "$_att_file" 2>/dev/null || true
     trap - EXIT
