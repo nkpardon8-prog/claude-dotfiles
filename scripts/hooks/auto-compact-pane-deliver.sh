@@ -1,41 +1,40 @@
 #!/usr/bin/env bash
-# Pane delivery helper for auto-compact (2026-10-16). Spawned DETACHED by
-# auto-compact-after-pre-compact.sh when the sentinel says delivery:"pane", so the Stop hook can
+# Pane delivery helper for auto-compact (2026-10-16; delivery rework 2026-11-16). Spawned DETACHED
+# by auto-compact-after-pre-compact.sh when the sentinel says delivery:"pane", so the Stop hook can
 # return and Claude can go idle. Never invoked by the Terminal.app path.
 #
 # Usage: auto-compact-pane-deliver.sh <sid> <panel_id> <runpane_bin> <pane_dir> <sentinel_path> \
 #                                     <lock_path> <transcript_path-or-empty>
 #
-# Sequence (every step logged to ~/.claude/logs/auto-compact.log):
-#   1. wait until the panel is READY (STABLE consecutive polls; bounded by READY_TIMEOUT):
-#        - Pane's agent state for the panel (`runpane workspace state` → agentState) is "idle".
-#          NOT `panels screen` state.activityStatus: that is raw PTY recency, and Claude's
-#          ticking status line keeps it "active" forever (live 2026-10-16: 180s of "busy").
-#        - the composer is present and empty, read by OUR parser (pane_composer below), which
-#          accepts a named top rule (`──── my-session ─`). Pane's own detector requires a rule of
-#          bare `─`, so for any named Claude session it reports isPresent:false.
-#   2. deliver /compact: `runpane panels submit`; when Pane answers blocked.kind
-#      composer-unknown (same named-rule blind spot — it sent nothing), fall back to
-#      `panels input --text` then a separate `panels input --keys enter` (Claude treats an Enter
-#      that arrives with the text as a newline), then confirm the composer emptied.
-#   3. wait until compaction has FINISHED:
-#        finished = a new `compact_boundary` entry in the session transcript after dispatch
-#                   (Claude Code writes it when a compaction completes), OR — when no usable
-#                   transcript was given — the sentinel was retired by post-compact-primer.sh
-#                   (it does that only on a confirmed source=compact start).
-#      Bounded by COMPACT_TIMEOUT.
-#   (between 2 and 3) queue /post-compact-resume <sid> right behind /compact, as the Terminal path
-#      does; Claude runs it the moment compaction ends. Confirmed by a resume line AFTER the
-#      compact_boundary in the transcript.
+# Sequence (every step logged to ~/.claude/logs/auto-compact.log; verbs in LOG_VERBS.md):
+#   1. wait for TRUE idle, STABLE consecutive polls in a row (bounded by READY_TIMEOUT):
+#        - the session transcript says no turn is running or queued (transcript_state below) -
+#          the screen alone misread a thinking turn as idle (live 2026-11-16), and a new turn can
+#          start right after a Stop (queued notifications);
+#        - Pane's agent state, else Claude's own screen (spinner row / "esc to interrupt"), is idle;
+#        - the prompt box is empty, read by OUR parser first (Pane's composer flag misread it).
+#   2. type `/compact` with `panels input`, then ONE Enter as its own write. `panels submit` is
+#      not used: it can leave the text in the prompt box when it refuses (blocked=agent-prompt).
+#   3. prove Claude ACCEPTED it within ACCEPT_SEC: "Compacting conversation" on screen, or a
+#      /compact / compact_boundary entry in the transcript. Enter is never pressed a second time
+#      (on an empty or ghost-text box that can submit something else). Not accepted → delete
+#      exactly the characters we typed, and retry from step 1, at most TRIES times in total.
+#   4. accepted → queue `/post-compact-resume <sid>` right behind it (Claude runs a line queued
+#      mid-compaction the moment compaction ends; the Terminal path does the same).
+#   5. wait for a confirmed compaction (a new compact_boundary in the transcript, or - with no
+#      usable transcript - the primer retiring the sentinel), then confirm the resume ran.
+#      A compaction that stops without a boundary (cancelled or errored) is NOT retried.
 #
-# The Stop hook has already done the retain/attempts bookkeeping before spawning this, so any
-# failure here just leaves the sentinel for the next Stop to retry (bounded at 3 attempts).
+# Any final failure retires the sentinel (no more typing on later Stops), writes a log line and
+# shows a macOS notification. The only exit that leaves the sentinel for a later Stop is "never
+# became idle" (nothing was typed), plus a compaction still running at COMPACT_TIMEOUT.
 #
-# Tunables (seconds): AUTO_COMPACT_PANE_POLL_SEC (2), AUTO_COMPACT_PANE_READY_TIMEOUT_SEC (180),
-# AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC (900), AUTO_COMPACT_PANE_STABLE_POLLS (2),
+# Tunables (seconds unless noted): AUTO_COMPACT_PANE_POLL_SEC (2), AUTO_COMPACT_PANE_READY_TIMEOUT_SEC
+# (1800), AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC (900), AUTO_COMPACT_PANE_STABLE_POLLS (2, count),
 # AUTO_COMPACT_PANE_CALL_TIMEOUT_SEC (60, per runpane call), AUTO_COMPACT_PANE_KEY_GAP_SEC (0.8,
-# text→Enter gap on the input fallback), AUTO_COMPACT_PANE_CONFIRM_SEC (30, resume confirmation),
-# AUTO_COMPACT_PANE_RESUME_DELAY_SEC (5, /compact sent → resume's Enter lands).
+# text→Enter gap), AUTO_COMPACT_PANE_ACCEPT_SEC (10), AUTO_COMPACT_PANE_TRIES (2, count),
+# AUTO_COMPACT_PANE_CONFIRM_SEC (30, resume confirmation), AUTO_COMPACT_PANE_RESUME_DELAY_SEC (5,
+# /compact accepted → resume's Enter lands).
 
 [ -z "${HOME:-}" ] && exit 0
 set -u
@@ -48,14 +47,16 @@ SID="${1:-}"; PANEL="${2:-}"; RUNPANE="${3:-}"; PANE_DIR="${4:-}"
 SENTINEL="${5:-}"; LOCK="${6:-}"; TRANSCRIPT="${7:-}"
 
 POLL="${AUTO_COMPACT_PANE_POLL_SEC:-2}"
-READY_TIMEOUT="${AUTO_COMPACT_PANE_READY_TIMEOUT_SEC:-180}"
+READY_TIMEOUT="${AUTO_COMPACT_PANE_READY_TIMEOUT_SEC:-1800}"
 COMPACT_TIMEOUT="${AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC:-900}"
 STABLE="${AUTO_COMPACT_PANE_STABLE_POLLS:-2}"
 CALL_TIMEOUT="${AUTO_COMPACT_PANE_CALL_TIMEOUT_SEC:-60}"
 KEY_GAP="${AUTO_COMPACT_PANE_KEY_GAP_SEC:-0.8}"
+ACCEPT="${AUTO_COMPACT_PANE_ACCEPT_SEC:-10}"
+TRIES="${AUTO_COMPACT_PANE_TRIES:-2}"
 RESUME_DELAY="${AUTO_COMPACT_PANE_RESUME_DELAY_SEC:-5}"
 CONFIRM="${AUTO_COMPACT_PANE_CONFIRM_SEC:-30}"
-for _v in "$READY_TIMEOUT" "$COMPACT_TIMEOUT" "$STABLE" "$CALL_TIMEOUT" "$CONFIRM"; do
+for _v in "$READY_TIMEOUT" "$COMPACT_TIMEOUT" "$STABLE" "$CALL_TIMEOUT" "$CONFIRM" "$ACCEPT" "$TRIES"; do
   case "$_v" in ''|*[!0-9]*) ac_log "pane-helper abort sid=$SID reason=bad-tunable value=$_v"; exit 0 ;; esac
 done
 case "$POLL" in ''|*[!0-9.]*) POLL=2 ;; esac
@@ -73,6 +74,13 @@ if [ -z "$SID" ] || ! ac_validate_pane_panel_id "$PANEL" || [ ! -x "$RUNPANE" ] 
   exit 0
 fi
 
+# Transcript usable only if it is a regular .jsonl under ~/.claude/projects (path came from the
+# Stop-hook payload; re-checked here because this is a separate process).
+case "$TRANSCRIPT" in
+  "$HOME"/.claude/projects/*.jsonl) [ -f "$TRANSCRIPT" ] && [ ! -L "$TRANSCRIPT" ] || TRANSCRIPT="" ;;
+  *) TRANSCRIPT="" ;;
+esac
+
 rp() {
   perl -e 'alarm shift; exec @ARGV' "$CALL_TIMEOUT" "$RUNPANE" "$@" --pane-dir "$PANE_DIR" --json 2>/dev/null
 }
@@ -84,78 +92,169 @@ agent_state() {
     || printf 'none'
 }
 
-# Composer from a `panels screen` JSON on stdin: empty | text | absent | error.
-# Trusts Pane's composer when Pane found one; otherwise finds Claude's prompt box itself: the last
-# `❯` row whose row above STARTS with a horizontal rule (a named session draws `──── name ─`).
-# Held text = the rest of the `❯` row plus rows down to the closing rule. Python's strip() also
-# drops the no-break space Claude prints after `❯`.
-pane_composer() {
-  python3 -I -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print("error"); sys.exit()
-if d.get("ok") is not True:
-    print("error"); sys.exit()
-c = d.get("composer") or {}
-if c.get("isPresent") is True:
-    print("text" if c.get("hasUndeliveredText") is True else "empty"); sys.exit()
-rows = [r.strip() for r in str(d.get("text") or "").split("\n")]
-rule = "───"
-for i in range(len(rows) - 1, 0, -1):
-    if rows[i].startswith("❯") and rows[i - 1].startswith(rule):
-        held = [rows[i][1:].strip()]
-        for r in rows[i + 1:]:
-            if r.startswith(rule):
-                break
-            held.append(r)
-        print("text" if any(held) else "empty"); sys.exit()
-print("absent")
-' 2>/dev/null || printf 'error'
-}
-
-# Claude's own busy signal from a `panels screen` JSON on stdin: idle | busy | unknown.
-# While a turn runs Claude draws a spinner row above its prompt box with an ellipsis and a live
-# timer (`✻ Sautéing… (26s · ↓ 2.6k tokens)`); a finished turn leaves `✻ Worked for 27s · done`.
-# unknown = no Claude prompt box on screen (rule row above a `❯` row).
-claude_screen_state() {
+# Reads a `panels screen` JSON on stdin and prints three lines:
+#   1. prompt box: empty | text | absent | error
+#   2. Claude's own busy signal: idle | busy | compacting | unknown
+#   3. the text held in the prompt box (one line, rows joined by a space)
+# OUR parser first: Claude's prompt box = the last `❯` row whose row above STARTS with a rule (a
+# named session draws `──── name ─`). Pane's composer flag is used only when no box is found -
+# trusted first, it reported text in an empty box (live 2026-11-16). Claude's grey placeholder
+# (`Try "…"`) counts as empty. Busy = a spinner row (ellipsis + live timer) above the box or
+# "esc to interrupt" anywhere (Claude 2.1.32x prints it in the footer); compacting = the
+# "Compacting conversation" spinner.
+screen_read() {
   python3 -I -c '
 import json, re, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
-    print("unknown"); sys.exit()
+    print("error\nunknown\n"); sys.exit()
+if d.get("ok") is not True:
+    print("error\nunknown\n"); sys.exit()
 rows = [r.strip() for r in str(d.get("text") or "").split("\n")]
+rule = "───"
+box = None
 for i in range(len(rows) - 1, 0, -1):
-    if rows[i].startswith("\u276f") and rows[i - 1].startswith("\u2500\u2500\u2500"):
-        above = rows[max(0, i - 10):i - 1]
-        busy = any(re.search("\u2026\\s*\\(\\d", r) or "esc to interrupt" in r for r in above)
-        print("busy" if busy else "idle"); sys.exit()
+    if rows[i].startswith("❯") and rows[i - 1].startswith(rule):
+        box = i; break
+if any("Compacting conversation" in r for r in rows):
+    state = "compacting"
+elif box is None:
+    state = "unknown"
+else:
+    above = rows[max(0, box - 10):box - 1]
+    busy = any(re.search("…\\s*\\(\\d", r) for r in above) or any("esc to interrupt" in r for r in rows)
+    state = "busy" if busy else "idle"
+held = ""
+if box is not None:
+    parts = [rows[box][1:].strip()]
+    for r in rows[box + 1:]:
+        if r.startswith(rule):
+            break
+        parts.append(r)
+    held = " ".join(p for p in parts if p)
+    if held.startswith("Try \""):
+        held = ""
+    comp = "text" if held else "empty"
+else:
+    c = d.get("composer") or {}
+    if c.get("isPresent") is True:
+        comp = "text" if c.get("hasUndeliveredText") is True else "empty"
+    else:
+        comp = "absent"
+print(comp); print(state); print(held.replace("\n", " "))
+' 2>/dev/null || printf 'error\nunknown\n'
+}
+
+# Session transcript, read from the end (last 512KB): idle | busy | unknown.
+#   busy = the latest turn-relevant entry is an assistant message, a user prompt / tool result,
+#          or a queued line nobody has taken yet;
+#   idle = it is a turn end (stop_hook_summary, turn_duration), a compact_boundary, or an
+#          interrupt. Local commands (2.1.319: user caveat/command lines; 2.1.32x: system
+#          local_command) and bookkeeping entries are skipped. unknown = no transcript or no
+#          decisive entry (then the screen decides alone).
+transcript_state() {
+  [ -n "$TRANSCRIPT" ] || { printf 'unknown'; return; }
+  tail -c 524288 "$TRANSCRIPT" 2>/dev/null | python3 -I -c '
+import json, sys
+lines = sys.stdin.read().split("\n")
+consumed = 0
+def text_of(c):
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(str(x.get("text") or x.get("type") or "") for x in c if isinstance(x, dict))
+    return ""
+for l in reversed(lines):
+    try:
+        d = json.loads(l)
+    except Exception:
+        continue
+    t = d.get("type")
+    if t == "system":
+        if d.get("subtype") in ("stop_hook_summary", "turn_duration", "compact_boundary"):
+            print("idle"); sys.exit()
+        continue
+    if t == "queue-operation":
+        if d.get("operation") == "enqueue":
+            if consumed > 0:
+                consumed -= 1; continue
+            print("busy"); sys.exit()
+        consumed += 1
+        continue
+    if t == "assistant":
+        print("busy"); sys.exit()
+    if t == "user":
+        if d.get("isMeta"):
+            continue
+        s = text_of((d.get("message") or {}).get("content")).lstrip()
+        if s.startswith("[Request interrupted"):
+            print("idle"); sys.exit()
+        if s.startswith(("<local-command", "<command-name>", "<command-message>")):
+            continue
+        if isinstance((d.get("message") or {}).get("content"), list) and s.startswith("tool_result"):
+            print("busy"); sys.exit()
+        print("busy"); sys.exit()
 print("unknown")
 ' 2>/dev/null || printf 'unknown'
 }
 
-# Echoes "<agent>/<composer>" plus a final ready|busy verdict on its own line.
-# ready = agentState idle AND composer empty. When Pane lists no agent state for the panel (older
-# Pane, or a panel in another repo's Pane, which `workspace state` omits: live 2026-10-19), fall
-# back to the screen's activityStatus, then to Claude's own spinner row (activityStatus stayed
-# "active" on an idle tab, its statusline keeps redrawing).
+transcript_size() {
+  local s=0
+  [ -n "$TRANSCRIPT" ] && s=$(wc -c < "$TRANSCRIPT" 2>/dev/null | tr -d '[:space:]')
+  case "$s" in ''|*[!0-9]*) s=0 ;; esac
+  printf '%s' "$s"
+}
+
+# What the transcript shows about our /compact since byte offset T_OFFSET:
+#   boundary = a compact_boundary (compaction finished)
+#   started  = Claude 2.1.319 records the "/compact" prompt when it starts
+#   ended    = after it: a local-command caveat or an assistant turn with no boundary
+#              (compaction was cancelled or failed; 2.1.319 wrote a lone caveat, live 2026-11-16)
+#   none
+compact_evidence() {
+  [ -n "$TRANSCRIPT" ] || { printf 'none'; return; }
+  tail -c +$((T_OFFSET + 1)) "$TRANSCRIPT" 2>/dev/null | python3 -I -c '
+import json, sys
+started = ended = False
+for l in sys.stdin:
+    try:
+        d = json.loads(l)
+    except Exception:
+        continue
+    t = d.get("type")
+    if t == "system" and d.get("subtype") == "compact_boundary":
+        print("boundary"); sys.exit()
+    c = (d.get("message") or {}).get("content")
+    s = c.strip() if isinstance(c, str) else ""
+    if t == "user" and (s == "/compact" or s.startswith("<command-name>/compact<")):
+        started = True; continue
+    if t == "assistant" or (t == "user" and "<local-command-caveat>" in s):
+        ended = True
+print("ended" if ended else "started" if started else "none")
+' 2>/dev/null || printf 'none'
+}
+
+SCR=""   # last screen_read output
+read_screen() { SCR=$(rp panels screen --panel "$PANEL" --limit 60 | screen_read); }
+scr_line() { printf '%s\n' "$SCR" | sed -n "${1}p"; }
+
+# Prints "<agent>/<composer>/<transcript>" then ready|busy.
 panel_status() {
-  local agent scr comp act
+  local agent comp sstate tstate
   agent=$(agent_state)
-  scr=$(rp panels screen --panel "$PANEL" --limit 60)
-  comp=$(printf '%s' "$scr" | pane_composer)
+  read_screen
+  comp=$(scr_line 1); sstate=$(scr_line 2)
+  tstate=$(transcript_state)
   if [ "$agent" = "none" ] || [ "$agent" = "unknown" ]; then
-    act=$(printf '%s' "$scr" | jq -r '.state.activityStatus // "none"' 2>/dev/null)
-    if [ "$act" = "idle" ]; then
-      agent="idle(activity)"
-    elif [ "$(printf '%s' "$scr" | claude_screen_state)" = "idle" ]; then
-      agent="idle(screen)"
-    fi
+    [ "$sstate" = "idle" ] && agent="idle(screen)"
+  elif [ "$sstate" = "busy" ] || [ "$sstate" = "compacting" ]; then
+    agent="$agent+screen-$sstate"
   fi
-  printf '%s/%s\n' "$agent" "$comp"
-  case "$agent" in idle|"idle(activity)"|"idle(screen)") [ "$comp" = "empty" ] && { printf 'ready'; return; } ;; esac
+  printf '%s/%s/%s\n' "$agent" "$comp" "$tstate"
+  if [ "$comp" = "empty" ] && [ "$tstate" != "busy" ]; then
+    case "$agent" in idle|"idle(screen)") printf 'ready'; return ;; esac
+  fi
   printf 'busy'
 }
 
@@ -168,7 +267,7 @@ wait_ready() {
     detail=$(printf '%s' "$out" | sed -n 1p)
     verdict=$(printf '%s' "$out" | sed -n 2p)
     if [ "$verdict" = "ready" ]; then streak=$((streak + 1)); else streak=0; fi
-    [ "$detail" != "$last" ] && ac_log "pane-helper sid=$SID panel=$PANEL wait=$label screen=$verdict agent/composer=$detail"
+    [ "$detail" != "$last" ] && ac_log "pane-helper sid=$SID panel=$PANEL wait=$label screen=$verdict agent/composer/transcript=$detail"
     last="$detail"
     [ "$streak" -ge "$STABLE" ] && return 0
     now=$(date +%s)
@@ -177,146 +276,115 @@ wait_ready() {
   done
 }
 
-# Composer right now (empty | text | absent | error).
-composer_now() {
-  rp panels screen --panel "$PANEL" --limit 60 | pane_composer
-}
-
-# submit <text> <label> → rc 0 iff the text was handed to Claude.
-#   path 1: `panels submit` reports ok + verifiedSubmitted (taken or queued), or ok without
-#           verification: never retyped; if our text still sits in the composer, Enter is pressed.
-#   path 2: Pane answered composer-unknown (nothing typed) → type it with `panels input`, press
-#           Enter as a separate write, and confirm the composer no longer holds text.
-submit() {
-  local text="$1" label="$2" out ok verified state blocked i comp
-  out=$(rp panels submit --panel "$PANEL" --text "$text" --yes)
-  ok=$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)
-  verified=$(printf '%s' "$out" | jq -r '.verifiedSubmitted // false' 2>/dev/null)
-  state=$(printf '%s' "$out" | jq -r '.delivery.state // "none"' 2>/dev/null)
-  blocked=$(printf '%s' "$out" | jq -r '.blocked.kind // "none"' 2>/dev/null)
-  if [ "$ok" = "true" ] && [ "$verified" = "true" ]; then
-    ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit delivery=$state"
-    return 0
-  fi
-  # ok without verification: Pane typed and submitted but could not prove it from the screen (seen
-  # live on a named session). Do NOT retype (that would double-submit); the caller's transcript
-  # check (compact_boundary / resume line) is the real proof either way.
-  # Live (2nd run): the text landed but the Enter did not, leaving `/compact` in the composer. So
-  # look: still holding text → press Enter ourselves; empty → it was taken.
-  if [ "$ok" = "true" ] && [ "$blocked" = "none" ]; then
-    sleep "$KEY_GAP"
-    comp=$(composer_now)
-    if [ "$comp" = "text" ]; then
-      ac_log "pane-submit-unverified sid=$SID panel=$PANEL step=$label composer_after=text → pressing Enter"
-      enter_until_taken "$label" submit-enter
-      return
-    fi
-    ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit-unverified composer_after=$comp delivery=$state (transcript check decides)"
-    return 0
-  fi
-  if [ "$blocked" != "composer-unknown" ]; then
-    ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label ok=${ok:-none} verified=${verified:-none} delivery=${state:-none} blocked=${blocked:-none}"
-    return 1
-  fi
-
-  # composer-unknown: Pane typed nothing. Our own parser already saw an empty composer (we only
-  # get here after wait_ready), so typing into it is safe.
-  ac_log "pane-submit-fallback sid=$SID panel=$PANEL step=$label reason=composer-unknown (named prompt rule) → panels input"
-  type_line "$text" "$label"
-}
-
-# type_line <text> <label> → type with `panels input`, then Enter as its own write. Only for a
-# composer we saw empty (after wait_ready, or right behind our own /compact).
+# type_line <text> <label> → rc 0 when the text and ONE separate Enter were written. Only for a
+# prompt box we just saw empty.
 type_line() {
-  local text="$1" label="$2" out
-  out=$(rp panels input --panel "$PANEL" --text "$text" --yes)
-  if [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-    ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=input-text"
+  local text="$1" label="$2"
+  if [ "$(rp panels input --panel "$PANEL" --text "$text" --yes | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
+    ac_log "pane-type-failed sid=$SID panel=$PANEL step=$label via=input-text"
     return 1
   fi
   sleep "$KEY_GAP"
-  enter_until_taken "$label" input
+  if [ "$(rp panels input --panel "$PANEL" --keys enter --yes | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
+    ac_log "pane-type-failed sid=$SID panel=$PANEL step=$label via=input-enter"
+    return 1
+  fi
+  return 0
 }
 
-# enter_until_taken <label> <via> → press Enter (its own write) until the composer no longer holds
-# text, at most twice. Only called right after WE typed into a composer we saw empty.
-enter_until_taken() {
-  local label="$1" via="$2" out comp i
-  for i in 1 2; do
-    out=$(rp panels input --panel "$PANEL" --keys enter --yes)
-    if [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-      ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=$via-enter"
-      return 1
-    fi
-    sleep "$KEY_GAP"
-    comp=$(composer_now)
-    if [ "$comp" != "text" ]; then
-      ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=$via composer_after=$comp enter_presses=$i"
-      return 0
-    fi
-    # The resume goes in while Claude is compacting, and a line queued then stays visible in the
-    # composer (live 2026-10-18: it ran right after compaction although the text never cleared).
-    # So text left after one Enter is "queued": never press again (that could queue it twice);
-    # resume_ran() is the proof.
-    if [ "$label" = "resume" ]; then
-      ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=$via composer_after=text enter_presses=$i (queued behind compaction; transcript check decides)"
-      return 0
-    fi
-  done
-  ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=$via reason=text-still-in-composer (left for the user; not retried)"
-  return 1
+# clear_ours <text> <label> → if the prompt box holds exactly our text, delete it with one
+# backspace per character (+1 for a newline an Enter may have left). Never touches other text.
+clear_ours() {
+  local text="$1" label="$2" held keys n
+  read_screen
+  held=$(scr_line 3)
+  if [ "$(scr_line 1)" != "text" ]; then
+    ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=nothing-to-clear composer=$(scr_line 1)"
+    return 0
+  fi
+  if [ "$held" != "$text" ]; then
+    ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=left-alone (prompt box holds other text)"
+    return 1
+  fi
+  n=$(( ${#text} + 1 )); keys="backspace"
+  while [ "$n" -gt 1 ]; do keys="$keys,backspace"; n=$((n - 1)); done
+  rp panels input --panel "$PANEL" --keys "$keys" --yes >/dev/null
+  sleep "$KEY_GAP"
+  read_screen
+  if [ "$(scr_line 1)" = "text" ]; then
+    ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=still-text"
+    return 1
+  fi
+  ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=cleared"
+  return 0
 }
 
-# Transcript usable only if it is a regular .jsonl under ~/.claude/projects (path came from the
-# Stop-hook payload; re-checked here because this is a separate process).
-case "$TRANSCRIPT" in
-  "$HOME"/.claude/projects/*.jsonl) [ -f "$TRANSCRIPT" ] && [ ! -L "$TRANSCRIPT" ] || TRANSCRIPT="" ;;
-  *) TRANSCRIPT="" ;;
-esac
-
-transcript_size() {
-  local s=0
-  [ -n "$TRANSCRIPT" ] && s=$(wc -c < "$TRANSCRIPT" 2>/dev/null | tr -d '[:space:]')
-  case "$s" in ''|*[!0-9]*) s=0 ;; esac
-  printf '%s' "$s"
+# Give up for good: no more typing on later Stops, a log line and a visible notification.
+give_up() {
+  local why="$1"
+  rm -f "$SENTINEL" "${SENTINEL}.attempts" 2>/dev/null
+  ac_log "pane-gave-up sid=$SID panel=$PANEL reason=$why (sentinel retired; no further /compact will be typed)"
+  ac_notify "Auto-compact did not run for session ${SID:0:8} ($why). Run /compact then /post-compact-resume $SID yourself."
+  exit 0
 }
 
 ac_log "pane-helper start sid=$SID panel=$PANEL transcript=${TRANSCRIPT:+yes}${TRANSCRIPT:-no}"
 
-if ! wait_ready "$READY_TIMEOUT" pre-compact; then
-  ac_log "pane-helper abort sid=$SID panel=$PANEL reason=composer-not-ready-pre-compact timeout=${READY_TIMEOUT}s (sentinel retained → next-Stop retry)"
-  exit 0
-fi
-
-# Baselines taken BEFORE /compact goes in, so only a boundary written after dispatch counts.
-T_OFFSET=$(transcript_size)
 SENTINEL_AT_DISPATCH=0
 [ -f "$SENTINEL" ] && SENTINEL_AT_DISPATCH=1
+T_OFFSET=0
+ACCEPTED=0
+try=0
+while [ "$try" -lt "$TRIES" ]; do
+  try=$((try + 1))
+  if ! wait_ready "$READY_TIMEOUT" pre-compact; then
+    if [ "$try" = "1" ]; then
+      ac_log "pane-helper abort sid=$SID panel=$PANEL reason=never-idle timeout=${READY_TIMEOUT}s (nothing typed; sentinel retained → next-Stop retry)"
+      exit 0
+    fi
+    give_up "never-idle-after-failed-try"
+  fi
+  # Baseline taken BEFORE /compact goes in, so only evidence written after dispatch counts.
+  T_OFFSET=$(transcript_size)
+  if type_line "/compact" compact; then
+    _start=$(date +%s); _how=""
+    while [ $(( $(date +%s) - _start )) -le "$ACCEPT" ]; do
+      _ev=$(compact_evidence)
+      case "$_ev" in boundary|started) _how="transcript-$_ev"; break ;; esac
+      read_screen
+      [ "$(scr_line 2)" = "compacting" ] && { _how="screen-compacting"; break; }
+      # No transcript: the box emptying is the best evidence there is.
+      if [ -z "$TRANSCRIPT" ] && [ "$(scr_line 1)" = "empty" ]; then _how="composer-empty"; break; fi
+      sleep 0.5
+    done
+    if [ -n "$_how" ]; then
+      ac_log "pane-compact-accepted sid=$SID panel=$PANEL try=$try signal=$_how"
+      ACCEPTED=1
+      break
+    fi
+    ac_log "pane-compact-not-accepted sid=$SID panel=$PANEL try=$try within=${ACCEPT}s composer=$(scr_line 1) screen=$(scr_line 2)"
+  fi
+  clear_ours "/compact" compact
+done
+[ "$ACCEPTED" = "1" ] || give_up "compact-not-accepted-after-$TRIES-tries"
 
-if ! submit "/compact" compact; then
-  exit 0
-fi
-
-# Queue the resume right behind /compact, the way the Terminal path does (it types both lines
-# 0.3s apart): Claude holds a line submitted mid-compaction and runs it the moment compaction
-# ends. Live 2026-10-18: waiting for the panel to go idle AFTER compaction instead left the resume
-# unsent for minutes — the post-compact panel kept reading busy. The composer was just seen empty
-# by submit(), so this never appends to a draft of the user's.
-# Typed directly, not via `panels submit`: live 2026-10-18 that call sat ~15s mid-compaction before
-# answering composer-unknown, so the resume went in 18s after /compact. Timed so its Enter lands
-# RESUME_DELAY after /compact was sent (the user asked for 5s).
+# Queue the resume right behind the accepted /compact (the Terminal path types both lines 0.3s
+# apart): Claude holds a line submitted mid-compaction and runs it the moment compaction ends.
+# Waiting for idle AFTER compaction instead left it unsent for minutes (live 2026-10-18). A line
+# queued mid-compaction stays visible in the box until it runs, so it is never Enter'd twice.
 _wait=$(awk -v d="$RESUME_DELAY" -v g="$KEY_GAP" 'BEGIN{w=d-g; if (w<0) w=0; print w}')
 sleep "$_wait"
 RESUMED=0
 if type_line "/post-compact-resume $SID" resume; then
   RESUMED=1
+  ac_log "pane-resume-queued sid=$SID panel=$PANEL"
   handoff_log "compact_chained sid=$SID delivery=pane panel=$PANEL result=fired+resume-queued"
 fi
 
 compaction_confirmed() {
   if [ -n "$TRANSCRIPT" ]; then
-    tail -c +$((T_OFFSET + 1)) "$TRANSCRIPT" 2>/dev/null | grep -q '"subtype":"compact_boundary"' && return 0
-    return 1
+    [ "$(compact_evidence)" = "boundary" ]
+    return
   fi
   # Fallback: primer retired the sentinel. A claim file means a Stop hook holds it right now,
   # which is not a retirement.
@@ -341,8 +409,12 @@ while :; do
     if [ -n "$TRANSCRIPT" ]; then SIGNAL="transcript-compact-boundary"; else SIGNAL="sentinel-retired"; fi
     break
   fi
+  if [ -n "$TRANSCRIPT" ] && [ "$(compact_evidence)" = "ended" ]; then
+    give_up "compaction-stopped-before-finishing"
+  fi
   if [ $(( $(date +%s) - START )) -ge "$COMPACT_TIMEOUT" ]; then
     ac_log "pane-compact-unconfirmed sid=$SID panel=$PANEL timeout=${COMPACT_TIMEOUT}s resume_queued=$RESUMED (sentinel left for primer/next Stop)"
+    ac_notify "Auto-compact for session ${SID:0:8} has not finished after ${COMPACT_TIMEOUT}s. Check the window."
     exit 0
   fi
   sleep "$POLL"
