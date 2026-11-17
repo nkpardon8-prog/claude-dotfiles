@@ -61,7 +61,10 @@ Skip testing only when explicitly told to.
 ## Model routing
 - Codex `gpt-6.1-terra` at high effort: research, lookups, finding call sites, reading logs, drafting,
   mechanical edits, first-pass triage, and other cheap work.
-- Codex `gpt-6.1-sol` at high effort: every plan review, code review and verify pass.
+- Codex `gpt-6.2-sol` at MEDIUM effort: every plan review, code review and verify pass.
+- Raise Sol to high only for critical work: auth, secrets, PHI/PII, money, migrations or destructive
+  schema changes, production deploys or config, irreversible operations, or a review that keeps finding
+  blocking problems. Commands read `SOL_EFFORT` (default `medium`); set `SOL_EFFORT=high` for those.
 - Never use Terra for review.
 
 ## Convention timing

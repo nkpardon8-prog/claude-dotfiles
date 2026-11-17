@@ -149,7 +149,7 @@ else
 fi
 
 # ── 7b. Model routing: Terra for cheap work only, Sol for every review and verify ───────────────
-for k in 'gpt-6.1-terra' 'gpt-6.1-sol'; do
+for k in 'gpt-6.1-terra' 'gpt-6.2-sol'; do
   if grep -a -q -F -- "$k" "$DOC"; then pass "model routing names $k"; else fail "model routing names $k" "missing"; fi
 done
 if grep -a -i 'terra' "$DOC" "$WAKE" "$REF" | grep -a -i -q 'review lane\|verify lane\|for review'; then

@@ -41,7 +41,7 @@ counted.
 
 ## 6. Right model for the job
 Follow the global Model routing rule: hand cheap work to Codex Terra (high) instead of spending your
-own context on it, and run every review and verify pass on Codex Sol (high). Never Terra for review.
+own context on it, and run every review and verify pass on Codex Sol (medium; high only when critical). Never Terra for review.
 
 ## 7. Spend fewer tokens on talk
 Peer FYIs need no reply unless they ask a question; log them. Owner updates are short and come at

@@ -37,10 +37,10 @@ else
   bad "fenced block carries the template line (got: $(printf '%s' "$FENCED" | head -3))"
   echo "PASS: $PASS  FAIL: $FAIL"; exit 1
 fi
-# The Codex model is PINNED (gpt-6.1-sol) and named in the header, BEFORE Codex-passes, so the
+# The Codex model is PINNED (gpt-6.2-sol) and named in the header, BEFORE Codex-passes, so the
 # `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` anchor is untouched. Terra must never appear here.
 case "$HEADER_TPL" in
-  *"| Model: gpt-6.1-sol | Codex-passes: N/4"*) ok "template names the pinned model before Codex-passes" ;;
+  *"| Model: gpt-6.2-sol | Codex-passes: N/4"*) ok "template names the pinned model before Codex-passes" ;;
   *) bad "template names the pinned model before Codex-passes (got: $HEADER_TPL)" ;;
 esac
 case "$HEADER_TPL" in *[Tt]erra*) bad "template never names a Terra model";; *) ok "template never names a Terra model";; esac

@@ -24,7 +24,7 @@
 # Usage: codex-build-chunk.sh <promptfile> <outfile> <worktree-dir>
 #   Env: CODEX_EFFORT, CODEX_TIMEOUT_SECS  - same contract as codex-exec.sh.
 #        CODEX_BUILD_CHUNK_CMD  - test seam ONLY: the command run in place of `codex`.
-#   Callers pin CODEX_EFFORT explicitly (`CODEX_EFFORT=high bash scripts/codex-build-chunk.sh ...`):
+#   Callers pin CODEX_EFFORT explicitly (`CODEX_EFFORT="${SOL_EFFORT:-medium}" bash scripts/codex-build-chunk.sh ...`):
 #   high is the floor for a lane that WRITES code; unset means whatever ~/.codex/config.toml says.
 #   One worktree per chunk: two builders in one directory is two writers in one directory.
 #
@@ -118,8 +118,8 @@ command -v codex >/dev/null 2>&1 || [ -n "${CODEX_BUILD_CHUNK_CMD:-}" ] \
 EFFORT_ARGS=()
 if [ -n "${CODEX_EFFORT:-}" ]; then
   case "$CODEX_EFFORT" in
-    low|medium)     EFFORT_ARGS=(-c "model_reasoning_effort=xhigh") ;;
-    high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
+    low)            EFFORT_ARGS=(-c "model_reasoning_effort=medium") ;;
+    medium|high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
     *) echo "codex-build-chunk: ignoring unknown CODEX_EFFORT='$CODEX_EFFORT'" >&2 ;;
   esac
 fi

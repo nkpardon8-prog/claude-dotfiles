@@ -110,12 +110,12 @@ code_report() {
   _w=$1 _b=$2 _h=$3 _sc=$4 _bl=$5; shift 5; _n=0; _r=0
   for t in "$@"; do case "$t" in *"| new |"*) _n=$((_n+1)) ;; *"| repeat |"*) _r=$((_r+1)) ;; esac; done
   { echo "# Codex Review: trace"
-    echo "Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.1-sol | Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y | Scope: $_sc base=$_b head=$_h | Verify: ok tagged=$# blocking=$_bl | Ledger: new=$_n repeat=$_r | Areas-new: -"
+    echo "Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.2-sol | Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y | Scope: $_sc base=$_b head=$_h | Verify: ok tagged=$# blocking=$_bl | Ledger: new=$_n repeat=$_r | Areas-new: -"
     echo; echo "## Verify tags"; for t in "$@"; do echo "$t"; done; } > "$_d/report-final.md"
   printf 'WORKDIR=%s\nRUN_SHA=%s\nSCOPE=%s\n' "$_w" "$(git -C "$_w" rev-parse HEAD)" "$_sc" > "$_d/meta.env"
   printf '%s' "$_d/report-final.md"; }
 plan_report() { _d=$(mktemp -d "${TMPDIR:-/tmp}/planrev.XXXXXX"); TMPS="$TMPS $_d"
-  echo "Plan-review: round=$1 | Model: gpt-6.1-sol | Plan-lanes: 4/4 | Verify: ok tagged=$2 blocking=$2 | Ledger: new=0 repeat=0 | Areas-new: - | Design-new: 0 | Open-design: 0" > "$_d/plan-review.md"
+  echo "Plan-review: round=$1 | Model: gpt-6.2-sol | Plan-lanes: 4/4 | Verify: ok tagged=$2 blocking=$2 | Ledger: new=0 repeat=0 | Areas-new: - | Design-new: 0 | Open-design: 0" > "$_d/plan-review.md"
   printf '%s' "$_d/plan-review.md"; }
 IMPL() { _f=$(mktemp "${TMPDIR:-/tmp}/impl.XXXXXX"); TMPS="$TMPS $_f"; echo "no findings" > "$_f"; printf '%s' "$_f"; }
 tag() { printf 'TAG | %s | %s | IMPL | %s | trace finding' "$1" "$2" "${3:-src}"; }

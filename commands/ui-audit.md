@@ -92,7 +92,7 @@ done
 [ "$BATCH" -ge 1 ]           2>/dev/null || { echo "Error: --batch must be an integer >= 1 (got: $BATCH)" >&2; exit 1; }
 
 # --- Note on flags NOT supported ---
-# There is NO --effort flag: the verbatim codex-invoke.sh pins model_reasoning_effort=high (repo truth T2),
+# There is NO --effort flag: the verbatim codex-invoke.sh pins model gpt-6.2-sol at model_reasoning_effort=${SOL_EFFORT:-medium} (owner 2026-11-17),
 # so any --effort would be DEAD. Effort is always high.
 
 echo "Parsed: TAB='${TAB:-<none>}' URL='${URL:-<none>}' BASE='${BASE:-<none>}' READ_ONLY=$READ_ONLY NO_HARNESS=$NO_HARNESS MAX_ENUM_PASSES=$MAX_ENUM_PASSES BATCH=$BATCH CODEX_OFF=$CODEX_OFF WORKDIR=$WORKDIR"

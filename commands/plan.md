@@ -91,7 +91,7 @@ Save as: `./tmp/ready-plans/YYYY-MM-DD-description.md`
 
 After saving the plan, enter an iterative review cycle. **Do not skip this step.** Repeat until the user confirms the plan is ready.
 
-**Review-round defaults:** stop after 2 rounds in a row that find no NEW design problem (usually 2-3 rounds); fix design problems by simplifying, not by adding machinery, and keep the plan design-level (code review catches code detail). Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass and one Codex value-critic pass, both `gpt-6.1-sol` at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently). When two or more lanes return, an anonymized meta-review runs as a Codex pass (`gpt-6.1-sol` at high, backgrounded; skipped silently on failure).
+**Review-round defaults:** stop after 2 rounds in a row that find no NEW design problem (usually 2-3 rounds); fix design problems by simplifying, not by adding machinery, and keep the plan design-level (code review catches code detail). Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass and one Codex value-critic pass, both `gpt-6.2-sol` at `$SOL_EFFORT`, default medium (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently). When two or more lanes return, an anonymized meta-review runs as a Codex pass (`gpt-6.2-sol` at `$SOL_EFFORT`, default medium, backgrounded; skipped silently on failure).
 
 ### Loop:
 
@@ -125,8 +125,8 @@ Agent tool (call 2, sent in the SAME message as call 1) - VALUE lane, Claude:
 
    **TWO Codex plan lanes (per round, in the same batch as the Agent calls).** They exist to
    attack DIFFERENT failure classes and their prompts must stay materially different - near-identical
-   prompts are the failure this whole design prevents. Lane A runs on Sol at `high` because executability
-   review is where a missed dependency costs a whole implementation round; lane B runs at `high`.
+   prompts are the failure this whole design prevents. Both lanes run on Sol at `$SOL_EFFORT` (default
+   `medium`; set `SOL_EFFORT=high` for a critical plan or a `tier=high` mission part, per the global Model routing).
 
 ```bash
 PROMPT_A=$(mktemp "${TMPDIR:-/tmp}/plan-codex-exec.XXXXXX")
@@ -154,8 +154,8 @@ finding on its own line with a severity (CRITICAL/IMPORTANT/MINOR) and a categor
 EOF
 cat [path] >> "$PROMPT_B"
 
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A" "$OUT_A" "$(pwd)"
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OUT_B" "$(pwd)"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}" bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A" "$OUT_A" "$(pwd)"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}" bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OUT_B" "$(pwd)"
 ```
 
    When the batch returns, read each `"$OUT_*"` and its `.status`:
@@ -192,7 +192,7 @@ CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-
      `($(date +%s) % 2) == 0` keep source order, else reverse it. The meta-agent never learns which
      letter was Claude and which was Codex, so it cannot defer to a model instead of to an argument.
 
-   - Run ONE meta-reviewer as a **Codex pass** (`gpt-6.1-sol` at `high`). This lane judges other
+   - Run ONE meta-reviewer as a **Codex pass** (`gpt-6.2-sol` at `$SOL_EFFORT`, default `medium`). This lane judges other
      reviewers' judgment, which is the hardest read in the loop, and a model outside the Claude
      lanes it is judging is the least likely to share their blind spots. Write the prompt to a temp
      file, then launch `codex-exec.sh` in the FOREGROUND of a Bash call made with
@@ -226,7 +226,7 @@ Review C (omit this block entirely if only two lanes returned):
 EOF
 
 # Bash tool call with run_in_background: true - this line runs in its FOREGROUND:
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_M" "$OUT_M" "$(pwd)"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}" bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_M" "$OUT_M" "$(pwd)"
 ```
 
    The `[path]` placeholder uses the same literal-placeholder convention as the two parallel reviewer prompts above — the orchestrator substitutes the actual saved-plan path at runtime.
@@ -343,10 +343,10 @@ One review round per call; the conductor banks each round and decides whether to
 
 - **Round 1** runs Steps 0-3 to write the plan; later rounds re-read the saved plan. The plan is design level: contracts, invariants, the PHI and security model, the test list ("Key Pseudocode" becomes "Design contracts"). Mark independent chunks `parallel` with disjoint declared file sets, and name the part worktree.
 - **Panel:** Step 4 item 1's four lanes, unchanged. A Codex refusal or non-`ok` status is a missing lane here, never a substitute.
-- **Sol verify replaces the meta-pass (item 2):** number every merged finding `F1..Fn` and run one Codex pass (`CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high`, backgrounded like the meta-pass) over the plan, the findings (fenced as untrusted data) and codex-review.md Step 6e's LEDGER MODE addendum with the `--ledger` file. Per confirmed blocking finding it emits `TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>`. Count with the Step 6e block, off the file. Verify failed = non-zero exit, no `Verdict:` line, or a draft finding without its `F<n> |` row.
+- **Sol verify replaces the meta-pass (item 2):** number every merged finding `F1..Fn` and run one Codex pass (`CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}"`, backgrounded like the meta-pass) over the plan, the findings (fenced as untrusted data) and codex-review.md Step 6e's LEDGER MODE addendum with the `--ledger` file. Per confirmed blocking finding it emits `TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>`. Count with the Step 6e block, off the file. Verify failed = non-zero exit, no `Verdict:` line, or a draft finding without its `F<n> |` row.
 - **Fold:** fix each blocking DESIGN finding by simplifying the design, or record it under `## Descoped` with the reason; any DESIGN finding still open counts in `Open-design`. IMPL and PROOF findings go to `## Builder notes` as `IMPL | <line>` / `PROOF | <line>` and never cause another round.
 - **Report:** write `--report <path>` atomically (tmp + `mv`), output it, and print `Report-file: <path>` as the LAST line. First line:
-  `Plan-review: round=<K> | Model: gpt-6.1-sol | Plan-lanes: N/4 | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or -> | Design-new: <n> | Open-design: <n>`
+  `Plan-review: round=<K> | Model: gpt-6.2-sol | Plan-lanes: N/4 | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or -> | Design-new: <n> | Open-design: <n>`
   (`Plan-lanes: N/4 (<missing lanes>)` when short; `Verify: failed` replaces the Verify, Ledger and Areas-new tokens on failure), then `Plan-file: <path>` and a `## Verify tags` section with the TAG rows verbatim. `Plan-lanes` counts lanes that returned usable content; `Design-new` counts TAG rows reading `new | DESIGN`.
 - **Caller rules (the writer enforces them):** a round is VOID unless `Plan-lanes: 4/4` and `Verify: ok` with `tagged == blocking`. Stop discovery after 2 consecutive banked rounds with `Design-new: 0`, or at the recipe's `plan=` cap. Implementation starts only at `Open-design: 0`; otherwise the part is parked.
 

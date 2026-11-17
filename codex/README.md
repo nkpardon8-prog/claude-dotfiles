@@ -7,7 +7,10 @@ same source files into Codex skills:
 
 - `commands/*.md` -> `~/.codex/skills/claude-dotfiles/command-*/SKILL.md`
 - `skills/*/SKILL.md` -> `~/.codex/skills/claude-dotfiles/native-*/SKILL.md`
-- global routing rules -> managed block in `~/.codex/instructions.md`
+- the global rules (`CLAUDE.md` + `rules/`, in full) plus slash routing -> managed block in
+  `~/.codex/AGENTS.md`, the file Codex reads (it never read `instructions.md`: proven 2026-11-17).
+  The block carries a `rules-source` hash; the Claude `rules-in-force.py` hook re-runs
+  `install-codex.sh --rules-only` when the rules change, so Codex follows the same current rules
 - `codex/overrides/<dir>/SKILL.md` -> copied whole INSTEAD of the automatic port for that output dir
   (same dir name, same skill name). Used where a command's steps only work inside Claude Code; the
   generator fails loud on an override with no matching command. Today: `command-transfer`.

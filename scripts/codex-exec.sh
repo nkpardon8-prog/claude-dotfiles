@@ -17,7 +17,7 @@
 #
 # Usage: codex-exec.sh <promptfile> <outfile> [workdir]
 #   stdin is ALWAYS the prompt file (`- < promptfile`) — bare-stdin codex exec hangs (proven).
-#   Env: CODEX_EFFORT   optional; low|medium are RAISED to xhigh; high|xhigh|max pass through;
+#   Env: CODEX_EFFORT   optional; low is RAISED to medium; medium|high|xhigh|max pass through;
 #                       unset = NO override (config `model_reasoning_effort` is authoritative).
 #        CODEX_MODEL    optional; passes -m <model> (e.g. gpt-6-luna for cheap, simple research).
 #                       unset = NO override (the CLI default model stays authoritative - never pin here).
@@ -66,8 +66,8 @@ command -v codex >/dev/null 2>&1 || { echo "codex-exec: codex CLI not on PATH" >
 EFFORT_ARGS=()
 if [ -n "${CODEX_EFFORT:-}" ]; then
   case "$CODEX_EFFORT" in
-    low|medium) EFFORT_ARGS=(-c "model_reasoning_effort=xhigh") ;;   # raised — never run a review lens below xhigh
-    high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
+    low) EFFORT_ARGS=(-c "model_reasoning_effort=medium") ;;   # floor: never below medium (owner 2026-11-17: Sol medium by default)
+    medium|high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
     *) echo "codex-exec: ignoring unknown CODEX_EFFORT='$CODEX_EFFORT' (config stays authoritative)" >&2 ;;
   esac
 fi

@@ -1,6 +1,6 @@
 ---
 description: "Universal review engine. OpenAI Codex CLI runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents - Architecture and Integration launch alongside the Codex passes, Adversarial+FP-filter follows the merge - plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
-argument-hint: "[--effort <high|xhigh>] [--base <ref> [--scope full]] [--ledger <file>] [--verify <run-dir> --with <file>] [file/dir/plan path, question, or blank for auto-detect]"
+argument-hint: "[--effort <medium|high>] [--base <ref> [--scope full]] [--ledger <file>] [--verify <run-dir> --with <file>] [file/dir/plan path, question, or blank for auto-detect]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 expected_subagents: 8
 ---
@@ -9,7 +9,7 @@ expected_subagents: 8
 
 ## Engines
 
-- **Review - OpenAI Codex CLI, model `gpt-6.1-sol` on every call:** 4 parallel review passes in Step 3 (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Every pass is a read-only, ephemeral `codex exec`: branch/uncommitted lenses go through the `codex-exec.sh` wrapper over a diff-as-text, file/describe lenses and the verify call `codex exec` directly.
+- **Review - OpenAI Codex CLI, model `gpt-6.2-sol` on every call:** 4 parallel review passes in Step 3 (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Every pass is a read-only, ephemeral `codex exec`: branch/uncommitted lenses go through the `codex-exec.sh` wrapper over a diff-as-text, file/describe lenses and the verify call `codex exec` directly.
 - **Review — Claude:** 3 lens agents, split by what they consume (Architecture + Integration on the Sonnet `review-lane-sonnet` agent, Adversarial+FP-filter on Opus). Architecture/Maintainability and Cross-layer Integration/Footguns (**Step 4a**) launch in the SAME message as Step 3's backgrounded Codex passes and run concurrently with them, so they see the target but not Codex's output; Adversarial+FP-filter (**Step 4b**) is spawned after the Step 3d merge because its FP-filter half consumes the merged Codex findings. Plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
 - **Fix:** None. This skill is report-only and never modifies files.
 
@@ -19,24 +19,23 @@ You are a review orchestrator. You coordinate 4 backgrounded Codex review passes
 
 ---
 
-## Step 0: Resolve reasoning EFFORT (default `high`; self-escalate to `xhigh` only when critical)
+## Step 0: Resolve reasoning EFFORT (default `medium`; `high` only when critical)
 
-codex-review runs Codex at `high` reasoning effort by default — the enforced floor; it never runs below high. It has exactly one lever above that: `xhigh` ("extra high"), reserved for genuinely critical reviews. Resolve `EFFORT` in this priority order, then strip any `--effort <value>` token from `$ARGUMENTS` before Step 1 classifies the target (so the flag never leaks into the file path / description / question):
+codex-review runs Codex at `medium` reasoning effort by default (owner 2026-11-17) and raises it to `high` only for a critical review. It runs `xhigh` only when the user typed `--effort xhigh` themselves. Resolve `EFFORT` in this priority order, then strip any `--effort <value>` token from `$ARGUMENTS` before Step 1 classifies the target (so the flag never leaks into the file path / description / question):
 
-**0. Mission rounds.** `--ledger` or `--verify` in `$ARGUMENTS` makes this a /mission round: `EFFORT="high"`, final - drop any `--effort` value and skip points 1-2. The loop converges across rounds; xhigh inside it is waste.
+**0. Mission rounds.** `--ledger` or `--verify` in `$ARGUMENTS` makes this a /mission round: take the caller's `--effort` (`medium`, or `high` for a `tier=high` part), default `medium`, final - skip points 1-2. The loop converges across rounds; escalating inside it is waste.
 
-**1. Explicit caller flag wins — skip self-assessment.**
-- `--effort xhigh` → `EFFORT="xhigh"`.
-- `--effort high` → `EFFORT="high"`.
-- A caller that pins the effort has decided deliberately. In particular, a convergence **LOOP** pins `--effort high` on purpose: it re-runs and finds everything across rounds, so no single pass needs xhigh. Honor the pin verbatim and do NOT self-escalate.
-- Any value below high (`medium` / `low` / malformed) is ignored → `EFFORT="high"`.
+**1. Explicit caller flag wins - skip self-assessment.**
+- `--effort medium|high` sets `EFFORT` to that value; so does `SOL_EFFORT=medium|high` in the environment. A caller that pins the effort has decided deliberately: honor it verbatim and do NOT self-escalate.
+- `--effort xhigh` counts only when the user typed it; from an agent or skill it means `high`.
+- `low` or a malformed value is ignored and point 2 decides.
 
-**2. No explicit flag → default `high`, then self-assess for one-shot escalation.**
-Set `EFFORT="high"`, then judge whether THIS review is critical enough to justify `xhigh`. Escalate to `EFFORT="xhigh"` only when the target trips a criticality signal AND this is a one-shot review (not one iteration of a loop that will re-run):
-- **Escalate to `xhigh` when the target touches:** auth, secrets, money movement, PII / PHI, migrations or destructive schema changes, irreversible operations, production deploy / config, or security-sensitive parsing of untrusted input - OR the caller called it critical or "one shot, no retries."
-- **Otherwise, or when unsure, stay at `high`:** routine diffs, plans, ideas, low-blast-radius changes, any pass inside a loop. `xhigh` is the rare exception.
+**2. No explicit flag: default `medium`, then self-assess.**
+Set `EFFORT="medium"`, then raise it to `EFFORT="high"` only when the target trips a criticality signal:
+- **Raise to `high` when the target touches:** auth, secrets, money movement, PII / PHI, migrations or destructive schema changes, irreversible operations, production deploy / config, or security-sensitive parsing of untrusted input - OR the caller called it critical or "one shot, no retries", OR earlier review rounds on the same work kept finding blocking problems.
+- **Otherwise, or when unsure, stay at `medium`:** routine diffs, plans, ideas, low-blast-radius changes, any pass inside a loop.
 
-**3. Where effort and model land.** Every Codex call is pinned to model `gpt-6.1-sol` - `CODEX_MODEL=gpt-6.1-sol` on the four `codex-exec.sh` diff lanes, `exec -m gpt-6.1-sol` on the direct file/describe and verify calls - so no lane inherits whatever the config names. The four diff lanes are also pinned to `CODEX_EFFORT=high`; `$EFFORT` feeds only the file/describe passes and the Step 6 verify. State the resolved `EFFORT` in the Step 7 report header; if you self-escalated to `xhigh`, add one line naming the trigger.
+**3. Where effort and model land.** Every Codex call is pinned to model `gpt-6.2-sol` - `CODEX_MODEL=gpt-6.2-sol` on the four `codex-exec.sh` diff lanes, `exec -m gpt-6.2-sol` on the direct file/describe and verify calls - so no lane inherits whatever the config names. Every lane takes the resolved `$EFFORT`: the four diff lanes through `CODEX_EFFORT="$EFFORT"`, the file/describe passes and the Step 6 verify through `-c model_reasoning_effort="$EFFORT"`. State the resolved `EFFORT` in the Step 7 report header; if you raised it to `high`, add one line naming the trigger.
 
 ## Step 0b: Delta, scope and ledger flags (used by `/mission`; absent = behaviour unchanged)
 
@@ -224,7 +223,7 @@ For **MODE="uncommitted"** — staged + unstaged + **untracked** (no base ladder
 ```
 The untracked leg turns each new-but-unstaged file into a proper new-file diff so brand-new scripts/tests are actually reviewed. **The `|| true` is REQUIRED**: `git diff --no-index` exits 1 on success-when-there-are-differences, which would otherwise abort the whole `while` loop (and the command substitution) under `set -e`.
 
-**Step 3b-ii - Run the four lens passes over the diff.** Model and effort are pinned by the `CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high` prefix on each call (Step 0, point 3). Assemble each lens prompt exactly as in the MODE="file"/"describe" convention (lead line + CONTEXT block + lens aim + output-contract block), but lead with `Review the following code diff (unified format).`; write it to a file with `printf '%s'` (literal, never shell-evaluated), then append the diff text with `cat` so the untrusted diff bytes never pass through the shell:
+**Step 3b-ii - Run the four lens passes over the diff.** Model and effort are pinned by the `CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT"` prefix on each call (Step 0, point 3). Assemble each lens prompt exactly as in the MODE="file"/"describe" convention (lead line + CONTEXT block + lens aim + output-contract block), but lead with `Review the following code diff (unified format).`; write it to a file with `printf '%s'` (literal, never shell-evaluated), then append the diff text with `cat` so the untrusted diff bytes never pass through the shell:
 ```bash
 # UNTRUSTED-DATA FRAMING (REQUIRED — prompt-injection defense): the diff is attacker-influenceable
 # content (a PR author, a dependency, a committed fixture can plant text in it). Fence it explicitly
@@ -250,33 +249,33 @@ Then invoke the wrapper once per lens — it feeds the prompt file to `codex exe
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
 ```
 timeout: 3660000
 run_in_background: true
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
 ```
 timeout: 3660000
 run_in_background: true
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
 ```
 timeout: 3660000
 run_in_background: true
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
+CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
 ```
 timeout: 3660000
 run_in_background: true
 
-**For MODE="file" or MODE="describe"**, call `codex exec` DIRECTLY with a per-lens prompt (`$EFFORT` and `-m gpt-6.1-sol`, Step 0 point 3). For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
+**For MODE="file" or MODE="describe"**, call `codex exec` DIRECTLY with a per-lens prompt (`$EFFORT` and `-m gpt-6.2-sol`, Step 0 point 3). For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
 
 **Pass each prompt via stdin, never as an inline argument** (it may carry `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters): write it with `printf '%s'` to a file under `"$RUN_DIR"`, then `- < promptfile`. `$PROMPT_N` below is the literal assembled text (lead line + CONTEXT block + lens aim + output-contract block). Launch all four with `run_in_background: true` in the Step 3 message (Launch schedule). Their 120000 ms timeouts stay low (fast passes); collect them by the same bounded wait (Step 3c).
 
@@ -284,7 +283,7 @@ run_in_background: true
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-printf '%s' "$PROMPT_1" > "$RUN_DIR/codex-prompt-1.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.1-sol -o "$RUN_DIR/codex-review-1.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-1.txt"
+printf '%s' "$PROMPT_1" > "$RUN_DIR/codex-prompt-1.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.2-sol -o "$RUN_DIR/codex-review-1.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-1.txt"
 ```
 where `$PROMPT_1` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]`
 timeout: 120000
@@ -292,7 +291,7 @@ run_in_background: true
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-printf '%s' "$PROMPT_2" > "$RUN_DIR/codex-prompt-2.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.1-sol -o "$RUN_DIR/codex-review-2.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-2.txt"
+printf '%s' "$PROMPT_2" > "$RUN_DIR/codex-prompt-2.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.2-sol -o "$RUN_DIR/codex-review-2.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-2.txt"
 ```
 where `$PROMPT_2` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]`
 timeout: 120000
@@ -300,7 +299,7 @@ run_in_background: true
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-printf '%s' "$PROMPT_3" > "$RUN_DIR/codex-prompt-3.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.1-sol -o "$RUN_DIR/codex-review-3.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-3.txt"
+printf '%s' "$PROMPT_3" > "$RUN_DIR/codex-prompt-3.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.2-sol -o "$RUN_DIR/codex-review-3.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-3.txt"
 ```
 where `$PROMPT_3` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]`
 timeout: 120000
@@ -308,7 +307,7 @@ run_in_background: true
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-printf '%s' "$PROMPT_4" > "$RUN_DIR/codex-prompt-4.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.1-sol -o "$RUN_DIR/codex-review-4.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-4.txt"
+printf '%s' "$PROMPT_4" > "$RUN_DIR/codex-prompt-4.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.2-sol -o "$RUN_DIR/codex-review-4.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-4.txt"
 ```
 where `$PROMPT_4` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]`
 timeout: 120000
@@ -586,7 +585,7 @@ Be ruthless about false positives. Only CONFIRM findings you can verify in the c
 
 Feed the prompt via stdin, never as an inline argument - findings carry code excerpts and shell metacharacters:
 ```bash
-printf '%s' "$VERIFY_PROMPT" > "$RUN_DIR/codex-verify-prompt.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.1-sol -o "$RUN_DIR/codex-verify.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-verify-prompt.txt"
+printf '%s' "$VERIFY_PROMPT" > "$RUN_DIR/codex-verify-prompt.txt" && codex -c model_reasoning_effort="$EFFORT" exec -m gpt-6.2-sol -o "$RUN_DIR/codex-verify.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-verify-prompt.txt"
 ```
 timeout: 120000
 
@@ -701,7 +700,7 @@ real header and fool the downstream parser. The same rule binds the Step 1 "Revi
 <!-- ENGINE-HEADER-FORMAT -->
 ```markdown
 # Codex Review: [target summary — single line, newlines stripped]
-Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.1-sol | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]
+Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.2-sol | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
@@ -737,7 +736,7 @@ echo "Run-id: $(basename "$RUN_DIR")"                                           
 **Rules:**
 - **`Codex-passes: N/4` is a mandatory, always-present token in the `Engine:` header line** — it is a stable machine-readable contract that other skills (e.g. `/mission`, which greps the report to decide whether to VOID a review round when not every independent reviewer reported) parse. `N` = the `CODEX_PASSES` count from Step 3c (usable passes, 0-4) — for branch/uncommitted the count of lenses whose `<out>.usable == ok`, for file/describe the `REVIEW_RE`-usable count; the SAME predicate Step 5 uses (no split-brain). Always render it, including the all-good case → `Codex-passes: 4/4`. When `N < 4`, append the missing lens(es) in parentheses, e.g. `Codex-passes: 3/4 (codex-2 unavailable)` or `Codex-passes: 2/4 (codex-1, codex-4 unavailable)`. When all four failed, the token reads `Codex-passes: 0/4` AND the existing `Codex unavailable, using Claude agents only` note (Step 3c) is still emitted — keep both.
 - **`Claude-lenses: N/3` is equally mandatory and always present.** `N` = the number of Claude lenses that wrote a `<dir>/claude-<slug>.usable` sidecar reading `ok` (Step 3c-claude). Render it always, including `Claude-lenses: 3/3`; when `N < 3`, name the missing lens(es), e.g. `Claude-lenses: 2/3 (adversarial unavailable)`. **Count the sidecars on disk — never render this from memory.** A lens that silently failed to spawn leaves no sidecar and MUST lower the count; if you write `3/3` because you *intended* to launch three, the token is a lie and the guard it feeds is dead.
-- **Token order is load-bearing.** `Model: gpt-6.1-sol` (the pinned Codex model, Step 0) sits BEFORE `Codex-passes:`, and `Claude-lenses:` BETWEEN `Codex-passes:` and `Verified:`, so the anchor `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` keeps matching. Step 0b tokens go on the SAME line AFTER `Verified:`, in this order: ` | Scope: <delta|full> base=<sha12> head=<sha12>` (with `--base`), then ` | Verify: deferred` (`--ledger` first pass) or ` | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or ->` / ` | Verify: failed` (re-entry, 6e). Without the flags, none of them appear.
+- **Token order is load-bearing.** `Model: gpt-6.2-sol` (the pinned Codex model, Step 0) sits BEFORE `Codex-passes:`, and `Claude-lenses:` BETWEEN `Codex-passes:` and `Verified:`, so the anchor `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` keeps matching. Step 0b tokens go on the SAME line AFTER `Verified:`, in this order: ` | Scope: <delta|full> base=<sha12> head=<sha12>` (with `--base`), then ` | Verify: deferred` (`--ledger` first pass) or ` | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or ->` / ` | Verify: failed` (re-entry, 6e). Without the flags, none of them appear.
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix

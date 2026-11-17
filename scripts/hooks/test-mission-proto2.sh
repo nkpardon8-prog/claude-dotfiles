@@ -61,7 +61,7 @@ code_report() {
   case "$_vf" in ok) _vt="Verify: ok tagged=${TAGGED:-$_tagged} blocking=$_bl | Ledger: new=$_new repeat=$_rep | Areas-new: -" ;;
                  *) _vt="Verify: $_vf" ;; esac
   { echo "# Codex Review: part"
-    echo "Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.1-sol | Codex-passes: $_cx/4 | Claude-lenses: $_cl/3 | Verified: Y | Scope: $_sc base=$_base head=$_head | $_vt"
+    echo "Engine: 4x Codex + 3x Claude + Codex Verification | Model: gpt-6.2-sol | Codex-passes: $_cx/4 | Claude-lenses: $_cl/3 | Verified: Y | Scope: $_sc base=$_base head=$_head | $_vt"
     echo; echo "## Verify tags"; for t in "$@"; do echo "$t"; done; } > "$_d/report-final.md"
   printf 'WORKDIR=%s\nRUN_SHA=%s\nSCOPE=%s\n' "$W" "$_head" "$_sc" > "$_d/meta.env"
   printf '%s' "$_d/report-final.md"
@@ -69,7 +69,7 @@ code_report() {
 plan_report() { # plan_report <K> <lanes N> <verify> <blocking> [TAG rows]
   _d=$(mktemp -d "${TMPDIR:-/tmp}/planrev.XXXXXX"); TMPS="$TMPS $_d"; _k=$1 _ln=$2 _vf=$3 _bl=$4; shift 4
   _new=0; _rep=0; for t in "$@"; do case "$t" in *"| new |"*) _new=$((_new+1)) ;; *) _rep=$((_rep+1)) ;; esac; done
-  { echo "Plan-review: round=$_k | Model: gpt-6.1-sol | Plan-lanes: $_ln/4 | Verify: $_vf tagged=$# blocking=$_bl | Ledger: new=$_new repeat=$_rep | Areas-new: - | Design-new: $_new | Open-design: 0"
+  { echo "Plan-review: round=$_k | Model: gpt-6.2-sol | Plan-lanes: $_ln/4 | Verify: $_vf tagged=$# blocking=$_bl | Ledger: new=$_new repeat=$_rep | Areas-new: - | Design-new: $_new | Open-design: 0"
     echo; for t in "$@"; do echo "$t"; done; } > "$_d/plan-review.md"
   printf '%s' "$_d/plan-review.md"
 }

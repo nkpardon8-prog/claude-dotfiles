@@ -197,8 +197,9 @@ disarm the liveness file.
 LAND FIRST: at PART-DONE append the freeze SHA to `~/.claude/push-queue.md` (§10); the next approved
 part builds on it overnight, landing approval never blocks it. Known reds are matched by baseline,
 never re-proven (§5). Model routing: Codex `gpt-6.1-terra` for cheap work (research, lookups, log and
-output summaries, mechanical edits, doc drafts); `gpt-6.1-sol` at high effort for every plan and code
-review lane, sweeps and verify. Never Terra for review. Waiting on a job: 1500-3300 s heartbeats.
+output summaries, mechanical edits, doc drafts); `gpt-6.2-sol` at medium effort for every plan and code
+review lane, sweeps and verify; `high` (`SOL_EFFORT=high`, `--effort high`) for a `tier=high` part or a
+repeat blocker. `<sol-effort>` below means that choice. Never Terra for review. Waiting on a job: 1500-3300 s heartbeats.
 
 <!-- CONTRACT-CORE-END -->
 
@@ -266,7 +267,7 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <si
 ```
 
 - the `implementation-reviewer` subagent (its own definition; findings written to a file);
-- `skill: codex-review --effort high --ledger <file> --base <sha>` (round 1: the PART-START base;
+- `skill: codex-review --effort <sol-effort> --ledger <file> --base <sha>` (round 1: the PART-START base;
   later: the last reviewed head), with a `mission-watchdog.sh ... review <run-dir>` beside it.
 
 Each lane persists its result to DURABLE NOTES, then sets ONLY its bit (`got=1` impl, `got=2` codex;
@@ -286,7 +287,7 @@ raises `dry=1` only on a clean round with HEAD == report head and a clean tree; 
 part worktree, run the targeted tests (§5), then round K+1.
 
 **Sweep** (`repeat>0`): one Codex Sol pass over the full part diff listing every instance of the
-repeat type keys (`CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh ...`),
+repeat type keys (`CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}" bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh ...`),
 fix all, commit, re-sweep until clean, logging each:
 
 ```bash
@@ -298,7 +299,7 @@ PART-DONE needs a clean sweep covering every repeat key, at or after the last fi
 ## §4.6 Close detail
 
 At `dry=1`, launch the three legs in ONE message on the freeze SHA, each with a watchdog:
-1. `skill: codex-review --effort high --ledger <file> --base <PART-START base> --scope full` plus the
+1. `skill: codex-review --effort <sol-effort> --ledger <file> --base <PART-START base> --scope full` plus the
    implementation-reviewer; at its join `--verify`, then
    `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh bank-review <sid> <root> <N> <K> close <report-final.md> <impl findings>`
    (banks `REVIEW-EVIDENCE ... scope=close base=<base> head=<freeze> ... result=clean|blocking` on its own).
@@ -396,7 +397,7 @@ refuse any value holding a newline or `"`, `` ` ``, `$`, `\`. The tick prompt, v
 ## §6.5 Codex may write code - through one wrapper only
 
 Codex never writes the mission bridge. It MAY implement an isolated, mechanical, well-specified
-chunk, only via `CODEX_EFFORT=high bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-build-chunk.sh <promptfile> <outfile> <worktree>`
+chunk, only via `CODEX_EFFORT="${SOL_EFFORT:-medium}" bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-build-chunk.sh <promptfile> <outfile> <worktree>`
 on a LINKED worktree (one per chunk). Its refusals and status tokens are in that script's header
 table. `status=ok` means Codex wrote something and touched nothing forbidden, not that it is right:
 Claude runs the tests before it counts.

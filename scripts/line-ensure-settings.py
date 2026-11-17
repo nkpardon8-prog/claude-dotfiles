@@ -19,6 +19,10 @@ What it ensures (adds what is missing, never reorders or touches anything else):
                                        its bridge address, so agents just use names)
   - Stop: relink.py --heal               (a /line-named window not on Remote Control under its name -
                                        new, renamed, resumed, Pane-restored - relinks itself when idle)
+  - SessionStart(startup|resume|clear|compact) + UserPromptSubmit + SubagentStart:
+        hooks/rules-in-force.py            (every window and subagent follows the CURRENT CLAUDE.md:
+                                       a stale checkout gets the base branch's copy, a rule edit
+                                       reaches open windows as a diff; added 2026-11-17)
 and REMOVES the hook entries listed in RETIRED.
 
 Safety: refuses a symlinked or unparseable settings file (prints why, changes nothing); takes a lock
@@ -43,6 +47,9 @@ REASSERT_CMD = "bash $HOME/.claude-dotfiles/scripts/hooks/line-reassert-identity
 PUBLISH_CMD = f"{LAC} publish --background --delay 3"
 ROUTE_CMD = f"{LAC} route-send"
 HEAL_CMD = "python3 $HOME/.claude-dotfiles/scripts/relink.py --heal"
+# Not a /line feature: this script is the one place each Mac converges its own settings.json, so every
+# hook that must exist on every machine is listed here.
+RIF = "python3 $HOME/.claude-dotfiles/scripts/hooks/rules-in-force.py"
 
 # (event, matcher or None, hook entry). Identity is the command string.
 REQUIRED = [
@@ -53,6 +60,10 @@ REQUIRED = [
     ("SessionEnd", None, {"type": "command", "command": PUBLISH_CMD, "timeout": 5}),
     ("PreToolUse", "SendMessage", {"type": "command", "command": ROUTE_CMD, "timeout": 5}),
     ("Stop", None, {"type": "command", "command": HEAL_CMD, "timeout": 5}),
+    ("SessionStart", "startup|resume|clear|compact",
+     {"type": "command", "command": f"{RIF} session-start", "timeout": 15}),
+    ("UserPromptSubmit", None, {"type": "command", "command": f"{RIF} prompt", "timeout": 5}),
+    ("SubagentStart", None, {"type": "command", "command": f"{RIF} subagent", "timeout": 5}),
 ]
 REQUIRED_KEYS = {"remoteControlAtStartup": True, "crossSessionInbound": "accept"}
 # Commands whose hook entries are removed wherever they appear.

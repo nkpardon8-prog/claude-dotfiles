@@ -65,8 +65,8 @@ done
 EFFORT_ARGS=()
 if [ -n "${CODEX_EFFORT:-}" ]; then
   case "$CODEX_EFFORT" in
-    low|medium) EFFORT_ARGS=(-c "model_reasoning_effort=xhigh") ;;
-    high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
+    low) EFFORT_ARGS=(-c "model_reasoning_effort=medium") ;;   # floor medium (owner 2026-11-17)
+    medium|high|xhigh|max) EFFORT_ARGS=(-c "model_reasoning_effort=$CODEX_EFFORT") ;;
     *) echo "codex-vision: ignoring unknown CODEX_EFFORT='$CODEX_EFFORT' (config stays authoritative)" >&2 ;;
   esac
 fi

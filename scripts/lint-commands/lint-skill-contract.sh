@@ -323,29 +323,29 @@ req "$L" "in a SINGLE message"
 # NOTE the shape being pinned is the SAME-LINE env prefix. req() counts LINES, so a prefix that
 # gets split onto its own line would still satisfy a naive grep while no longer applying to the
 # command - hence the literal includes the trailing `bash `.
-req "$X" "CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash " 4
-req "$L" "CODEX_EFFORT=high bash "
-req "commands/mission.md" "CODEX_EFFORT=high bash "
-req "commands/prepare-pr.md" "CODEX_EFFORT=high bash "
+req "$X" 'CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash ' 4
+req "$L" 'CODEX_EFFORT="${SOL_EFFORT:-medium}" bash '
+req "commands/mission.md" 'CODEX_EFFORT="${SOL_EFFORT:-medium}" bash '
+req "commands/prepare-pr.md" 'CODEX_EFFORT="${SOL_EFFORT:-medium}" bash '
 # plan.md runs TWO Codex lanes at DIFFERENT efforts on purpose: executability at xhigh (a missed
 # dependency there costs a whole implementation round), value-critic at high. Pinning both is what
 # stops the pair collapsing back into one lane, or into two lanes with the same prompt and effort -
 # which is what it was before 2026-08-17 (two reviewers, byte-identical prompts, called independent).
-# Pinned to lane A's exact invocation (incl. "$PROMPT_A"), Sol high (owner 2026-11-11), NOT a bare effort prefix:
+# Pinned to lane A's exact invocation (incl. "$PROMPT_A"), Sol at SOL_EFFORT (owner 2026-11-17: medium, high when critical), NOT a bare effort prefix:
 # plan.md's meta-reviewer also runs Codex at xhigh, and a generic pin would let that line satisfy
 # this check even if the executability lane were deleted or dropped to another effort.
-req "$L" 'CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A"'
+req "$L" 'CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="${SOL_EFFORT:-medium}" bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A"'
 # The DIRECT `codex exec` sites in codex-review.md (4 file/describe lenses + the Step 6 verify)
 # deliberately do NOT take this prefix - they never read the variable. Do not "fix" them by adding one.
 
-# --- codex-review MODEL is pinned to gpt-6.1-sol on every Codex call (mission rework, 2026-11-11) ---
+# --- codex-review MODEL is pinned to gpt-6.2-sol on every Codex call (mission rework, 2026-11-11) ---
 # An unpinned lane runs whatever ~/.codex/config.toml names, and a weaker model returns a weaker
 # review, not an error - the same silent shape as the effort pins above. Diff lanes take the env
 # prefix (same-line, so it still applies to the command); direct sites take `exec -m`. Terra is a
 # product model, never a code-review model: its absence is pinned in both casings.
-req "$X" "CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash " 4
-req "$X" "exec -m gpt-6.1-sol -o " 5
-req "$X" "| Model: gpt-6.1-sol | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]"
+req "$X" 'CODEX_MODEL=gpt-6.2-sol CODEX_EFFORT="$EFFORT" CODEX_TIMEOUT_SECS=3600 bash ' 4
+req "$X" "exec -m gpt-6.2-sol -o " 5
+req "$X" "| Model: gpt-6.2-sol | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]"
 absent "$X" "terra"
 absent "$X" "Terra"
 # Delta/ledger contract /mission parses (Step 0b + 6e). Dropping any leg silently turns a mission
@@ -357,7 +357,7 @@ req "$X" "Verify: failed"
 req "$X" "Verify: deferred"
 # A /mission round (--ledger or --verify) runs at high, final: no xhigh, no self-escalation (mission
 # rework 2026-11-11). Without the pin, Step 0's one-shot escalation would quietly fire inside a loop.
-req_before "$X" 'a /mission round: `EFFORT="high"`, final'
+req_before "$X" 'a /mission round: take the caller'"'"'s `--effort` (`medium`, or `high` for a `tier=high` part), default `medium`, final'
 # Panel completeness per scope (plan 4.2): the code-round panel is 4 Codex + 3 Claude + the outer
 # implementation-reviewer (the --with file) + verify. Plan rounds are /plan --mission's contract.
 req "$X" "A mission code round is complete only with"
@@ -367,7 +367,7 @@ req "$X" "A mission code round is complete only with"
 # rule a silent drift would remove (a missing lane token reads as a complete panel).
 req "$L" "--mission"
 req "$L" "--roadmap"
-req "$L" "Plan-review: round=<K> | Model: gpt-6.1-sol | Plan-lanes: N/4"
+req "$L" "Plan-review: round=<K> | Model: gpt-6.2-sol | Plan-lanes: N/4"
 req "$L" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>"
 req "$L" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
 req "$L" "Design-new: <n> | Open-design: <n>"

@@ -151,13 +151,13 @@ run_codex() {
   if [ "$rem" -le 0 ]; then return 124; fi
   if [ -n "$home_arg" ]; then
     CODEX_HOME="$home_arg" pt_run "$rem" "$CODEX_BIN" \
-      -c model_reasoning_effort="xhigh" \
-      exec -s read-only --ephemeral --cd "$WORKDIR" \
+      -c model_reasoning_effort="${SOL_EFFORT:-medium}" \
+      exec -m gpt-6.2-sol -s read-only --ephemeral --cd "$WORKDIR" \
       "$PROMPT" >> "$WORK_OUT" 2>&1
   else
     pt_run "$rem" "$CODEX_BIN" \
-      -c model_reasoning_effort="xhigh" \
-      exec -s read-only --ephemeral --cd "$WORKDIR" \
+      -c model_reasoning_effort="${SOL_EFFORT:-medium}" \
+      exec -m gpt-6.2-sol -s read-only --ephemeral --cd "$WORKDIR" \
       "$PROMPT" >> "$WORK_OUT" 2>&1
   fi
 }
