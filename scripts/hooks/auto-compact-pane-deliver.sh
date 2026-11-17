@@ -14,7 +14,8 @@
 #        - Pane's agent state, else Claude's own screen (spinner row / "esc to interrupt"), is idle;
 #        - the prompt box is empty, read by OUR parser first (Pane's composer flag misread it),
 #          or shows the same unchanging text, which may be Claude's grey "suggested next prompt"
-#          (the screen has no colour, so it looks like typing).
+#          (the screen has no colour, so it looks like typing; the same goes for a fresh session's
+#          `Try "…"` placeholder).
 #   2. type `/compact` with `panels input`. If the box had text: a suggestion vanishes as soon as
 #      we type (box reads exactly `/compact`); a real draft does not, so our 8 characters are
 #      deleted again and we wait for the box to empty. Then ONE Enter as its own write.
@@ -102,8 +103,8 @@ agent_state() {
 #   3. the text held in the prompt box (one line, rows joined by a space)
 # OUR parser first: Claude's prompt box = the last `❯` row whose row above STARTS with a rule (a
 # named session draws `──── name ─`). Pane's composer flag is used only when no box is found -
-# trusted first, it reported text in an empty box (live 2026-11-16). Claude's grey placeholder
-# (`Try "…"`) counts as empty. Busy = a spinner row (ellipsis + live timer) above the box or
+# trusted first, it reported text in an empty box (live 2026-11-16). Grey placeholder and
+# suggestion text read as text here; deliver_compact tells them from a draft. Busy = a spinner row (ellipsis + live timer) above the box or
 # "esc to interrupt" anywhere (Claude 2.1.32x prints it in the footer); compacting = the
 # "Compacting conversation" spinner.
 screen_read() {
@@ -137,8 +138,6 @@ if box is not None:
             break
         parts.append(r)
     held = " ".join(p for p in parts if p)
-    if held.startswith("Try \""):
-        held = ""
     comp = "text" if held else "empty"
 else:
     c = d.get("composer") or {}
@@ -154,7 +153,7 @@ print(comp); print(state); print(held.replace("\n", " "))
 #   busy = the latest turn-relevant entry is an assistant message, a user prompt / tool result,
 #          or a queued line nobody has taken yet;
 #   idle = it is a turn end (stop_hook_summary, turn_duration), a compact_boundary, or an
-#          interrupt. Local commands (2.1.319: user caveat/command lines; 2.1.32x: system
+#          interrupt, with no line queued during that last turn still waiting to be taken. Local commands (2.1.319: user caveat/command lines; 2.1.32x: system
 #          local_command) and bookkeeping entries are skipped. unknown = no transcript or no
 #          decisive entry (then the screen decides alone).
 transcript_state() {
@@ -169,15 +168,20 @@ def text_of(c):
     if isinstance(c, list):
         return " ".join(str(x.get("text") or x.get("type") or "") for x in c if isinstance(x, dict))
     return ""
+ended = False   # passed the latest turn end: only look for a line queued during that turn
 for l in reversed(lines):
     try:
         d = json.loads(l)
     except Exception:
         continue
     t = d.get("type")
+    if ended and not (t == "queue-operation" or (t == "system" and d.get("subtype") in ("stop_hook_summary", "turn_duration", "compact_boundary"))):
+        continue
     if t == "system":
         if d.get("subtype") in ("stop_hook_summary", "turn_duration", "compact_boundary"):
-            print("idle"); sys.exit()
+            if ended:
+                break       # the turn before: nothing queued in the latest one is still pending
+            ended = True
         continue
     if t == "queue-operation":
         if d.get("operation") == "enqueue":
@@ -185,6 +189,8 @@ for l in reversed(lines):
                 consumed -= 1; continue
             print("busy"); sys.exit()
         consumed += 1
+        continue
+    if ended:
         continue
     if t == "assistant":
         print("busy"); sys.exit()
@@ -197,7 +203,7 @@ for l in reversed(lines):
         if s.startswith(("<local-command", "<command-name>", "<command-message>")):
             continue
         print("busy"); sys.exit()
-print("unknown")
+print("idle" if ended else "unknown")
 ' 2>/dev/null || printf 'unknown'
 }
 
@@ -212,7 +218,8 @@ transcript_size() {
 #   boundary = a compact_boundary (compaction finished)
 #   started  = Claude 2.1.319 records the "/compact" prompt when it starts
 #   ended    = after it: a local-command caveat or an assistant turn with no boundary
-#              (compaction was cancelled or failed; 2.1.319 wrote a lone caveat, live 2026-11-16)
+#              (compaction was cancelled or failed; 2.1.319 wrote a lone caveat, live 2026-11-16);
+#              started-ended = both (accepted, then stopped - never retried)
 #   none
 compact_evidence() {
   [ -n "$TRANSCRIPT" ] || { printf 'none'; return; }
@@ -233,7 +240,7 @@ for l in sys.stdin:
         started = True; continue
     if t == "assistant" or (t == "user" and "<local-command-caveat>" in s):
         ended = True
-print("ended" if ended else "started" if started else "none")
+print("started-ended" if started and ended else "ended" if ended else "started" if started else "none")
 ' 2>/dev/null || printf 'none'
 }
 
@@ -342,22 +349,39 @@ clear_ours() {
   return 0
 }
 
-# deliver_compact → 0 typed + Enter pressed | 1 write failed | 2 the box held a real draft (our
-# characters were removed again; nothing was submitted).
-deliver_compact() {
-  type_text "/compact" compact || return 1
+# type_over <text> <label> <held-before> → 0 the box now holds exactly our text | 1 write failed
+# | 2 the box held a real draft: our characters were removed and the draft is back as it was |
+# 3 the draft could not be restored. With <held-before> empty there is nothing to check.
+# A grey suggestion or placeholder vanishes on the first keystroke; a draft does not.
+type_over() {
+  local text="$1" label="$2" before="$3"
+  type_text "$text" "$label" || return 1
   sleep "$KEY_GAP"
-  if [ -n "$READY_HELD" ]; then
-    read_screen
-    if [ "$(scr_line 3)" != "/compact" ]; then
-      backspaces 8
-      KNOWN_DRAFT="$READY_HELD"
-      ac_log "pane-draft-detected sid=$SID panel=$PANEL (the box held real text; our 8 characters removed, waiting for it to empty)"
-      return 2
-    fi
-    ac_log "pane-suggestion-replaced sid=$SID panel=$PANEL (the text in the box was Claude's grey suggestion)"
+  [ -n "$before" ] || return 0
+  read_screen
+  if [ "$(scr_line 3)" = "$text" ]; then
+    ac_log "pane-suggestion-replaced sid=$SID panel=$PANEL step=$label (the text in the box was Claude's grey suggestion)"
+    return 0
   fi
-  press_enter compact
+  backspaces "${#text}"
+  sleep "$KEY_GAP"
+  read_screen
+  [ "$(scr_line 3)" = "$before" ] || return 3
+  ac_log "pane-draft-detected sid=$SID panel=$PANEL step=$label (the box held real text; our ${#text} characters removed)"
+  return 2
+}
+
+# deliver_compact → 0 typed + Enter pressed | 1 write failed | 2 the box held a real draft
+# (left as it was; nothing submitted).
+deliver_compact() {
+  local rc
+  type_over "/compact" compact "$READY_HELD"; rc=$?
+  case "$rc" in
+    0) press_enter compact ;;
+    2) KNOWN_DRAFT="$READY_HELD"; PROBES=$((PROBES + 1)); return 2 ;;
+    3) give_up "draft-not-restored" ;;
+    *) return 1 ;;
+  esac
 }
 
 # Give up for good: no more typing on later Stops, a log line and a visible notification.
@@ -375,6 +399,7 @@ SENTINEL_AT_DISPATCH=0
 [ -f "$SENTINEL" ] && SENTINEL_AT_DISPATCH=1
 T_OFFSET=0
 ACCEPTED=0
+PROBES=0
 try=0
 while [ "$try" -lt "$TRIES" ]; do
   if ! wait_ready "$READY_TIMEOUT" pre-compact; then
@@ -387,13 +412,18 @@ while [ "$try" -lt "$TRIES" ]; do
   # Baseline taken BEFORE /compact goes in, so only evidence written after dispatch counts.
   T_OFFSET=$(transcript_size)
   deliver_compact; _rc=$?
-  [ "$_rc" = "2" ] && continue   # a real draft: not a try, wait for the box to empty
+  # A real draft: not a try, wait for the box to empty. Bounded: a draft edited and left again
+  # may be probed at most 3 times.
+  if [ "$_rc" = "2" ]; then
+    [ "$PROBES" -ge 3 ] && give_up "draft-in-the-box"
+    continue
+  fi
   try=$((try + 1))
   if [ "$_rc" = "0" ]; then
     _start=$(date +%s); _how=""
     while [ $(( $(date +%s) - _start )) -le "$ACCEPT" ]; do
       _ev=$(compact_evidence)
-      case "$_ev" in boundary|started) _how="transcript-$_ev"; break ;; esac
+      case "$_ev" in boundary|started|started-ended) _how="transcript-$_ev"; break ;; esac
       read_screen
       [ "$(scr_line 2)" = "compacting" ] && { _how="screen-compacting"; break; }
       # No transcript: the box emptying is the best evidence there is.
@@ -418,10 +448,22 @@ done
 _wait=$(awk -v d="$RESUME_DELAY" -v g="$KEY_GAP" 'BEGIN{w=d-g; if (w<0) w=0; print w}')
 sleep "$_wait"
 RESUMED=0
-if type_line "/post-compact-resume $SID" resume; then
+RESUME="/post-compact-resume $SID"
+read_screen
+_before=""; [ "$(scr_line 1)" = "text" ] && _before=$(scr_line 3)
+type_over "$RESUME" resume "$_before"; _rc=$?
+if [ "$_rc" = "0" ] && press_enter resume; then
   RESUMED=1
   ac_log "pane-resume-queued sid=$SID panel=$PANEL"
   handoff_log "compact_chained sid=$SID delivery=pane panel=$PANEL result=fired+resume-queued"
+elif [ "$_rc" = "2" ] || [ "$_rc" = "3" ]; then
+  # Someone is typing: never append to their text. The primer still tells the resumed session
+  # to run the resume itself.
+  ac_log "pane-resume-skipped sid=$SID panel=$PANEL reason=box-not-empty"
+  ac_notify "Session ${SID:0:8} is compacting, but the prompt box had text so /post-compact-resume was not typed. Run $RESUME in that window."
+else
+  clear_ours "$RESUME" resume
+  ac_notify "Session ${SID:0:8} is compacting, but /post-compact-resume could not be typed. Run $RESUME in that window."
 fi
 
 compaction_confirmed() {
@@ -452,7 +494,7 @@ while :; do
     if [ -n "$TRANSCRIPT" ]; then SIGNAL="transcript-compact-boundary"; else SIGNAL="sentinel-retired"; fi
     break
   fi
-  if [ -n "$TRANSCRIPT" ] && [ "$(compact_evidence)" = "ended" ]; then
+  if [ -n "$TRANSCRIPT" ] && case "$(compact_evidence)" in ended|started-ended) true ;; *) false ;; esac; then
     give_up "compaction-stopped-before-finishing"
   fi
   if [ $(( $(date +%s) - START )) -ge "$COMPACT_TIMEOUT" ]; then

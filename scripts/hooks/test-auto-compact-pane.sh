@@ -74,7 +74,13 @@ held() { cat "$STUB_HELD_FILE" 2>/dev/null; }
 tx() { printf '%s\n' "$1" >> "$STUB_TRANSCRIPT"; }
 start_compact() {
   local mode="${STUB_COMPACT:-ok}"
+  if [ "$mode" = "quick-cancel" ]; then   # 2.1.319: started and cancelled before the first poll
+    tx '{"type":"user","message":{"role":"user","content":"/compact"}}'
+    tx '{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>x</local-command-caveat>"}}'
+    return
+  fi
   touch "$STUB_COMPACTING"
+  [ -n "${STUB_USER_TYPES:-}" ] && ( sleep 0.1; printf '%s' "$STUB_USER_TYPES" > "$STUB_HELD_FILE" ) </dev/null >/dev/null 2>&1 &
   [ "$mode" = "legacy" ] && tx '{"type":"user","message":{"role":"user","content":"/compact"}}'
   [ "$mode" = "hang" ] && return
   (
@@ -114,6 +120,7 @@ PY
       [ "$text" = "/compact" ] && printf 'turn_done=%s\n' "$([ -f "$STUB_TURN_DONE" ] && echo 1 || echo 0)" >> "$STUB_LOG"
       printf '%s' "$(held)$text" > "$STUB_HELD_FILE"
     elif [ "$keys" = "enter" ]; then
+      case "$(held)" in "/post-compact-resume "*) [ "${STUB_RESUME_ENTER_FAIL:-0}" = "1" ] && { echo '{"ok":false}'; exit 0; } ;; esac
       n=$(cat "$STUB_ENTERS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_ENTERS"
       if [ "$n" -le "${STUB_ENTER_IGNORED:-0}" ]; then echo '{"ok":true}'; exit 0; fi
       h=$(held)
@@ -338,6 +345,37 @@ expect "logged gave-up compaction-stopped-before-finishing" "$(grep -q "pane-gav
 expect "/compact NOT retyped" "$([ "$(compact_types)" = "1" ] && echo 1)"
 expect "visible notification" "$(grep -q "notify " "$LOG" && echo 1)"
 expect "sentinel retired" "$([ ! -f "$SP" ] && echo 1)"
+
+echo "== review: a line queued during the last turn, not yet taken → busy =="
+reset; write_pane_sentinel
+printf '%s\n' '{"type":"queue-operation","operation":"enqueue","content":"next"}' '{"type":"system","subtype":"stop_hook_summary"}' >> "$TRANSCRIPT"
+AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "nothing typed while the queued line waits" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
+
+echo "== review: compaction started and stopped before the first check → accepted, never retried =="
+reset; write_pane_sentinel
+STUB_COMPACT=quick-cancel hook "test-panel_1"
+wait_helper
+expect "accepted (started-ended)" "$(grep -q "pane-compact-accepted sid=$SID .*signal=transcript-started-ended" "$LOG" && echo 1)"
+expect "/compact typed once" "$([ "$(compact_types)" = "1" ] && echo 1)"
+expect "gave up as stopped-before-finishing" "$(grep -q "pane-gave-up sid=$SID .*reason=compaction-stopped-before-finishing" "$LOG" && echo 1)"
+
+echo "== review: someone types while compacting → resume NOT appended to their text =="
+reset; write_pane_sentinel
+STUB_USER_TYPES="hello there" hook "test-panel_1"
+wait_helper
+expect "resume skipped, logged" "$(grep -q "pane-resume-skipped sid=$SID .*reason=box-not-empty" "$LOG" && echo 1)"
+expect "their text untouched" "$([ "$(cat "$STUB_HELD_FILE")" = "hello there" ] && echo 1)"
+expect "visible notification" "$(grep -q "notify .*was not typed" "$LOG" && echo 1)"
+expect "compaction still confirmed" "$(grep -q "pane-compact-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== review: the resume's Enter fails → its text cleared, visible note =="
+reset; write_pane_sentinel
+STUB_RESUME_ENTER_FAIL=1 hook "test-panel_1"
+wait_helper
+expect "resume text cleared" "$(grep -q "pane-clear sid=$SID .*step=resume result=cleared" "$LOG" && [ -z "$(cat "$STUB_HELD_FILE" 2>/dev/null)" ] && echo 1)"
+expect "visible notification" "$(grep -q "notify .*could not be typed" "$LOG" && echo 1)"
 
 echo "== hook: compaction never finishes → timeout, note, sentinel left =="
 reset; write_pane_sentinel
