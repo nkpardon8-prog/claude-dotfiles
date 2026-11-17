@@ -52,6 +52,7 @@ STUB_LOG="$T/stub-calls.log"
 #                     drawn above the box. While compacting: a "Compacting conversation…" spinner
 #                     and "esc to interrupt" in the footer. STUB_PANE_UNDELIVERED=1: Pane's flag
 #                     claims undelivered text although the box is empty (the 2026-11-16 misread).
+#                     STUB_GHOST=<text>: Claude's grey suggestion, drawn only while the box is empty.
 #   panels input --text X   → X is appended to the box
 #   panels input --keys enter → submits the box: "/compact" starts a compaction (STUB_COMPACT=
 #                     ok (default, 2.1.32x: nothing written until the boundary) | legacy (2.1.319:
@@ -103,7 +104,8 @@ compacting = os.path.exists(os.environ["STUB_COMPACTING"])
 above = "✻ Compacting conversation… (1s)" if compacting else os.environ.get("STUB_ABOVE", "")
 footer = "  bypass permissions on" + (" · esc to interrupt" if compacting else "")
 pane = {"isPresent": True, "hasUndeliveredText": True} if os.environ.get("STUB_PANE_UNDELIVERED") == "1" else {"isPresent": False, "hasUndeliveredText": False}
-text = "output\n" + above + "\n\n───── my-session ─\n❯ " + sys.argv[1] + "\n───────\n" + footer
+box = sys.argv[1] or os.environ.get("STUB_GHOST", "")   # grey suggestion only in an empty box
+text = "output\n" + above + "\n\n───── my-session ─\n❯ " + box + "\n───────\n" + footer
 print(json.dumps({"ok": True, "state": {"activityStatus": "active"}, "composer": pane, "text": text}))
 PY
     ;;
@@ -364,13 +366,24 @@ wait_helper
 expect "no input while working" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
 expect "logged never-idle" "$(grep -q "reason=never-idle" "$LOG" && echo 1)"
 
-echo "== hook: the user's draft in the box → nothing typed =="
+echo "== hook: Claude's grey suggestion in the empty box (Claude 2.1.326, live) → replaced and delivered =="
+reset; write_pane_sentinel
+STUB_GHOST="Now run sleep 12, then reply with just three" hook "test-panel_1"
+wait_helper
+expect "suggestion recognised by typing over it" "$(grep -q "pane-suggestion-replaced sid=$SID" "$LOG" && echo 1)"
+expect "/compact typed once" "$([ "$(compact_types)" = "1" ] && echo 1)"
+expect "resume confirmed" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== hook: the user's real draft in the box → our characters removed, never submitted =="
 reset; write_pane_sentinel
 printf '%s' "half-typed thought" > "$STUB_HELD_FILE"
-AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=3 hook "test-panel_1"
 wait_helper
-expect "user's draft is never appended to" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
-expect "logged idle/text" "$(grep -q "agent/composer/transcript=idle/text/idle" "$LOG" && echo 1)"
+expect "logged pane-draft-detected" "$(grep -q "pane-draft-detected sid=$SID" "$LOG" && echo 1)"
+expect "draft left exactly as it was" "$([ "$(cat "$STUB_HELD_FILE")" = "half-typed thought" ] && echo 1)"
+expect "Enter never pressed" "$([ "$(enters)" = "0" ] && echo 1)"
+expect "probed once, then waited (known draft)" "$([ "$(compact_types)" = "1" ] && echo 1)"
+expect "never-idle abort keeps the sentinel" "$(grep -q "reason=never-idle" "$LOG" && [ -f "$SP" ] && echo 1)"
 
 echo "== hook: fallback signal (no transcript) = sentinel retired by primer =="
 reset; write_pane_sentinel

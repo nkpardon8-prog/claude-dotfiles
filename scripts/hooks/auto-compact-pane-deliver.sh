@@ -12,9 +12,13 @@
 #          the screen alone misread a thinking turn as idle (live 2026-11-16), and a new turn can
 #          start right after a Stop (queued notifications);
 #        - Pane's agent state, else Claude's own screen (spinner row / "esc to interrupt"), is idle;
-#        - the prompt box is empty, read by OUR parser first (Pane's composer flag misread it).
-#   2. type `/compact` with `panels input`, then ONE Enter as its own write. `panels submit` is
-#      not used: it can leave the text in the prompt box when it refuses (blocked=agent-prompt).
+#        - the prompt box is empty, read by OUR parser first (Pane's composer flag misread it),
+#          or shows the same unchanging text, which may be Claude's grey "suggested next prompt"
+#          (the screen has no colour, so it looks like typing).
+#   2. type `/compact` with `panels input`. If the box had text: a suggestion vanishes as soon as
+#      we type (box reads exactly `/compact`); a real draft does not, so our 8 characters are
+#      deleted again and we wait for the box to empty. Then ONE Enter as its own write.
+#      `panels submit` is not used: it can leave the text in the box when it refuses.
 #   3. prove Claude ACCEPTED it within ACCEPT_SEC: "Compacting conversation" on screen, or a
 #      /compact / compact_boundary entry in the transcript. Enter is never pressed a second time
 #      (on an empty or ghost-text box that can submit something else). Not accepted → delete
@@ -237,12 +241,17 @@ SCR=""   # last screen_read output
 read_screen() { SCR=$(rp panels screen --panel "$PANEL" --limit 60 | screen_read); }
 scr_line() { printf '%s\n' "$SCR" | sed -n "${1}p"; }
 
-# Prints "<agent>/<composer>/<transcript>" then ready|busy.
+# Prints "<agent>/<composer>/<transcript>", then ready | maybe-ghost | busy, then the held text.
+# maybe-ghost = everything idle but the box shows text that is not a known draft. After a turn
+# Claude Code draws a grey "suggested next prompt" in the EMPTY box; the screen text carries no
+# colour, so it reads exactly like typing (live 2026-11-16, Claude 2.1.326). deliver_compact
+# tells the two apart by typing (a suggestion vanishes on the first keystroke; a draft does not).
+KNOWN_DRAFT=""
 panel_status() {
-  local agent comp sstate tstate
+  local agent comp sstate tstate held
   agent=$(agent_state)
   read_screen
-  comp=$(scr_line 1); sstate=$(scr_line 2)
+  comp=$(scr_line 1); sstate=$(scr_line 2); held=$(scr_line 3)
   tstate=$(transcript_state)
   if [ "$agent" = "none" ] || [ "$agent" = "unknown" ]; then
     [ "$sstate" = "idle" ] && agent="idle(screen)"
@@ -250,63 +259,79 @@ panel_status() {
     agent="$agent+screen-$sstate"
   fi
   printf '%s/%s/%s\n' "$agent" "$comp" "$tstate"
-  if [ "$comp" = "empty" ] && [ "$tstate" != "busy" ]; then
-    case "$agent" in idle|"idle(screen)") printf 'ready'; return ;; esac
-  fi
-  printf 'busy'
+  case "$agent" in
+    idle|"idle(screen)")
+      if [ "$tstate" != "busy" ]; then
+        [ "$comp" = "empty" ] && { printf 'ready\n\n'; return; }
+        [ "$comp" = "text" ] && [ "$held" != "$KNOWN_DRAFT" ] && { printf 'maybe-ghost\n%s\n' "$held"; return; }
+      fi ;;
+  esac
+  printf 'busy\n\n'
 }
 
-# wait_ready <timeout_sec> <label> → rc 0 once STABLE consecutive polls read ready.
+# wait_ready <timeout_sec> <label> → rc 0 once STABLE consecutive polls read ready (or the same
+# maybe-ghost text: a draft being typed changes between polls, a suggestion does not). Sets
+# READY_HELD to the text seen in the box ("" when empty).
+READY_HELD=""
 wait_ready() {
-  local timeout="$1" label="$2" start now streak=0 out detail verdict last=""
+  local timeout="$1" label="$2" start now streak=0 out detail verdict held prev="" last=""
   start=$(date +%s)
   while :; do
     out=$(panel_status)
-    detail=$(printf '%s' "$out" | sed -n 1p)
-    verdict=$(printf '%s' "$out" | sed -n 2p)
-    if [ "$verdict" = "ready" ]; then streak=$((streak + 1)); else streak=0; fi
+    detail=$(printf '%s\n' "$out" | sed -n 1p)
+    verdict=$(printf '%s\n' "$out" | sed -n 2p)
+    held=$(printf '%s\n' "$out" | sed -n 3p)
+    case "$verdict" in
+      ready|maybe-ghost) if [ "$streak" -gt 0 ] && [ "$held" != "$prev" ]; then streak=1; else streak=$((streak + 1)); fi ;;
+      *) streak=0 ;;
+    esac
+    prev="$held"
     [ "$detail" != "$last" ] && ac_log "pane-helper sid=$SID panel=$PANEL wait=$label screen=$verdict agent/composer/transcript=$detail"
     last="$detail"
-    [ "$streak" -ge "$STABLE" ] && return 0
+    if [ "$streak" -ge "$STABLE" ]; then READY_HELD="$held"; return 0; fi
     now=$(date +%s)
     [ $((now - start)) -ge "$timeout" ] && return 1
     sleep "$POLL"
   done
 }
 
-# type_line <text> <label> → rc 0 when the text and ONE separate Enter were written. Only for a
-# prompt box we just saw empty.
+# Low-level writes; each returns rc 1 (and logs) when runpane refuses.
+type_text() {
+  [ "$(rp panels input --panel "$PANEL" --text "$1" --yes | jq -r '.ok // false' 2>/dev/null)" = "true" ] && return 0
+  ac_log "pane-type-failed sid=$SID panel=$PANEL step=$2 via=input-text"; return 1
+}
+press_enter() {
+  [ "$(rp panels input --panel "$PANEL" --keys enter --yes | jq -r '.ok // false' 2>/dev/null)" = "true" ] && return 0
+  ac_log "pane-type-failed sid=$SID panel=$PANEL step=$1 via=input-enter"; return 1
+}
+backspaces() {  # backspaces <count>
+  local n="$1" keys="backspace"
+  while [ "$n" -gt 1 ]; do keys="$keys,backspace"; n=$((n - 1)); done
+  rp panels input --panel "$PANEL" --keys "$keys" --yes >/dev/null
+}
+
+# type_line <text> <label> → the text, then ONE Enter as its own write.
 type_line() {
-  local text="$1" label="$2"
-  if [ "$(rp panels input --panel "$PANEL" --text "$text" --yes | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-    ac_log "pane-type-failed sid=$SID panel=$PANEL step=$label via=input-text"
-    return 1
-  fi
+  type_text "$1" "$2" || return 1
   sleep "$KEY_GAP"
-  if [ "$(rp panels input --panel "$PANEL" --keys enter --yes | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-    ac_log "pane-type-failed sid=$SID panel=$PANEL step=$label via=input-enter"
-    return 1
-  fi
-  return 0
+  press_enter "$2"
 }
 
 # clear_ours <text> <label> → if the prompt box holds exactly our text, delete it with one
 # backspace per character (+1 for a newline an Enter may have left). Never touches other text.
 clear_ours() {
-  local text="$1" label="$2" held keys n
+  local text="$1" label="$2"
   read_screen
-  held=$(scr_line 3)
   if [ "$(scr_line 1)" != "text" ]; then
     ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=nothing-to-clear composer=$(scr_line 1)"
     return 0
   fi
-  if [ "$held" != "$text" ]; then
+  if [ "$(scr_line 3)" != "$text" ]; then
+    KNOWN_DRAFT="$(scr_line 3)"
     ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=left-alone (prompt box holds other text)"
     return 1
   fi
-  n=$(( ${#text} + 1 )); keys="backspace"
-  while [ "$n" -gt 1 ]; do keys="$keys,backspace"; n=$((n - 1)); done
-  rp panels input --panel "$PANEL" --keys "$keys" --yes >/dev/null
+  backspaces $(( ${#text} + 1 ))
   sleep "$KEY_GAP"
   read_screen
   if [ "$(scr_line 1)" = "text" ]; then
@@ -315,6 +340,24 @@ clear_ours() {
   fi
   ac_log "pane-clear sid=$SID panel=$PANEL step=$label result=cleared"
   return 0
+}
+
+# deliver_compact → 0 typed + Enter pressed | 1 write failed | 2 the box held a real draft (our
+# characters were removed again; nothing was submitted).
+deliver_compact() {
+  type_text "/compact" compact || return 1
+  sleep "$KEY_GAP"
+  if [ -n "$READY_HELD" ]; then
+    read_screen
+    if [ "$(scr_line 3)" != "/compact" ]; then
+      backspaces 8
+      KNOWN_DRAFT="$READY_HELD"
+      ac_log "pane-draft-detected sid=$SID panel=$PANEL (the box held real text; our 8 characters removed, waiting for it to empty)"
+      return 2
+    fi
+    ac_log "pane-suggestion-replaced sid=$SID panel=$PANEL (the text in the box was Claude's grey suggestion)"
+  fi
+  press_enter compact
 }
 
 # Give up for good: no more typing on later Stops, a log line and a visible notification.
@@ -334,9 +377,8 @@ T_OFFSET=0
 ACCEPTED=0
 try=0
 while [ "$try" -lt "$TRIES" ]; do
-  try=$((try + 1))
   if ! wait_ready "$READY_TIMEOUT" pre-compact; then
-    if [ "$try" = "1" ]; then
+    if [ "$try" = "0" ]; then
       ac_log "pane-helper abort sid=$SID panel=$PANEL reason=never-idle timeout=${READY_TIMEOUT}s (nothing typed; sentinel retained → next-Stop retry)"
       exit 0
     fi
@@ -344,7 +386,10 @@ while [ "$try" -lt "$TRIES" ]; do
   fi
   # Baseline taken BEFORE /compact goes in, so only evidence written after dispatch counts.
   T_OFFSET=$(transcript_size)
-  if type_line "/compact" compact; then
+  deliver_compact; _rc=$?
+  [ "$_rc" = "2" ] && continue   # a real draft: not a try, wait for the box to empty
+  try=$((try + 1))
+  if [ "$_rc" = "0" ]; then
     _start=$(date +%s); _how=""
     while [ $(( $(date +%s) - _start )) -le "$ACCEPT" ]; do
       _ev=$(compact_evidence)
