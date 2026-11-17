@@ -182,7 +182,7 @@ DEFAULTS = {
     # worktree is skipped. 0600 on the mini and deleted when the run ends
     "rr_env_allow": [".env", ".env.test*", ".env.local"],
     # laptop env vars passed through to the remote command (fnmatch); `rrun -e K[=V]` adds more
-    "rr_env_pass": ["CI", "DEBUG", "TEST_DB_*", "VITEST_*", "RR_NODE"],
+    "rr_env_pass": ["CI", "DEBUG", "TEST_DB_*", "VITEST_*", "RR_NODE", "A5_SMOKE_ALLOW_LOCAL_DOCKER"],
     # Repo policy + run-local Postgres lane (rd_pnpm; rr_runner.pl; 2026-11-13). A git worktree whose top-level
     # package.json name is `repo_package` is under the policy for EVERY rrun command: no env file is ever
     # shipped (rd_run.build_overlay drops .env* except *.example/*.sample/*.template; a TRACKED one refuses the
