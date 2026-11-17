@@ -2,6 +2,23 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-11-17 - dotfiles-sync revert guard (the 5e15bea6 incident)
+
+- Auto-sync 5e15bea6 (2026-11-09, macbookair-m4) committed rdocker files built on copies older than
+  4bac4e0c, a fix pulled from another machine on 11-07, deleting every line it added
+  (`rr_runner.pl`, `tests/test_runner.py`, a line of `rd_run.py`). Found 6 days later.
+- New `scripts/lib/sync-revert-guard.sh`, run by `dotfiles-sync.sh` before `git add -A`: a modified
+  file whose working copy equals an older version (30 days) or deletes at least half of the lines
+  another host's commit added (14 days) is saved to `~/.claude/.sync-quarantine/<stamp>/`, restored
+  from HEAD and unstaged after `git add -A`; the rest commits and pushes, and a `kind: revert` pause
+  names the file and the commit. "Another host" = an auto-sync subject from a different host, or a
+  commit this clone's reflog did not create. Override, one use: the path in
+  `~/.claude/.dotfiles-sync-allow-revert`, or `DOTFILES_SYNC_ALLOW_REVERT=path[:path]`. A missing or
+  failing guard commits nothing (exit 12).
+- `test-sync-revert-guard.sh` (50 cases, macOS and Linux, enrolled in CI) reproduces the incident on
+  two sandboxed hosts. Replaying the Air's 109 commits from 11-05..11-16 refuses exactly the three
+  5e15bea6 files.
+
 ## 2026-11-11 - /mission rework (proto=2): budgets by risk tier, rules as writer refusals
 
 - `commands/mission.md` rewritten (178 KB -> ~26 KB) with `docs/mission/wake.md` (the only file a

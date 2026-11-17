@@ -138,7 +138,7 @@ Two hooks in `~/.claude/settings.json` make this happen:
 | Hook | Trigger | Action |
 |---|---|---|
 | `SessionStart` | New Claude Code session | `git pull --ff-only`, reinstall the local git hooks, and secret-leak scan `~/.config/claude/credentials.md` (warn-only; it should hold env var names only, never values) |
-| `PostToolUse` (Edit\|Write) | Any file edit | Run `scripts/dotfiles-sync.sh` — checks if the edit was inside the dotfiles dir, then `git add + commit + push` |
+| `PostToolUse` (Edit\|Write) | Any file edit | Run `scripts/dotfiles-sync.sh` — checks if the edit was inside the dotfiles dir, runs the secret scan and the revert guard (`scripts/lib/sync-revert-guard.sh`: a modified file that would undo another host's recent work is saved to `~/.claude/.sync-quarantine/`, restored from HEAD, kept out of the commit, and raises a `kind: revert` pause), then `git add + commit + push` |
 
 Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives in `CLAUDE.md` and the script checks the path before pushing.
 
@@ -377,6 +377,7 @@ The PostToolUse hook auto-pushes after the edit lands.
 | `docs/script-reference.md` | Per-script reference for `scripts/` |
 | `docs/transcribe.md` | `/transcribe` setup details |
 | `scripts/dotfiles-sync.sh` | Auto-push hook script |
+| `scripts/lib/sync-revert-guard.sh` | Revert guard run by the sync before staging (test: `scripts/hooks/test-sync-revert-guard.sh`) |
 | `scripts/hooks/README.md` | Lifecycle hook inventory + contracts |
 
 ---

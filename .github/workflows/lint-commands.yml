@@ -162,6 +162,7 @@ jobs:
             scripts/hooks/test-mission-pending-reask.sh \
             scripts/hooks/test-pickup-time.sh \
             scripts/hooks/test-recap-extract.sh \
+            scripts/hooks/test-sync-revert-guard.sh \
             scripts/hooks/test-prod-classifier-fixtures.py \
             scripts/hooks/test-no-detach-fixtures.py ; do
             echo "=== $h ==="

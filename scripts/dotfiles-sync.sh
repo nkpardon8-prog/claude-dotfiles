@@ -43,11 +43,12 @@ export LC_ALL=C
 # which is deliberate - a blocked sync must stop stacking commits on a poisoned HEAD.
 # Consequence, accepted: a transient network failure holds sync until a human clears it.
 # The alternative was `|| true`, which lost the failure entirely.
-# _pause <reason> [kind]   kind: secret | unproven | other   (default: other)
+# _pause <reason> [kind]   kind: secret | unproven | revert | other   (default: other)
 #   secret   - a secret was DETECTED (scanner exit 2); rotate the credential before clearing.
 #              NOT used for scan FAILURES - those are `unproven` (round-8 fix). Saying
 #              "or could not be ruled out" here is what let rc=3 be filed as `secret`.
 #   unproven - the gate could not PROVE the pushed range clean (scanner/TMPDIR/range failure)
+#   revert   - the revert guard kept a file out of the commit (it would undo another host's work)
 #   other    - routine failure (network, unresolved target); fix the cause and retry
 # `kind` is a machine field on purpose. The reader must NOT infer severity by grepping the
 # prose - the reason text routinely contains the word "secret" for entirely benign reasons
@@ -153,6 +154,38 @@ case "$rc" in
     *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the working tree clean (exit $rc)" unproven; exit 3 ;;
 esac
 
+# REVERT GUARD (2026-11-17). Auto-sync 5e15bea6 (2026-11-09, macbookair-m4) committed rdocker
+# files built on a copy that predated 4bac4e0c, a fix pulled from another machine two days
+# earlier, and silently deleted every line that fix added. Found 6 days later, when worker
+# builds broke. scripts/lib/sync-revert-guard.sh refuses any MODIFIED file whose working copy
+# equals an old version or wipes out another host's recent lines: it saves the copy under
+# $_QUAR_ROOT, restores the file from HEAD, and prints the refused paths. Everything else
+# commits as usual. FAIL CLOSED: a missing or failing guard means nothing is committed, the same
+# posture as the installer check above.
+_host=$(hostname -s)
+_guard="$DOTFILES_DIR/scripts/lib/sync-revert-guard.sh"
+_QUAR_ROOT="$HOME/.claude/.sync-quarantine"
+_ALLOW_REVERT="$HOME/.claude/.dotfiles-sync-allow-revert"
+if [ ! -r "$_guard" ]; then
+    echo "dotfiles-sync: revert guard missing at $_guard - refusing to commit." >&2
+    _pause "revert guard missing or unreadable ($_guard) - nothing committed"
+    exit 12
+fi
+_refused=$(SRG_HOST="$_host" SRG_QUAR_ROOT="$_QUAR_ROOT" SRG_ALLOW_FILE="$_ALLOW_REVERT" bash "$_guard")
+_grc=$?
+if [ "$_grc" -ne 0 ]; then
+    echo "dotfiles-sync: revert guard failed (exit $_grc) - refusing to commit." >&2
+    _pause "revert guard could not check the working tree (exit $_grc) - nothing committed" other
+    exit 12
+fi
+if [ -n "$_refused" ]; then
+    _rlist=$(printf '%s\n' "$_refused" | awk -F'\t' '{ printf "%s%s (undoes %s)", (NR > 1 ? ", " : ""), $1, substr($3, 1, 8) }')
+    _rdir=$(printf '%s\n' "$_refused" | head -1 | cut -f4)
+    echo "dotfiles-sync: REVERT GUARD refused: $_rlist. Saved copies + override steps: $_rdir/REASONS.txt" >&2
+    # The details path goes FIRST: _pause truncates the reason to 300 characters.
+    _pause "see $_rdir/REASONS.txt - refused to commit $_rlist" revert
+fi
+
 # VISIBILITY-AWARE PUSH GUARD (2026-07-12). The user EXPLICITLY accepts this repo being PUBLIC
 # (informed choice after a private-vs-public review + a clean secret audit), so a public target
 # WARNS but PROCEEDS — the pre-push secret-scan above is the real "nothing private" gate, and it
@@ -201,9 +234,17 @@ if [ "$_add_ok" -ne 1 ]; then
     _pause "git add -A failed after retries - nothing staged, edits are NOT delivered" other
     exit 10
 fi
+# A refused file was restored from HEAD, but an agent can write it again between the guard and
+# `git add -A`. Unstage every refused path unconditionally so this commit can never carry one;
+# a rewritten copy stays in the working tree and the guard judges it again next run.
+if [ -n "$_refused" ]; then
+    printf '%s\n' "$_refused" | cut -f1 | while IFS= read -r _rp; do
+        git reset -q HEAD -- "$_rp" || { echo "dotfiles-sync: could not unstage refused $_rp - refusing to commit." >&2; exit 1; }
+    done || { _pause "could not unstage a file the revert guard refused - nothing committed" other; exit 12; }
+fi
 if git diff --cached --quiet; then
     : # nothing staged — benign, fall through (push may still deliver an earlier held commit)
-elif ! git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)"; then
+elif ! git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $_host"; then
     # LOUD fail-closed: a rejected commit (e.g. a pre-commit lint) must never silently
     # strand staged changes while pushing stale HEAD. Surface it and stop.
     echo "dotfiles-sync: COMMIT FAILED (pre-commit hook rejected or git error) — staged changes are NOT committed and NOT pushed. Fix the cause, then re-run scripts/dotfiles-sync.sh." >&2

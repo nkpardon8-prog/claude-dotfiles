@@ -56,6 +56,18 @@ case "$kind" in
         echo "     (NOT secret-scan.sh --working: that reads the WORKING TREE only and cannot"
         echo "      say anything about queued commits or their messages.)"
         ;;
+    revert)
+        # scripts/lib/sync-revert-guard.sh kept a file out of an auto-sync commit because the
+        # working copy would have undone another host's recent work (the 5e15bea6 incident).
+        # The rest of that sync committed; the refused copy is saved, not lost.
+        echo "dotfiles-sync PAUSED — the REVERT GUARD refused a file that would undo another machine's work: ${reason}"
+        echo "  The file was restored from HEAD; the refused working copy is saved in ~/.claude/.sync-quarantine/."
+        echo "  1) Read the REASONS.txt named above: it shows the commit that would have been undone."
+        echo "  2) Usually an agent copied in a stale file: merge the intended edits onto the current file by hand."
+        echo "     If the revert IS intended: echo '<path>' >> ~/.claude/.dotfiles-sync-allow-revert, copy the"
+        echo "     saved file back (one use; or run sync with DOTFILES_SYNC_ALLOW_REVERT='<path>[:<path>]')."
+        echo "  3) rm ${M}"
+        ;;
     *)
         echo "dotfiles-sync PAUSED: ${reason} — auto-push is HALTED and local commits are accumulating."
         echo "  Fix the cause above, then clear with: rm ${M}"
