@@ -65,7 +65,13 @@
       "heavy_slots": 6,
       "mem_gb": 64,
       "enabled": true,
-      "optional": true
+      "optional": true,
+      "classes": [
+        "light",
+        "normal",
+        "heavy",
+        "build"
+      ]
     },
     {
       "name": "airm4",
