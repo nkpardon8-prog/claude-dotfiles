@@ -238,7 +238,7 @@ T0=$(date +%s)
 hook "test-panel_1"
 expect "hook exit 0" "$([ $? = 0 ] && echo 1)"
 expect "hook returns immediately (helper detached)" "$([ $(( $(date +%s) - T0 )) -le 3 ] && echo 1)"
-expect "sentinel RETAINED for the primer" "$([ -f "$SP" ] && echo 1)"
+expect "sentinel RETAINED while the helper works" "$([ -f "$SP" ] && echo 1)"
 expect "attempts=1" "$([ "$(cat "${SP}.attempts" 2>/dev/null)" = "1" ] && echo 1)"
 expect "logged pane-dispatched" "$(grep -q "pane-dispatched sid=$SID" "$LOG" && echo 1)"
 wait_helper
@@ -253,6 +253,9 @@ expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed si
 expect "every runpane call carries --pane-dir" "$([ "$(grep -v '^turn_done=' "$STUB_LOG" | grep -vc -- "--pane-dir $PANEDIR")" = "0" ] && echo 1)"
 expect "readiness logged with the transcript state" "$(grep -q "wait=pre-compact screen=ready agent/composer/transcript=idle/empty/idle" "$LOG" && echo 1)"
 expect "no notification on success" "$(grep -q "notify " "$LOG" && echo 0 || echo 1)"
+expect "sentinel retired by the helper once compaction is proven (no primer handoff here)" "$([ ! -f "$SP" ] && [ ! -f "${SP}.attempts" ] && grep -q "pane-sentinel-retired sid=$SID" "$LOG" && echo 1)"
+: > "$STUB_LOG"; hook "test-panel_1"
+expect "the next Stop types nothing (no second compaction)" "$([ ! -s "$STUB_LOG" ] && echo 1)"
 expect "helper released its lock" "$([ ! -f "${SP}.pane-helper" ] && echo 1)"
 expect "no osascript-path line for this sid" "$(grep -q "stop sid=$SID\|test-no-fire sid=$SID tty=" "$LOG" && echo 0 || echo 1)"
 

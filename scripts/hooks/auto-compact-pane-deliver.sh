@@ -464,17 +464,25 @@ while :; do
 done
 ac_log "pane-compact-confirmed sid=$SID panel=$PANEL signal=$SIGNAL after=$(( $(date +%s) - START ))s"
 
-[ "$RESUMED" = "1" ] || exit 0
 # Effect, not delivery: the resume command must show up in the session transcript.
-if [ -n "$TRANSCRIPT" ]; then
-  _t=0
+if [ "$RESUMED" = "1" ] && [ -n "$TRANSCRIPT" ]; then
+  _t=0; _ok=0
   while [ "$_t" -lt "$CONFIRM" ]; do
-    if resume_ran; then
-      ac_log "pane-resume-confirmed sid=$SID panel=$PANEL signal=transcript after=${_t}s"
-      exit 0
-    fi
+    if resume_ran; then _ok=1; break; fi
     sleep 1; _t=$((_t + 1))
   done
-  ac_log "pane-resume-unconfirmed sid=$SID panel=$PANEL (resume queued but not seen after compaction within ${CONFIRM}s; check the panel)"
+  if [ "$_ok" = "1" ]; then
+    ac_log "pane-resume-confirmed sid=$SID panel=$PANEL signal=transcript after=${_t}s"
+  else
+    ac_log "pane-resume-unconfirmed sid=$SID panel=$PANEL (resume queued but not seen after compaction within ${CONFIRM}s; check the panel)"
+    ac_notify "Session ${SID:0:8} compacted, but /post-compact-resume was not seen running. Run /post-compact-resume $SID in that window."
+  fi
+fi
+# The compaction is proven, so this arming is done. The primer retires the sentinel too, but only
+# when a handoff file exists; without this, every later Stop would compact again (live
+# 2026-11-17). Done after the resume check, so the primer (SessionStart) has long since read it.
+if [ -f "$SENTINEL" ]; then
+  rm -f "$SENTINEL" "${SENTINEL}.attempts" 2>/dev/null
+  ac_log "pane-sentinel-retired sid=$SID panel=$PANEL (compaction confirmed)"
 fi
 exit 0
