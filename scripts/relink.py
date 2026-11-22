@@ -95,6 +95,16 @@ def save_linked(sid, name, bridge):
     os.replace(tmp, STATE)
 
 
+def linked_ok(prev, name, bridge):
+    """True when this window is already on Remote Control under `name` via the link we made, made under
+    the account signed in NOW. An account switch can leave the old bridge id in the session file while
+    that session is offline in the new account's app, so an unchanged bridge alone is not proof."""
+    if not (prev and bridge and prev.get("name") == name and prev.get("bridge") == bridge):
+        return False
+    then, now = prev.get("acct") or "", account_fp()
+    return not (then and now and then != now)
+
+
 def session(pid):
     try:
         return json.loads((SESS / f"{pid}.json").read_text())
@@ -195,7 +205,7 @@ def plan(rows, tabs, only, force=False):
             skipped.append((name, "name has characters /rc cannot take"))
             continue
         prev = linked.get(d.get("sessionId") or "")
-        if prev and prev.get("name") == name and d.get("bridgeSessionId") and prev.get("bridge") == d.get("bridgeSessionId"):
+        if linked_ok(prev, name, d.get("bridgeSessionId")):
             skipped.append((name, "already linked under this name"))
             continue
         panel = pane_panel(d["pid"]) if runpane_bin() else ""
@@ -309,7 +319,7 @@ def heal():
         st = load_state()
         prev = st.get(sid) or {}
         bridge = me.get("bridgeSessionId")
-        if bridge and prev.get("name") == me["name"] and prev.get("bridge") == bridge:
+        if linked_ok(prev, me["name"], bridge):
             return 0
         if time.time() - float(prev.get("tried") or 0) < HEAL_BACKOFF:
             return 0
