@@ -117,13 +117,24 @@ LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
 
 It never touches the share level, the `rd` user, the sshd config or Tailscale.
 
-## This Mac is a worker AND an agent (the Air)
+## This Mac is a worker AND an agent (the Air, Nick's MacBook Pro)
 
-Agents on a Mac never send their own jobs to that same Mac through the pool (`rd_pool.is_self`: a fleet
-worker whose ip is one of this Mac's own addresses is left out of its plan); they run on the other workers,
-or locally, as on any agent Mac. Other machines' jobs still come in. The Air's entry (`airm4`) is
-`"optional": true`: when it is away or asleep nothing waits for it or warns about it, and it ranks on its
-predicted finish + 15 % (`rr_optional_margin`), so it never wins a tie with hp or the laptop.
+Owner decision 2026-11-21: while this Mac's share switch is ON (the share file exists and its level is
+low / medium / high / custom), agents on it run their own jobs on its own capped `rd` worker FIRST: the pool
+plan keeps the fleet worker whose ip is one of this Mac's addresses (`rd_pool.is_self` + `self_share`, the
+runner's own share-spec rules read locally), probes it over ssh like any worker (`rd-airm4` to its own
+Tailscale ip) and runs the job there under the same share caps. It ranks on its real predicted finish
+(queue + setup + run) with no `rr_optional_margin`, and wins a tie (nothing is copied to another machine).
+Jobs overflow to the pool when its own slots are full or its classes do not take the job (db: `airm4` has
+no db class, so db jobs from the Air still go to the pool). `rrun --where` marks it "this Mac's own worker
+(sharing on)".
+
+Share off, no share file, or a file that cannot be read safely: it is left out of this Mac's own plan, as
+before; `rrun --where` shows it as `self` with the reason, and its own agents' jobs go to the other workers
+(or locally, as on any agent Mac). Other machines' jobs still come in under the switch either way. The
+Air's entry (`airm4`) is `"optional": true`: when it is away or asleep nothing waits for it or warns about
+it, and for OTHER machines it ranks on its predicted finish + 15 %, so it never wins a tie with hp or the
+laptop there.
 
 ## Self-healing watchdog (rd-doctor, once, with sudo)
 

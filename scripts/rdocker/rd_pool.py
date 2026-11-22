@@ -48,7 +48,10 @@ down memo (probe_all): a worker that did not answer is skipped, unprobed, for 60
 probed again (`rrun --where` always probes); any answer clears it. An "optional": true worker that is down is left out of the
 order (it is a nice addition, often away) and never warned about; when it answers it ranks on its eta +
 rr_optional_margin (15 %), so it never wins a tie with a regular worker. A worker that is this machine
-itself (is_self: its fleet ip is one of ours) is left out of this machine's pool entirely. shardable() / shard_assign() split a `vitest run`
+itself (is_self: its fleet ip is one of ours) is left out of this machine's pool unless its share switch is
+on here (self_share: low / medium / high / custom; owner 2026-11-21): then it is "this Mac's own worker",
+probed and run over ssh like any worker under its share caps, ranked on its real eta with no optional margin,
+and it wins ties (no transfer). Off, no file or unreadable: left out. shardable() / shard_assign() split a `vitest run`
 across the free workers in shares proportional to their predicted rate (rd_run.run_shards runs them);
 a worker with "shards": false in fleet.json never gets a shard, only whole jobs.
 
@@ -340,8 +343,10 @@ def _f(entry, key, default=None):
     return default if v is None else v
 
 
-def load_workers(cfg):
-    """-> enabled worker entries from fleet.json, or None (no fleet: single-host rrun as before)."""
+def load_workers(cfg, skipped=None):
+    """-> enabled worker entries from fleet.json, or None (no fleet: single-host rrun as before). This
+    machine's own worker (is_self) is in it, marked "_self": <level>, only while its share switch is on
+    here (self_share); else it is left out, and (entry, why) goes to `skipped` when a list is given."""
     path = cfg.get("fleet_path") or getattr(rd_common, "FLEET_PATH", None)
     if not path or not os.path.exists(path):
         return None                 # no registry here (yet): the configured host, as before
@@ -351,7 +356,16 @@ def load_workers(cfg):
         return None
     try:
         fleet = rd_fleet.load(cfg)
-        ws = [w for w in rd_fleet.workers(fleet) if not is_self(w)]
+        ws, level = [], None
+        for w in rd_fleet.workers(fleet):
+            if is_self(w):
+                level = level or self_share()
+                if level not in SELF_SHARE_ON:
+                    if skipped is not None:
+                        skipped.append((w, self_skip_why(level)))
+                    continue
+                w = dict(w, _self=level)      # this Mac's own worker, sharing on: a candidate like any
+            ws.append(w)
     except Exception as e:          # an unusable fleet.json must never stop a run: say so, use cfg host
         note("fleet.json unusable (%s) - using %s" % (str(e).strip()[:200], cfg.get("host")))
         return None
@@ -363,10 +377,10 @@ def load_workers(cfg):
 
 def is_self(entry):
     """True when a fleet worker is this machine itself: its ip is one of this machine's own addresses (a UDP
-    bind to it succeeds; nothing is sent). An agent on a Mac that is also a worker (the Air) never sends its
-    own jobs there through the pool - that is an ssh round trip into a second account on the same CPU and
-    memory, under the owner's share switch meant for lending to OTHER machines; the job runs on the other
-    workers, or locally as on any agent Mac. RR_SELF_IPS (comma list) replaces the check (tests)."""
+    bind to it succeeds; nothing is sent). An agent on a Mac that is also a worker (the Air, Nick's MacBook
+    Pro) sends its own jobs there only while the owner's share switch is on (load_workers / self_share):
+    then over ssh into the `rd` account like any worker, under the same share caps; else they run on the
+    other workers, or locally as on any agent Mac. RR_SELF_IPS (comma list) replaces the check (tests)."""
     ip = str(_f(entry, "ip", "") or "")
     if not ip:
         return False
@@ -384,6 +398,43 @@ def is_self(entry):
         return False
     finally:
         s.close()
+
+
+# the share levels on which this Mac's own worker takes this Mac's own jobs (share_spec: "max" = no share
+# file, which on a Mac worker means the switch was never set: left out, like off)
+SELF_SHARE_ON = ("low", "medium", "high", "custom")
+SELF_SHARE_FILE = "/Users/Shared/rdocker/share"
+
+
+def self_share():
+    """-> this Mac's share level word, read here with the runner's own rules (rr_runner.pl share-spec block:
+    share_read + share_spec on the share file; RR_SHARE_FILE overrides, as for the runner): off / low /
+    medium / high / custom, "max" when there is no file, "unreadable" when it cannot be judged. Read on
+    every plan (the switch is live), only when a fleet worker is this machine."""
+    spec = share_spec_pl()
+    if not spec:
+        return "unreadable"
+    pl = ("use strict; use warnings; use Fcntl qw(O_RDONLY O_NOFOLLOW O_NONBLOCK);\n" + spec +
+          'print share_spec(share_read($ARGV[0]))->{level}, "\\n";\n')
+    try:
+        p = subprocess.run(["perl", "-e", pl, os.environ.get("RR_SHARE_FILE") or SELF_SHARE_FILE],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unreadable"
+    out = p.stdout.decode(errors="replace").strip()
+    return out if p.returncode == 0 and re.match(r"^[a-z]+$", out) else "unreadable"
+
+
+def self_skip_why(level):
+    """Why this machine's own worker is not in its plan (`rrun --where`)."""
+    return "this Mac's own worker: sharing %s here, so its own jobs go to the pool" % (
+        "is not set (no share file)" if level == "max" else "could not be read" if level == "unreadable"
+        else "is off (or its file is not a small regular file)")
+
+
+def is_own(h):
+    """True for this machine's own worker, in the plan because its share switch is on (load_workers)."""
+    return bool(_f(h.entry, "_self", None))
 
 
 def installed_here():
@@ -1203,6 +1254,8 @@ def eligibility(host, job, cost_s=None, probed=False):
     unprobed plan (one worker, --host) checks the class and fleet.json heavy_slots only.
     SIGILL skips are judged across the pool, not per worker: plan() adds isa_skips.
     A worker that did not answer the probe is judged on its class and cost (cold unknown)."""
+    if job["cls"] == "db" and is_own(host):
+        return "this Mac's own worker never takes its own db jobs (they go to the pool)"
     classes = _f(host.entry, "classes")
     if isinstance(classes, list) and job["cls"] not in classes:
         return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
@@ -1443,11 +1496,14 @@ class Plan:
         self.ineligible = list(ineligible)   # [(Host, why)]: never tried (eligibility())
         self.home, self.rcache = None, None   # the pool result cache (plan(rcache=))
         self.away = []               # optional workers that are down: left out of hosts (plan())
+        self.self_skip = []          # [(name, why)]: this machine's own worker, sharing off here (load_workers)
 
 
-def pick_hosts(cfg, force=None):
-    """-> (hosts, pool): every candidate Host (unordered) and whether this is a real pool (2+)."""
-    workers = load_workers(cfg)
+def pick_hosts(cfg, force=None, skipped=None):
+    """-> (hosts, pool): every candidate Host (unordered) and whether this is a real pool (2+). skipped:
+    as load_workers (this machine's own worker, left out while its sharing is off here)."""
+    skipped = [] if skipped is None else skipped
+    workers = load_workers(cfg, skipped)
     if not workers:
         hosts = [Host("mini", dict(cfg))]
     else:
@@ -1456,7 +1512,8 @@ def pick_hosts(cfg, force=None):
         sel = [h for h in hosts if force in (h.name, h.cfg.get("host"))]
         if not sel:
             raise ValueError("no worker named %r (have: %s%s)" % (force, ", ".join(h.name for h in hosts),
-                             "; a worker that is this machine itself never takes its own jobs" if workers else ""))
+                             "; %s is this machine itself: %s" % (force, skipped[0][1])
+                             if any(force in (_f(w, "name"), _f(w, "alias")) for w, _ in skipped) else ""))
         return sel, False
     return hosts, len(hosts) >= 2
 
@@ -1492,9 +1549,13 @@ def rank(hosts, cfg, pool):
     max_cost_s) comes first only when it wins by the margin (slow_wins), else after the others. Then
     workers with no eta (busy with no slot of the kind / short of memory), down, off or paused (refuses:
     73). An optional worker (someone's own Mac, a nice addition) ranks on its eta + rr_optional_margin
-    (15 %): it goes before a regular worker only when it finishes clearly sooner, never on a tie."""
+    (15 %): it goes before a regular worker only when it finishes clearly sooner, never on a tie. This
+    machine's own worker (is_own: sharing on here) goes FIRST while it has a free slot of the job's kind
+    (and is not slow); full, it competes on its eta with no margin, optional or not - nothing is copied to
+    another machine - and wins a tie (owner 2026-11-21: own worker first, overflow to the pool)."""
     om = _num(cfg.get("rr_optional_margin"), OPTIONAL_MARGIN)
-    by_eta = lambda h: ((h.eta * (1 + om) if optional(h) else h.eta), optional(h), h.rtt or 0)  # noqa: E731
+    margin = lambda h: optional(h) and not is_own(h)  # noqa: E731
+    by_eta = lambda h: ((h.eta * (1 + om) if margin(h) else h.eta), not is_own(h), margin(h), h.rtt or 0)  # noqa: E731
     live = [h for h in hosts if h.eta is not None and h.state in ("free", "busy")]
     fast = sorted((h for h in live if not h.slow), key=by_eta)
     best = fast[0].eta if fast else None
@@ -1504,17 +1565,23 @@ def rank(hosts, cfg, pool):
     full = sorted((h for h in hosts if h.state in ("busy", "low-mem") and h.eta is None), key=lambda h: -cap(h))
     down = sorted((h for h in hosts if h.state == "down"), key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
     off = [h for h in hosts if h.state in ("off", "paused")]
-    return sorted(fast + won, key=by_eta) + [h for h in slow if h not in won] + full + down + off
+    order = sorted(fast + won, key=by_eta) + [h for h in slow if h not in won] + full + down + off
+    own = [h for h in fast if is_own(h) and h.state == "free"]
+    return own + [h for h in order if h not in own]
 
 
 def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=False):
     """-> Plan with hosts in the order rd_run should try them. Probes only in a real pool (or when
     probe=True, for `rrun --where`). fresh=True (`rrun --where`): no host is skipped on its down memo. rcache (rd_cache.Shared.req()): rides on the home worker's
     probe; its answer is plan.rcache (None: no home worker, not probed, or it did not answer)."""
-    hosts, pool = pick_hosts(cfg, force)
+    skipped = []
+    hosts, pool = pick_hosts(cfg, force, skipped)
+    self_skip = [(_f(w, "name") or _f(w, "alias"), why) for w, why in skipped]
     if not (pool or probe):
         bad = [(h, why) for h, why in ((h, eligibility(h, job)) for h in hosts) if why]
-        return Plan([h for h in hosts if h not in dict(bad)], False, ineligible=bad)
+        p = Plan([h for h in hosts if h not in dict(bad)], False, ineligible=bad)
+        p.self_skip = self_skip
+        return p
     home = home_of(hosts) if rcache else None
     req = {"slug": slug, "deps": [list(d) for d in deps], "sig": job.get("sig") or "",
            "kind": kind_of(job.get("sig") or ""), "kinds": [list(k) for k in KINDS],
@@ -1546,6 +1613,10 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
             h.eta += h.run_hi - h.rank_s            # a slow worker ranks on its pessimistic run
             h.rank_s = h.run_hi
         why = eligibility(h, job, h.cost_s, probed=True)
+        if not why and is_own(h) and h.probe is not None and h.probe.get("share") not in SELF_SHARE_ON:
+            # the worker read the switch itself (as rd): it must agree it is on, or caps would not apply
+            why = "this Mac's own worker: its runner reads sharing as %s, so its own jobs go to the pool" % (
+                h.probe.get("share") or "unknown")
         if why:
             bad.append((h, why))
     bad += isa_skips(hosts, cfg, bad)
@@ -1569,6 +1640,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
             local_after = float(cfg.get("rr_local_after_s", LOCAL_AFTER_S))
     p = Plan(order, pool, local_after, bad)
     p.away = away
+    p.self_skip = self_skip
     p.req = req
     p.home, p.rcache = home, rc_answer
     return p
@@ -1639,10 +1711,13 @@ def shard_assign(cfg, plan, job, n=None):
     over SHARD_SLOW_X x the fastest worker's gets none (2026-11-11: a laptop shard hit the 30-min
     cap). Auto: every free worker that can start before the best one would have FINISHED the whole
     job alone, n = sum of round(rate / lower-median rate) (>= 1, <= its free slots, <= rr_shard_max).
-    Forced n: across the free workers by eta. A "shards": false worker never gets one."""
+    Forced n: across the free workers by eta. A "shards": false worker never gets one. Auto, with this
+    Mac's own worker first and free (is_own): None, the job runs there whole (own worker first)."""
     if not plan.pool:
         return None
     forced = bool(n)
+    if not forced and plan.hosts and is_own(plan.hosts[0]) and plan.hosts[0].state == "free":
+        return None          # this Mac's own worker is free: the whole job runs there, none to the pool
     cands = [h for h in plan.hosts if takes_shards(h)]   # never a "shards": false worker
     free = [h for h in cands if h.state == "free" and h.eta is not None]
     free.sort(key=lambda h: h.eta)
@@ -1747,12 +1822,15 @@ def where_report(cfg, job, p, shards=None):
             else "  (slow: %s; first only when it finishes %d%% + %ds sooner)" % (
                 h.slow, round(100 * _num(cfg.get("rr_slow_gain_ratio"), SLOW_GAIN_RATIO)),
                 round(_num(cfg.get("rr_slow_gain_s"), SLOW_GAIN_S))) if h.slow and h.eta is not None
-            else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
+            else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why)
+            + ("  (this Mac's own worker (sharing on): no transfer, wins a tie)" if is_own(h) else ""))
     for h in p.away:
         lines.append("%-10s %-16s %-7s  (%s; optional: not tried)" % (h.name[:10], str(h.cfg.get("host"))[:16],
                                                                    "down", getattr(h, "why", None) or "no answer"))
     for h, why in p.ineligible:
         lines.append("%-10s %-16s %-7s  %s" % (h.name[:10], str(h.cfg.get("host"))[:16], "never", why))
+    for name, why in getattr(p, "self_skip", ()):
+        lines.append("%-10s %-16s %-7s  %s" % (str(name)[:10], "-", "self", why))
     if not p.hosts:
         lines.append("pick: none - " + no_eligible_msg(job, p.ineligible) + " (rrun exits 77)")
         return lines
@@ -1782,6 +1860,11 @@ def where_report(cfg, job, p, shards=None):
                                      else "" if p.pool or first.probe is None or first.state == "free"
                                      else " (only host: queues there)" if first.state != "down"
                                      else " (only host)"))
+    if is_own(first) and first.state == "free":
+        lines[-1] = "pick: %s - this Mac's own worker (sharing on): first while it has a free slot (finish ~%s)" % (
+            first.name, fmt_s(first.eta))
+    elif is_own(first):
+        lines[-1] += " - this Mac's own worker (sharing on)"
     return lines
 
 

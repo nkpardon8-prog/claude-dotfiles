@@ -217,6 +217,7 @@ class PlanUnit(unittest.TestCase):
             os.environ["RR_SELF_IPS"] = ""
         p, _ = self.plan([me] + others, answers)                                    # elsewhere: a worker
         self.assertEqual(sorted(self.names(p)), ["air", "hp", "lap"])
+        self.assertFalse(any(rd_pool.is_own(h) for h in p.hosts))
         # the real check: a UDP bind to the address (nothing is sent)
         os.environ.pop("RR_SELF_IPS")
         try:
@@ -225,6 +226,78 @@ class PlanUnit(unittest.TestCase):
             self.assertFalse(rd_pool.is_self({"ip": ""}))
         finally:
             os.environ["RR_SELF_IPS"] = ""
+
+    def share(self, text):
+        """Point this machine's share switch (rd_pool.self_share) at a temp file with `text` (None: no file)."""
+        f = os.path.join(self.d, "share")
+        if text is not None:
+            with open(f, "w") as fh:
+                fh.write(text + "\n")
+        old = os.environ.get("RR_SHARE_FILE")
+        os.environ["RR_SHARE_FILE"] = f
+        self.addCleanup(lambda: os.environ.__setitem__("RR_SHARE_FILE", old) if old is not None
+                        else os.environ.pop("RR_SHARE_FILE", None))
+        return f
+
+    def test_own_worker_with_sharing_on_takes_its_own_jobs_first(self):
+        """Owner 2026-11-21: a Mac that is a worker with its share switch on runs its own agents' jobs on its
+        own capped worker first (probed over ssh like any), with no optional margin and winning a tie; db jobs
+        still go to a worker that takes db; off / no file / unreadable = left out, with the reason shown."""
+        me = dict(worker("air", 1.0), ip="100.100.204.127", optional=True,
+                  classes=["light", "normal", "heavy", "build"])
+        others = [dict(worker("hp", 1.0), classes=["light", "normal", "db", "heavy"])]
+        answers = {"air": probe(share="high"), "hp": probe()}
+        os.environ["RR_SELF_IPS"] = "100.100.204.127"
+        self.addCleanup(os.environ.__setitem__, "RR_SELF_IPS", "")
+        for text in ("high", "low", "cpu=50 ram=8"):
+            self.share(text)
+            p, m = self.plan([me] + others, answers)
+            self.assertEqual(self.names(p), ["air", "hp"], text)          # a tie: self first, no +15 %
+            self.assertTrue(rd_pool.is_own(p.hosts[0]))
+            self.assertEqual(sorted(c.args[0].name for c in m.call_args_list), ["air", "hp"])   # probed
+            self.assertEqual(p.self_skip, [])
+        where = "\n".join(rd_pool.where_report(self.cfg, rd_pool.classify(["npx", "vitest", "run"]), p))
+        self.assertIn("this Mac's own worker (sharing on)", where)
+        # free: first even when another worker is faster, and an auto vitest shard plan sends nothing away
+        p, _ = self.plan([me] + [dict(others[0], speed=3.0)], answers)
+        self.assertEqual(self.names(p), ["air", "hp"])
+        self.assertIsNone(rd_pool.shard_assign(self.cfg, p, rd_pool.classify(["npx", "vitest", "run"])))
+        # its own slots full: no margin either way - a faster pool worker takes it, a tie stays here
+        full = {"air": probe(slots_busy=2, share="high"), "hp": probe()}
+        p, _ = self.plan([me] + [dict(others[0], speed=3.0)], full)
+        self.assertEqual(self.names(p)[0], "hp")
+        # its runner (the probe, as rd) does not read sharing as on: left out, caps could not apply
+        p, _ = self.plan([me] + others, {"air": probe(share="max"), "hp": probe()})
+        self.assertEqual(self.names(p), ["hp"])
+        self.assertIn("its runner reads sharing as max", dict((h.name, w) for h, w in p.ineligible)["air"])
+        # a db job from this Mac: never its own worker, even when its fleet entry would take db
+        db = rd_pool.classify(["npm", "run", "test:db"])
+        self.assertEqual(db["cls"], "db")
+        for m_ in (me, {k: v for k, v in me.items() if k != "classes"}):
+            p, _ = self.plan([m_] + others, answers, job=db)
+            self.assertEqual(self.names(p), ["hp"])
+            self.assertIn("never takes its own db jobs", dict((h.name, w) for h, w in p.ineligible)["air"])
+        # forced onto itself while sharing is on: allowed
+        self.assertEqual([h.name for h in rd_pool.pick_hosts(self.cfg, force="air")[0]], ["air"])
+        # off, no share file, unreadable (a symlink): left out of the plan, never probed, the reason shown
+        for text, why in (("off", "is off"), (None, "is not set"), ("symlink", "is off")):
+            f = self.share(None if text == "symlink" else text)
+            if os.path.lexists(f):
+                os.remove(f)
+            if text == "symlink":
+                os.symlink(os.path.join(self.d, "elsewhere"), f)
+            elif text is not None:
+                with open(f, "w") as fh:
+                    fh.write(text + "\n")
+            p, m = self.plan([me] + others, answers, probe=True)
+            self.assertEqual(self.names(p), ["hp"], text)
+            self.assertEqual(sorted(c.args[0].name for c in m.call_args_list), ["hp"])
+            self.assertEqual([n for n, _ in p.self_skip], ["air"])
+            self.assertIn(why, p.self_skip[0][1])
+            where = "\n".join(rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p))
+            self.assertIn("this Mac's own worker: sharing %s" % why, where)
+            with self.assertRaisesRegex(ValueError, "air is this machine itself: this Mac's own worker"):
+                rd_pool.pick_hosts(self.cfg, force="air")
 
     def test_a_ram_cap_with_no_heavy_slot_makes_the_worker_heavy_ineligible(self):
         """fleet heavy_slots 1, but the share level's RAM cap (under 6 GB) leaves heavy_cap 0 in the probe: the

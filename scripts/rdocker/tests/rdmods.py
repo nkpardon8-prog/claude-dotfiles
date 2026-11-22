@@ -74,6 +74,8 @@ atexit.register(_rr_git_leak_check)
 # rd_pool.is_self: the machine running the suite must never drop a test fleet's worker as "itself" (the
 # Air is a worker in the real fleet.json). The self-exclusion tests set their own value.
 os.environ["RR_SELF_IPS"] = ""
+# rd_pool.self_share reads this Mac's own share switch in-process: never the real one (tests set their own)
+os.environ["RR_SHARE_FILE"] = os.path.join(TEST_HOME, "no-share-file")
 if not os.environ.get("PATH", "").startswith(STUB_BIN + ":"):
     os.environ["PATH"] = STUB_BIN + ":" + os.environ.get("PATH", "")
 

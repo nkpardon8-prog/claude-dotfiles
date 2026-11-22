@@ -2744,6 +2744,8 @@ class Mover:
                 continue
             if c.eta <= here * (1.0 - self.ratio) - self.gain:
                 return c, here, p
+            if rd_pool.is_own(c):    # this Mac's own worker ranks first while free, not by finish: look on
+                continue
             break
         return None, here, p
 

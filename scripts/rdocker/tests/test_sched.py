@@ -527,6 +527,31 @@ class MoverUnit(unittest.TestCase):
         self.assertEqual(err.getvalue(), "")
 
 
+    def test_a_free_own_worker_that_is_not_better_does_not_hide_a_better_one(self):
+        """rank() puts this Mac's own worker first while free, not by finish: a move candidate scan that
+        meets it and finds it not clearly better looks on to the next worker (rd_pool.is_own)."""
+        sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        sess.wait_since = time.monotonic()
+        ctx = mock.Mock(cfg={}, job={"cls": "normal"}, wt={"slug": "s", "top": "/x"}, deps=[], force=None)
+        here = mock.Mock(probe=None, queue_s=300.0, setup_s=0.0, rank_s=0.0, run_s=0.0)
+        here.name = "hp"
+        mv = rd_run.Mover(ctx, here, mock.Mock(session=sess))
+
+        def host(name, eta, own):
+            h = mock.Mock(eta=eta, state="free", entry={"_self": "high"} if own else {})
+            h.name = name
+            return h
+        own, fast = host("air", 290.0, True), host("mini", 20.0, False)
+        plan = mock.Mock(hosts=[own, fast])
+        with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
+            c, _, _ = mv.candidate(sess)
+        self.assertIs(c, fast)
+        plan.hosts = [host("lap", 290.0, False), fast]        # a regular worker first: the scan stops, as before
+        with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
+            c, _, _ = mv.candidate(sess)
+        self.assertIsNone(c)
+
+
 class Retry(unittest.TestCase):
     def test_push_s_is_the_push_alone_after_an_earlier_attempt(self):
         rd_run.STAGES.clear()
