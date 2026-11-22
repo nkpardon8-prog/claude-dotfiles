@@ -674,13 +674,15 @@ fleet.json) is used once it answers.
   one shows `(no answer in 4.0 s; jobs skip it for 60s)`); a job skipping a host shows it as `down
   (skipped, not answering since HH:MM; next check in Ns)`. No daemon: rrun reads and writes the memo.
 - **Optional workers.** `"optional": true` in fleet.json (`nickmbp`: often away from home, a nice
-  addition) = while it is down, and another worker could take the job (free or busy), it is left out of
+  addition) = while it is down, and another worker could take the job (free or busy with a predicted finish), it is left out of
   the job's order entirely (no connect attempt, no note); `rrun --where` adds `optional: not tried`,
   `rrun --jobs` lists it as `away`, and rd-steward records it as `away (optional)` with **no finding**.
   When it answers it is a candidate that ranks on its predicted finish + 15 % (`rr_optional_margin`), so it
   never wins a tie with a regular worker (the Air vs hp or the laptop), only a clear lead. Non-optional workers keep the usual handling (tried last
   when down, steward `unreachable` finding). ROLLOUT: a client older than this rejects the unknown field (whole
   fleet.json, one-host fallback), so add the field only once every client runs this code.
+  A worker that cannot take the job now (short of memory, no slot of its kind, paused, share off) never
+  counts as that other worker: then the down optional one stays in the order.
 
 - **Memory per job (2026-11-21).** A job plans light 1 / normal 2 / db 2 / build 3 / heavy 6 GB; a db job that
   also type-checks (any `run-guard-tier.mjs`, or tsc / typecheck in the same command) plans **8 GB**, and a
@@ -737,7 +739,8 @@ fleet.json) is used once it answers.
     warm / 90 s cold; + 30 s without the repo's git mirror. A cold setup is corrected by what happened
     (2026-11-21), so a wrong estimate cannot keep winning jobs: it is multiplied by the worker's
     overrun factor (the median actual / `spred_s` of its last 5 cold prepares, 1x to 4x; faster never
-    discounts it), and is never below this repo's own cold-prepare p75 on that worker. `spred_s` logs
+    discounts it), and is never below this repo's slowest recent cold prepare on that worker (its last 10:
+    one big install is not outvoted by cheaper ones in the same repo; runs.log keys it by repo, not lockfile). `spred_s` logs
     the estimate before that correction, so the factor never feeds on itself.
   - **queue**: 0 with a free slot of the job's kind (a heavy job: a heavy slot), else when one frees up
     after the runs already waiting there (the probe counts the runner's `wait/` queue) got theirs:

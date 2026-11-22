@@ -514,6 +514,28 @@ class DownMemo(unittest.TestCase):
         p, _, _ = self.plan({"a": off, "b": "unreachable", "c": "unreachable"})
         self.assertEqual((sorted(h.name for h in p.hosts), p.away), (["a", "b", "c"], []))
 
+    def test_a_busy_worker_with_no_eta_never_drops_the_optional_fallback(self):
+        """2026-11-21 review: a worker that answers "busy" with no eta (every slot taken AND under the
+        job's memory need, or no slot of its kind at all) cannot take the job, so a down optional worker
+        is kept: plan() never leaves "nowhere to go" while an eligible worker exists. A busy worker with
+        a real queue still lets the away one drop."""
+        base = {"slots_cap": 1, "slots_busy": 1, "mem_avail_mb": 16000, "load1": 0, "ncpu": 4,
+                "warm_git": 1, "warm_deps": 0, "ages": [5]}
+        write_fleet(self.fleet, [worker("a"), dict(worker("b"), optional=True)])
+        for name, a in (("full and short of memory", dict(base, mem_avail_mb=200)),
+                        ("no slot of its kind", dict(base, slots_cap=0, slots_busy=0, ages=[])),
+                        ("paused", dict(base, paused=1))):
+            with self.subTest(name):
+                shutil.rmtree(os.path.join(rd_common.STATE_DIR, "down"), True)
+                p, _, _ = self.plan({"a": json.dumps(a), "b": "unreachable"})
+                ha = next(h for h in p.hosts if h.name == "a")
+                self.assertIsNone(ha.eta)
+                self.assertEqual((sorted(h.name for h in p.hosts), p.away), (["a", "b"], []))
+        shutil.rmtree(os.path.join(rd_common.STATE_DIR, "down"), True)
+        p, _, _ = self.plan({"a": json.dumps(base), "b": "unreachable"})   # queued, cold: a real eta
+        self.assertIsNotNone(p.hosts[0].eta)
+        self.assertEqual(([h.name for h in p.hosts], [h.name for h in p.away]), (["a"], ["b"]))
+
 
 class ProbeSnippet(unittest.TestCase):
     """The PROBE perl, run locally against a fake ~/rr (RR_OS=linux + RR_PROC/RR_SYS fixtures)."""

@@ -225,6 +225,10 @@ class Eta(unittest.TestCase):
         self.assertEqual(rd_pool.setup_s(h(sover=[40.0])), 60.0 * rd_pool.SETUP_OVER_MAX)  # capped
         self.assertEqual(rd_pool.setup_s(h(sover=[0.5, 0.4])), 60.0)                  # faster: no discount
         self.assertEqual(rd_pool.setup_s(h(scold=[400.0])), 400.0)                    # this repo's own floor
+        # 2026-11-21 review: one 400 s install right after a 60 s estimate, then nine cheaper cold
+        # prepares in the same repo and ordinary ratios: the floor is the slowest, not a p75 they outvote
+        self.assertEqual(rd_pool.setup_s(h(scold=[400.0] + [50.0] * 9, sover=[400 / 60.0] + [1.0] * 4)), 400.0)
+        self.assertEqual(rd_pool.setup_s(h(scold=[50.0] * 10, sover=[1.0] * 5)), 60.0)  # aged out: back down
         self.assertEqual(rd_pool.setup_s(h(warm=1, sover=[3.0], scold=[400.0])), 1.0)  # warm: untouched
         # in a plan: the laptop's 60 s cold estimate beat hp's 3 min queue; after a 5x overrun it does not
         lap = lambda **e: dict(probe(warm_deps=0, ncpu=8),  # noqa: E731

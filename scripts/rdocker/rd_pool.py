@@ -35,7 +35,7 @@ any other (2026-11-21; before, a measured cold-setup p75 over rr_cold_budget_s m
 left the laptop idle while hp queued): its eta carries the cold setup (setup_s), so it wins only when
 its install + run still finishes first. A cold estimate that proved wrong cannot repeat itself:
 setup_s lifts a cold worker's estimate by its measured overrun (actual prepare / the logged spred_s)
-and by this repo's own cold prepares there.
+and never prices it below this repo's slowest recent cold prepare there.
 Nothing eligible at all: plan.hosts is empty and plan.ineligible says why (rd_run: exit 77, config).
 `max_cost_s` is soft (2026-11-13; before, a hard exclusion that left the minis idle while jobs queued):
 a worker whose predicted command is over it is "slow" (slow_why) and goes first only when its
@@ -905,7 +905,7 @@ def _median(xs):
 #   setup_s  p75 of this worker's prepares, warm vs cold (>= OWN_MIN of that kind), else
 #            WARM_SETUP_S / COLD_DEPS_S (setup_base: logged as runs.log spred_s); cold: x the overrun
 #            factor (setup_over: the median actual / spred_s of its last cold prepares, 1..SETUP_OVER_MAX)
-#            and never below this repo's own cold-prepare p75 there (ev.scold); + COLD_GIT_S without
+#            and never below this repo's slowest recent cold prepare there (ev.scold, max); + COLD_GIT_S without
 #            the bare repo
 #   risk_s   p_infra x (setup + run / 2 lost + a rerun on the best other worker); p_infra = infra
 #            outcomes / runs that got a fair start, over the last EV_ROWS, with a weak prior
@@ -1071,14 +1071,18 @@ def setup_over(host):
 
 def setup_s(host):
     """Predicted prepare seconds for this job on this worker (probe: warm_git / warm_deps). Cold:
-    the base x its measured overrun factor, and never below this repo's own cold prepares there (a
-    big lockfile installs slower than the worker's typical cold setup) - so a cold estimate that
-    proved wrong once is not repeated: the next one is priced on what really happened."""
+    the base x its measured overrun factor, and never below the SLOWEST of this repo's recent cold
+    prepares there (ev.scold: its last 10 in the history window). A big lockfile installs slower than
+    the worker's typical cold setup, and runs.log keys a prepare by repo, not lockfile: so one overrun
+    raises the next cold estimate to at least what really happened until 10 newer cold prepares of this
+    repo there (or the window) age it out - cheaper installs in the same repo never outvote it (a p75
+    did, 2026-11-21 review). The worker-wide factor stays a median: one repo's lockfile is not every
+    repo's."""
     p = host.probe or {}
     s = setup_base(host)
     if not p.get("warm_deps"):
         own = [x for x in (_num(v) for v in ev(host).get("scold") or []) if x is not None]
-        s = max(s * setup_over(host), _pct(own, 0.75) if own else 0.0)
+        s = max(s * setup_over(host), max(own) if own else 0.0)
     return s + (0.0 if p.get("warm_git") else COLD_GIT_S)
 
 
@@ -1548,11 +1552,13 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
     add_risk([h for h in hosts if h not in dict(bad)])
     hosts = [h for h in hosts if h not in dict(bad)]   # never a candidate: not ranked, not a wait host
     order = rank(hosts, cfg, pool)
-    # an optional worker that is down is no candidate while another worker could take the job (free or
-    # busy - not down, share-off or short of memory): trying it would only cost a connect timeout and
-    # print a note about a machine that is merely away. With no such worker it stays, tried as before.
+    # an optional worker that is down is no candidate while another worker could take the job (one with
+    # an eta: free, or busy with a queue - not down, share-off, paused, short of memory or with no slot
+    # of its kind, which are all "busy"/"low-mem" with eta None): trying it would only cost a connect
+    # timeout and print a note about a machine that is merely away. With no such worker it stays, tried
+    # as before - a missed probe never leaves the job nowhere to go while an eligible worker exists.
     away = [h for h in order if h.state == "down" and optional(h)] if pool else []
-    if away and any(h.state in ("free", "busy") for h in order):
+    if away and any(h.eta is not None and h.state in ("free", "busy") for h in order):
         order = [h for h in order if h not in away]
     else:
         away = []
