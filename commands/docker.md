@@ -841,7 +841,7 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   rrun shim, the runner checks `docker info`; if the engine is not answering it runs `colima start
   --vm-type vz --vz-rosetta` (linux/amd64 images work) sized by the level (12 CPU / 24 GB x the CPU %:
   max 12 / 24, some 6 / 12 as before, never more than the cores, the RAM cap or half the memory; disk
-  120 GB) under the `~/rr/colima.lock` mkdir lock. No engine within 120 s
+  20 GB, sparse; an existing VM keeps its size) under the `~/rr/colima.lock` mkdir lock. No engine within 120 s
   (`RR_COLIMA_TIMEOUT`) = exit 73 + `UNAVAIL docker`, and the job moves on; the start keeps going in
   the background (a cold start is about 90 s), so the next job finds it up. An already-running Colima
   (also one started by hand) is used as is; a level change resizes it only on its next start.

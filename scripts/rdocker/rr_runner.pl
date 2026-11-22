@@ -107,7 +107,7 @@ my $ROOT = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
 my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
 my $COLIMA = $ENV{RR_COLIMA} || '/opt/homebrew/bin/colima';
-my $VM_DISK_GB = 120;    # colima --disk; --cpu / --memory come from the share level (share_caps)
+my $VM_DISK_GB = 20;     # colima --disk (GB, sparse; owner 2026-11-22: 20 is plenty, it is not a constraint); --cpu / --memory come from the share level (share_caps)
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
 # fair_share: the env vars vitest 3-5 read for its worker count; config words that mean "a limit is set"
 my @VITEST_ENV = qw(VITEST_MAX_WORKERS VITEST_MAX_THREADS VITEST_MAX_FORKS);

@@ -1480,7 +1480,7 @@ class RunnerTest(unittest.TestCase):
             r = self.run_runner(["true"], cls="db", env_extra=kw)
             self.assertEqual(r.rc, 0, r.err)
             self.assertEqual(self.mac_calls("colima start")[-1],
-                             "colima start %s --disk 120 --vm-type vz --vz-rosetta" % want, level)
+                             "colima start %s --disk 20 --vm-type vz --vz-rosetta" % want, level)
 
     def test_mac_db_job_starts_colima_sized_by_the_share_level(self):
         kw = dict(self.mac_docker(), **self.share("some"))
@@ -1489,7 +1489,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 0, r.err)
         self.assertTrue(os.path.exists(marker))
         self.assertEqual(self.mac_calls("colima"),
-                         ["colima start --cpu 6 --memory 12 --disk 120 --vm-type vz --vz-rosetta"])
+                         ["colima start --cpu 6 --memory 12 --disk 20 --vm-type vz --vz-rosetta"])
         self.assertIn("starting Colima (6 CPU, 12 GB", r.err)
         self.assertTrue(os.path.exists(os.path.join(self.root, "state", "colima.started")))
         self.assertFalse(os.path.exists(os.path.join(self.root, "colima.lock")))
@@ -1500,7 +1500,7 @@ class RunnerTest(unittest.TestCase):
         r = self.run_runner(["true"], cls="db", env_extra=dict(kw, **self.share(None)))
         self.assertEqual(r.rc, 0, r.err)
         self.assertEqual(self.mac_calls("colima")[-1],
-                         "colima start --cpu 12 --memory 24 --disk 120 --vm-type vz --vz-rosetta")
+                         "colima start --cpu 12 --memory 24 --disk 20 --vm-type vz --vz-rosetta")
 
     def test_mac_colima_failure_or_timeout_is_73_before_anything_runs(self):
         kw = self.mac_docker()
