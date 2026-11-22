@@ -986,7 +986,15 @@ _p2_partdone() {
   _pd_fz=$(_p2_fv "$_pd_snap" sha); [ -n "$_pd_fz" ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE without a v2 convergence snapshot"
   _pd_miss=$(_p2_legs "$1" "$_pd_fz"); [ -z "$_pd_miss" ] || _mw_emit_refuse log 4 "REFUSED: close leg $_pd_miss not passing at freeze $_pd_fz"
   # sweep coverage: every repeat key raised in the part, by a clean sweep logged after the last fix line.
-  _pd_keys=$(_p2_evid "$1" '(delta|close)' | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p' | tr ',' '\n' | grep -v '^-$' | grep . | sort -u)
+  _pd_keys=$(_p2_evid "$1" '(delta|close)' | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p' | while IFS= read -r _pk; do
+               case "$_pk" in
+                 @*) _pkf="$2/.mission-backups/rkeys/${_pk#@}"
+                     { [ -f "$_pkf" ] && [ "$(shasum -a 256 < "$_pkf" | cut -c1-12)" = "${_pk#@}" ]; } || { echo "__RKEYS_SIDECAR_BAD__${_pk}"; continue; }
+                     cat "$_pkf" ;;
+                 *) printf '%s\n' "$_pk" ;;
+               esac
+             done | tr ',' '\n' | grep -v '^-$' | grep . | sort -u)
+  case "$_pd_keys" in *__RKEYS_SIDECAR_BAD__*) _mw_emit_refuse log 4 "REFUSED: PART-DONE: a repeat-key sidecar is missing or altered ($(printf '%s' "$_pd_keys" | grep __RKEYS_SIDECAR_BAD__ | head -1))" ;; esac
   if [ -n "$_pd_keys" ]; then
     _pd_ok=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" -v keys="$(printf '%s' "$_pd_keys" | tr '\n' ',')" '
       index($2,"[mission] part=" pn " name=")==1 && $2 ~ / phase=fix / { lf=NR }
@@ -1122,7 +1130,7 @@ _p2_bank_review() {
   if [ "$_brk" != - ] && [ "$(printf '%s\tm%s-review-evidence-%s-r%s at=0000000000\n' "$_bline" "$_bn" "$_bsc" "$_bk" | LC_ALL=C wc -c | tr -d ' ')" -ge 440 ]; then
     _brkd="$_br/.mission-backups/rkeys"; mkdir -p "$_brkd" || _mw_emit_refuse bank-review 1 "REFUSED: cannot create $_brkd"
     _brkh=$(printf '%s\n' "$_brk" | shasum -a 256 | cut -c1-12)
-    printf '%s\n' "$_brk" > "$_brkd/$_bs.$_brkh" || _mw_emit_refuse bank-review 1 "REFUSED: cannot write the rkeys sidecar"
+    printf '%s\n' "$_brk" > "$_brkd/$_brkh" || _mw_emit_refuse bank-review 1 "REFUSED: cannot write the rkeys sidecar"
     _brkv="@$_brkh"
     _bline="[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brkv result=$_bres report=$_brep"
   fi
