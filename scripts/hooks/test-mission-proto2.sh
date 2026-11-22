@@ -414,13 +414,13 @@ echo "== long repeat-key list (pd:19) =="
 mk rkeys
 start_part 1
 _h=$(commit "$W" "rk-work")
-set -- ; for k in GATE-ORDER GRANT-CLASS-SCOPE EGRESS-RECHECK AUDIT-TWIN CARD-COPY LOCK-REASON DIRECTOR-SEAT SWEEP-SCANNER RACE-WINDOW CACHE-ARB; do set -- "$@" "$(tag "$k" repeat)"; done
+set -- ; _rkall=""; for k in GATE-ORDER-INVARIANT GRANT-CLASS-SCOPE-WIDENING EGRESS-RECHECK-AFTER-WAIT AUDIT-TWIN-SAME-TX CARD-COPY-OVERCLAIM LOCK-REASON-STALE DIRECTOR-SEAT-AUTHORITY SWEEP-SCANNER-COVERAGE RACE-WINDOW-REVISION CACHE-ARBITRATION-ORDER; do _rkall="$_rkall $k"; set -- "$@" "$(tag "$k" repeat)"; done
 has "bank-review ok" "$(mw bank-review "$S" "$R" 1 3 delta "$(code_report "$B" "$_h" full 4 3 ok 10 "$@")" "$(IMPLOUT)")" "rk1 a delta round naming 10 repeat types is banked, not rerouted"
 _rkv=$(grep -a 'REVIEW-EVIDENCE part=1 round=3' "$R/MISSION.$S.log" | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p')
 has "@" "$_rkv" "rk2 the long key list is stored as a sidecar reference"
-eq "CACHE-ARB,AUDIT-TWIN,CARD-COPY,DIRECTOR-SEAT,EGRESS-RECHECK,GATE-ORDER,GRANT-CLASS-SCOPE,LOCK-REASON,RACE-WINDOW,SWEEP-SCANNER" "$(cat "$R/.mission-backups/rkeys/${_rkv#@}" 2>/dev/null)" "rk3 the sidecar holds every repeat key"
+eq "$(printf '%s\n' $_rkall | sort -u | paste -sd, -)" "$(cat "$R/.mission-backups/rkeys/${_rkv#@}" 2>/dev/null)" "rk3 the sidecar holds every repeat key"
 printf 'X\n' >> "$R/.mission-backups/rkeys/${_rkv#@}"
-has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk4 PART-DONE refused (an altered sidecar or the missing sweep both refuse)"
+has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk4 PART-DONE refused after the sidecar is altered"
 
 echo "== wake origin =="
 PY="$HERE/lib/mission-liveness-parse.py"

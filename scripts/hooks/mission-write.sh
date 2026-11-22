@@ -376,7 +376,7 @@ _mw_validate_log() {
       [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-suite-$(_mw_efield "$_vl_entry" sha)-a$(_mw_efield "$_vl_entry" attempt)" ] || _mw_emit_refuse log 1 "REFUSED: bad-full-suite-idtag"
       ;;
     "SWEEP "*)
-      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] SWEEP part=[0-9]+ round=[0-9]+ types=[A-Z0-9_-]+(,[A-Z0-9_-]+)* sha=[0-9a-f]{12} instances=[0-9]+ report=/[^ ]+$' \
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] SWEEP part=[0-9]+ round=[0-9]+ types=([A-Z0-9_-]+(,[A-Z0-9_-]+)*|@[0-9a-f]{12}) sha=[0-9a-f]{12} instances=[0-9]+ report=/[^ ]+$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-sweep-shape"
       printf '%s' "$_vl_bare" | grep -qE "^m$(_mw_efield "$_vl_entry" part)-sweep-r$(_mw_efield "$_vl_entry" round)-s[0-9]+\$" || _mw_emit_refuse log 1 "REFUSED: bad-sweep-idtag"
       ;;
@@ -690,6 +690,25 @@ _p2_recipe()  { _r2=$(_p2_lines "m$1-recipe-v2\$" "RECIPE part=$1 v=2 " | tail -
 _p2_rounds()  { _p2_lines "m$1-[a-z]+-r[0-9]+-d[0-2]\$" "part=$1 name="; }
 _p2_lastdry() { _ld=$(_p2_rounds "$1" | tail -1); _ld=$(_p2_fv "$_ld" dry); printf '%s' "${_ld:-0}"; }
 _p2_evid()    { _p2_lines "m$1-review-evidence-$2-r[0-9]+\$" "REVIEW-EVIDENCE part=$1 "; }
+# _p2_keylist <root> <value> — a key list: a csv, "-", or @<sha12> naming <root>/.mission-backups/rkeys/<sha12>
+# (owner pd:19, 2026-11-22: lists too long for the 480B line budget). Prints one key per line. Reads the sidecar ONCE
+# and rc=1 if it is missing, empty or its bytes do not hash to the name (fail closed: a dropped key could skip a sweep).
+_p2_keylist() {
+  case "$2" in
+    (@*) _kf="$1/.mission-backups/rkeys/${2#@}"; [ -f "$_kf" ] || return 1
+         _kc=$(cat "$_kf") || return 1; [ -n "$_kc" ] || return 1
+         [ "$(printf '%s\n' "$_kc" | shasum -a 256 | cut -c1-12)" = "${2#@}" ] || return 1
+         printf '%s\n' "$_kc" | tr ',' '\n' | grep . ;;
+    (*) printf '%s\n' "$2" | tr ',' '\n' | grep . ;;
+  esac
+  return 0
+}
+# _p2_keystore <root> <csv> — writes the sidecar and prints @<sha12> (used by bank-review and the `keylist` verb).
+_p2_keystore() {
+  _ksh=$(printf '%s\n' "$2" | shasum -a 256 | cut -c1-12)
+  mkdir -p "$1/.mission-backups/rkeys" && printf '%s\n' "$2" > "$1/.mission-backups/rkeys/$_ksh" || return 1
+  printf '@%s' "$_ksh"
+}
 # freeze = head of the latest clean delta evidence, valid only while the part's dry is >=1.
 _p2_freeze()  { [ "$(_p2_lastdry "$1")" -ge 1 ] 2>/dev/null || return 0
                 _p2_fv "$(_p2_evid "$1" delta | grep ' result=clean ' | tail -1)" head; }
@@ -986,20 +1005,26 @@ _p2_partdone() {
   _pd_fz=$(_p2_fv "$_pd_snap" sha); [ -n "$_pd_fz" ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE without a v2 convergence snapshot"
   _pd_miss=$(_p2_legs "$1" "$_pd_fz"); [ -z "$_pd_miss" ] || _mw_emit_refuse log 4 "REFUSED: close leg $_pd_miss not passing at freeze $_pd_fz"
   # sweep coverage: every repeat key raised in the part, by a clean sweep logged after the last fix line.
-  _pd_keys=$(_p2_evid "$1" '(delta|close)' | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p' | while IFS= read -r _pk; do
-               case "$_pk" in
-                 (@*) _pkf="$2/.mission-backups/rkeys/${_pk#@}"
-                     { [ -f "$_pkf" ] && [ "$(shasum -a 256 < "$_pkf" | cut -c1-12)" = "${_pk#@}" ]; } || { echo "__RKEYS_SIDECAR_BAD__${_pk}"; continue; }
-                     cat "$_pkf" ;;
-                 (*) printf '%s\n' "$_pk" ;;
-               esac
-             done | tr ',' '\n' | grep -v '^-$' | grep . | sort -u)
-  case "$_pd_keys" in *__RKEYS_SIDECAR_BAD__*) _mw_emit_refuse log 4 "REFUSED: PART-DONE: a repeat-key sidecar is missing or altered ($(printf '%s' "$_pd_keys" | grep __RKEYS_SIDECAR_BAD__ | head -1))" ;; esac
+  # rkeys= is read from the fixed fields BEFORE report= (a report path may itself contain " rkeys="); an @ref expands
+  # through _p2_keylist, which fails closed on a missing, empty or altered sidecar.
+  _pd_keys=""
+  for _pk in $(_p2_evid "$1" '(delta|close)' | awk '{i=index($0," report="); if(i) $0=substr($0,1,i-1); if (match($0,/ rkeys=[^ ]+/)) print substr($0,RSTART+7,RLENGTH-7)}'); do
+    _pkl=$(_p2_keylist "$2" "$_pk") || _mw_emit_refuse log 4 "REFUSED: PART-DONE: repeat-key sidecar $_pk is missing, empty or altered"
+    _pd_keys="$_pd_keys
+$_pkl"
+  done
+  _pd_keys=$(printf '%s\n' "$_pd_keys" | grep -v '^-$' | grep . | sort -u)
   if [ -n "$_pd_keys" ]; then
-    _pd_ok=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" -v keys="$(printf '%s' "$_pd_keys" | tr '\n' ',')" '
+    _pd_exp=""
+    for _sr in $(printf '%s\n' "$P2S" | grep -a "SWEEP part=$1 " | sed -n 's/.* types=\(@[0-9a-f]\{12\}\) .*/\1/p' | sort -u); do
+      _srl=$(_p2_keylist "$2" "$_sr") || _mw_emit_refuse log 4 "REFUSED: PART-DONE: sweep type sidecar $_sr is missing, empty or altered"
+      _pd_exp="$_pd_exp$_sr=$(printf '%s' "$_srl" | paste -sd, -);"
+    done
+    _pd_ok=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" -v keys="$(printf '%s' "$_pd_keys" | tr '\n' ',')" -v expl="$_pd_exp" '
+      BEGIN { m=split(expl,e,";"); for(j=1;j<=m;j++) if (e[j]!="") { q=index(e[j],"="); exp[substr(e[j],1,q-1)]=substr(e[j],q+1) } }
       index($2,"[mission] part=" pn " name=")==1 && $2 ~ / phase=fix / { lf=NR }
       index($2,"[mission] SWEEP part=" pn " ")==1 && $2 ~ / instances=0 / && $1 ~ ("^(g[0-9]+-)?m" pn "-sweep-r") {
-        t=$2; sub(/.* types=/,"",t); sub(/ .*/,"",t); n=split(keys,k,","); c=1
+        t=$2; sub(/.* types=/,"",t); sub(/ .*/,"",t); if (t in exp) t=exp[t]; n=split(keys,k,","); c=1
         for(i=1;i<=n;i++) if (k[i]!="" && index("," t ",", "," k[i] ",")==0) c=0
         if (c) ls=NR }
       END { print (ls>lf) ? "yes" : "no" }')
@@ -1128,10 +1153,7 @@ _p2_bank_review() {
   _brkv=$_brk
   _bline="[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brkv result=$_bres report=$_brep"
   if [ "$_brk" != - ] && [ "$(printf '%s\tm%s-review-evidence-%s-r%s at=0000000000\n' "$_bline" "$_bn" "$_bsc" "$_bk" | LC_ALL=C wc -c | tr -d ' ')" -ge 440 ]; then
-    _brkd="$_br/.mission-backups/rkeys"; mkdir -p "$_brkd" || _mw_emit_refuse bank-review 1 "REFUSED: cannot create $_brkd"
-    _brkh=$(printf '%s\n' "$_brk" | shasum -a 256 | cut -c1-12)
-    printf '%s\n' "$_brk" > "$_brkd/$_brkh" || _mw_emit_refuse bank-review 1 "REFUSED: cannot write the rkeys sidecar"
-    _brkv="@$_brkh"
+    _brkv=$(_p2_keystore "$_br" "$_brk") || _mw_emit_refuse bank-review 1 "REFUSED: cannot write the rkeys sidecar"
     _bline="[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brkv result=$_bres report=$_brep"
   fi
   _p2_append "$_bs" "$_br" "$_bline" "m$_bn-review-evidence-$_bsc-r$_bk"
@@ -1544,8 +1566,15 @@ case "$verb" in
     esac
     ;;
 
+  keylist)
+    # keylist <sid> <root> <CSV of TYPE keys> -> bare @<sha12> for a SWEEP types= list too long for the 480B line
+    printf '%s' "${4:-}" | grep -qE '^[A-Z0-9_-]+(,[A-Z0-9_-]+)*$' || _mw_emit_refuse keylist 1 "REFUSED: keylist needs a CSV of [A-Z0-9_-] keys"
+    _p2_keystore "$root" "$(printf '%s\n' "$4" | tr ',' '\n' | sort -u | paste -sd, -)" || _mw_emit_refuse keylist 1 "REFUSED: cannot write the key sidecar"
+    echo
+    ;;
+
   ""|help|-h|--help)
-    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds|await-state|cursor-hash> <sid> <root> [args...]"
+    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds|keylist|await-state|cursor-hash> <sid> <root> [args...]"
     ;;
 
   *)
