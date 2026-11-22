@@ -682,6 +682,10 @@ fleet.json) is used once it answers.
   when down, steward `unreachable` finding). ROLLOUT: a client older than this rejects the unknown field (whole
   fleet.json, one-host fallback), so add the field only once every client runs this code.
 
+- **Memory per job (2026-11-21).** A job plans light 1 / normal 2 / db 2 / build 3 / heavy 6 GB; a db job that
+  also type-checks (any `run-guard-tier.mjs`, or tsc / typecheck in the same command) plans **8 GB**, and a
+  worker whose fleet `mem_gb` minus 1 is under a job's need never takes it (`--where`: "needs about 8 GB; it
+  has 8.5 GB"). A guard tier placed as a 2 GB db job swapped the 8.5 GB laptop to load 37 for 90 minutes.
 - **Eligibility first, and hard (2026-11-11).** Optional fleet.json fields per worker: `classes` (the
   job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest
   predicted command it should take, in seconds on that worker: the evidence prediction below, no

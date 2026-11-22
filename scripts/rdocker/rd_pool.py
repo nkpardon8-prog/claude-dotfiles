@@ -77,6 +77,13 @@ LOCAL_AFTER_S = 20           # light jobs: run locally after waiting this long f
 LOCAL_MIN_FREE_GB = 4
 COLD_GIT_S, COLD_DEPS_S = 30.0, 90.0   # eta: no bare git mirror yet / packages not installed there
 NEED_GB = {"heavy": 6, "build": 3, "normal": 2, "light": 1, "db": 2}
+# A db job that also type-checks (a repo guard tier, or tsc / typecheck in the same command) holds a DB and
+# a full tsc at once: dentall's server tsc alone peaks near 7 GB (2026-11-21: a guard tier placed as a 2 GB
+# db job swapped the 8.5 GB laptop to load 37 for 90 min). It needs this much, so 8 GB workers never get it.
+NEED_GB_DB_TYPECHECK = 8
+# loose on purpose (quotes, ; && | around the words): a missed match swaps a small worker for an hour
+_GUARD_RE = re.compile(r"run-guard-tier\.mjs")
+_TYPECHECK_ANY_RE = re.compile(r"""(^|[\s/;&|("'])(tsc|typecheck|type-check)($|[\s;&|)"':])""")
 # seconds a job class takes at speed 1.0 until the workers' runs.log teaches better (rr_job_cost_s)
 JOB_COST_S = {"heavy": 60.0, "normal": 60.0, "db": 120.0, "light": 30.0, "build": 90.0}
 JOB_CPUS = {"heavy": 2, "normal": 4, "db": 2, "light": 1, "build": 2}   # cores a job keeps busy
@@ -123,7 +130,7 @@ def classify(argv, outputs=None, cwd=None, pg=None):
     cwd: where the command runs - a vitest/jest run there may need a test DB (needs_db).
     pg: its rr_pg_lanes spec (rd_pnpm.pg_lane) - a db job that gets a run-local Postgres (job["pg"])."""
     s = " ".join(argv)
-    db = bool(pg) or bool(_DB_RE.search(s)) or needs_db(argv, cwd)
+    db = bool(pg) or bool(_DB_RE.search(s) or _GUARD_RE.search(s)) or needs_db(argv, cwd)
     if db:
         cls = "db"
     elif outputs:
@@ -136,7 +143,10 @@ def classify(argv, outputs=None, cwd=None, pg=None):
         cls = "normal"
     retry_ok = not db and (cls == "build" or bool(_TYPECHECK_RE.search(s) or _LINT_RE.search(s)
                                                    or _SUITE_RE.search(s)))
-    job = {"cls": cls, "db": db, "need_gb": NEED_GB[cls], "retry_ok": retry_ok,
+    need = NEED_GB[cls]
+    if db and (_GUARD_RE.search(s) or _TYPECHECK_ANY_RE.search(s)):
+        need = NEED_GB_DB_TYPECHECK
+    job = {"cls": cls, "db": db, "need_gb": need, "retry_ok": retry_ok,
            "local_ok": cls == "light", "never_local": cls in ("db", "heavy"), "sig": run_sig(argv)}
     if pg:
         job["pg"] = pg
@@ -1192,6 +1202,9 @@ def eligibility(host, job, cost_s=None, probed=False):
     classes = _f(host.entry, "classes")
     if isinstance(classes, list) and job["cls"] not in classes:
         return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
+    mem_gb = _num(_f(host.entry, "mem_gb"))
+    if mem_gb and job["need_gb"] > mem_gb - 1:     # leave its OS ~1 GB: it would swap, not run
+        return "needs about %s GB; it has %s GB" % (job["need_gb"], _f(host.entry, "mem_gb"))
     if job["cls"] == "heavy" and (_f(host.entry, "heavy_slots") == 0 or
                                   (host.probe is not None and _num(host.probe.get("heavy_cap")) == 0)):
         if _f(host.entry, "heavy_slots") != 0:     # the fleet has some: the share level's RAM cap allows none

@@ -77,6 +77,26 @@ class Classify(unittest.TestCase):
         self.assertEqual((b["cls"], b["retry_ok"], b["local_ok"]), ("build", True, False))
         self.assertEqual(rd_pool.classify(["npx", "tsc", "--noEmit"])["need_gb"], 6)
 
+    def test_db_job_that_typechecks_needs_8gb_and_skips_small_workers(self):
+        """A guard tier (or a db command with tsc in it) holds a DB and a full tsc at once: 8 GB, so the
+        8-8.5 GB workers never get it (2026-11-21: one swapped the laptop for 90 min). Plain db / tsc keep theirs."""
+        guard = rd_pool.classify(["sh", "-c", "node scripts/run-guard-tier.mjs needs-install"])
+        both = rd_pool.classify(["sh", "-c", "npx tsc --noEmit && npm run test:db"])
+        plain = rd_pool.classify(["npm", "run", "test:db"])
+        self.assertEqual((guard["cls"], guard["need_gb"]), ("db", 8))
+        self.assertEqual(both["need_gb"], 8)
+        self.assertEqual(plain["need_gb"], 2)
+        for cmd in ("npm run test:db && npx tsc; true", """node "./scripts/run-guard-tier.mjs" needs-install"""):
+            j = rd_pool.classify(["sh", "-c", cmd])
+            self.assertEqual((j["cls"], j["need_gb"]), ("db", 8), cmd)    # quotes / ; never slip past
+        small = rd_pool.Host("laptop", {"host": "laptop"},
+                             {"mem_gb": 8.5, "classes": ["light", "normal", "db", "heavy"]})
+        big = rd_pool.Host("hp", {"host": "hp"}, {"mem_gb": 24})
+        self.assertEqual(rd_pool.eligibility(small, guard), "needs about 8 GB; it has 8.5 GB")
+        self.assertIsNone(rd_pool.eligibility(big, guard))
+        self.assertIsNone(rd_pool.eligibility(small, plain))
+        self.assertIsNone(rd_pool.eligibility(small, rd_pool.classify(["npx", "tsc", "--noEmit"])))
+
     def test_check_ui_names_are_check_scripts(self):
         """rr_route_patterns (the hook / npm shim): `check:ui-*` is a check; a bare `:ui` segment
         (`check:ui`, `check:ui:fast`) is an interactive UI run and stays here."""
