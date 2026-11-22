@@ -494,8 +494,8 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   (process group TERM, KILL 10 s later; `outcome=lost rc=N`). A deliberate stop (second Ctrl-C, a
   hedge's loser) is sent as an explicit KILL and cancels at once (`outcome=interrupted rc=N`). Spool files go 10
   min after their run ended (or 1 h after their last change once no run holds them; a running job
-  touches its own every 5 min), swept when a detached run ends and by rd-tune's prune pass (Linux
-  workers), so anything in `~/rr/spool` older than 1 h is safe to delete. While such a run still
+  touches its own every 5 min), swept when a detached run ends and by rd-tune's prune pass (every
+  worker; a Mac runs it as `rd` from `rd-worker-mac`), so anything in `~/rr/spool` older than 1 h is safe to delete. While such a run still
   works in the worktree's mirror on the worker, the next run of that worktree there waits for it (up
   to its slot wait, `rrun-runner: an earlier run of this worktree still runs here ...`), then answers
   busy and rrun re-plans. Mirrors of these runners live in `~/rr/w2/` (older runners: `~/rr/w/`, which
@@ -863,6 +863,16 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   that address is up but nothing listens. rd-doctor on macOS ignores `lost` rows logged within 5 min of a
   wake (the lid close's own losses, `DOCTOR_WAKE_GRACE_S`) and stops a Colima VM whose engine no longer
   answers after sleep (2 checks, no slot held). A db job's `docker info` probe has a 20 s limit.
+- **~/rr prune on a Mac worker = the Linux rules, as `rd`.** `rd-worker-mac` (root) runs `rd-tune prune`
+  (`server/rd-tune.sh`, installed as `/usr/local/libexec/rd-tune`) as `rd` at start and every 10 min, in
+  the background, single instance (`~/rr/state/prune.lock`), nice 19 + `taskpolicy -b`: mirrors / store
+  entries unused 2 days; below 25 % free on the `~/rr` volume (Mac default; Linux 20 %) the least recently
+  used go until 30 % is free, anything not used in the last 10 min (Linux 30), never a mirror a running job
+  uses. Under that pressure, with no slot held and only while Colima already runs (never started for it),
+  also the Colima VM (its disk is on `~/rr`): stopped containers > 24 h, images and anonymous volumes no
+  container uses, never `rdocker.keep`, then `fstrim`. Log: `/var/log/rd-worker-mac.log`. A Mac not yet
+  re-installed can run `rd-tune prune-loop` as `rd` (detached; `~/rr/state/prune-loop.lock`,
+  `~/rr/log/prune.log`).
 - **Speed:** `rdocker bench-worker <name>` runs the same benchmark as Linux's `rd-tune bench` over ssh
   (on a Mac the script is piped in, nothing installed) and stores `~/rr/speed` there, which the probe
   prefers over fleet.json's placeholder. `rrun --bench` also creates a missing `~/rr` (0700) now.
