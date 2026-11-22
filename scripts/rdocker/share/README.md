@@ -48,10 +48,12 @@ after each click. Title: `⚙ 75% · 4G` (CPU share · RAM cap), `· 2▶` while
 the memory guard holds new jobs back, `⚙ off` when off. The menu:
 
 - what is set now (cores, RAM cap), team jobs running here, paused-for-memory with the reason
-- Off / Low / Medium / High, one click each (the current one ticked)
-- Custom > CPU 25 / 50 / 75 / 100 % and RAM cap 2 / 4 / 6 / 8 GB, picked independently (each keeps the
-  other's current value; from Off they start from Medium's)
-- Off now (stop jobs)
+- Off / Low / Medium / High, one click each (the current one ticked; labels in cores and GB)
+- **CPU: <now>** and **RAM: <now>** submenus whose titles show what is in force: CPU 25 / 50 / 75 / 100 %
+  and RAM up to 2 / 4 / 6 / 8 / 12 ... GB (up to this Mac's memory less 2 GB). Picking one makes the
+  setting custom and keeps the other value (from Off they start from Medium's). The ticks always show
+  what is in force, a preset's own values included; nothing is ticked while off.
+- Stop the jobs running here now
 
 The jobs count comes from `rd-worker-mac` (root), which writes `/Users/Shared/rdocker/status` every 15-45 s:
 you cannot read the `rd` user's files yourself.
@@ -99,7 +101,7 @@ LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
   address is up but nothing listens on it for 2 ticks, it runs `launchctl kickstart -k system/com.rdocker.sshd`
   (or bootstraps the plist when the job is not loaded). Log: `/var/log/rd-worker-mac.log` (changes only).
 - **Menu status and Off now:** it writes the jobs count for the menu, and on `rdocker-share stop` (the menu's
-  "Off now (stop jobs)") sends USR1 to `rd`'s runners only (never your own local `rrun`): a job that had not
+  "Stop the jobs running here now") sends USR1 to `rd`'s runners only (never your own local `rrun`): a job that had not
   started is refused like share off (the pool moves it elsewhere), a running one is stopped (runs.log
   `interrupted`, not a pool failure).
 
@@ -163,3 +165,17 @@ one finding). Set `RD_STEWARD_SELF` to name this Mac in the finding (default: it
     python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-steward.py --install     # user LaunchAgent, no sudo
     python3 .../rd-steward.py --once        # run now (RD_STEWARD_AGENT=0: report only)
     python3 .../rd-steward.py --uninstall
+
+## Turnaround numbers (rd-measure, any Mac with the pool's ssh aliases)
+`rd-measure.py` prints the pool's turnaround for one time window, the same way every time, so a
+placement change can be compared before / after (2026-11-21: the cold-setup veto removed). Read-only: it
+fetches every client's `route.log` (this Mac + `--client` aliases, default `nickmini-docker`) and every
+fleet worker's `runs.log` over ssh. Per job class: queue wait (`slot_s` + `lock_s`) p50/p90,
+submit-to-finish (the client's wall seconds) p50/p95, jobs per worker, cold jobs per worker and the
+cold-setup estimate error (`prepare_s` / `spred_s`); then a replay of hp's queue spikes on the workers
+that had a free slot then, with no cold veto (optimistic and strict warm bounds).
+
+```sh
+python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-measure.py --since "2026-11-21 22:30" --until "2026-11-22 08:30"
+python3 .../rd-measure.py --hours 10 --keep /tmp/logs     # the last 10 h, logs saved; --logs DIR re-reads them, --json
+```

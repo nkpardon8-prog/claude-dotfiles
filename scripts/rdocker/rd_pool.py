@@ -28,9 +28,14 @@ Each job logs its prediction (runs.log pred_s, the evidence run seconds), so it 
 
 Eligibility (eligibility(); fleet.json per worker, a missing field = no limit) is decided BEFORE any
 of that and is hard: a worker whose `classes` leave out the job's class, that has no heavy slot for a
-heavy job, or that lacks the packages for this lockfile while it is warm-only (`cold_ok: false`, or -
-without cold_ok - a measured cold-setup p75 over rr_cold_budget_s), is no candidate at all - not ranked,
-not a wait host, no shard, no hedge, no warm. Unprobed plans (one worker, --host) check the class only.
+heavy job, or that lacks the packages for this lockfile while its fleet entry says `cold_ok: false` (a
+manual override), is no candidate at all - not ranked, not a wait host, no shard, no hedge, no warm.
+Unprobed plans (one worker, --host) check the class only. A cold worker is otherwise a candidate like
+any other (2026-11-21; before, a measured cold-setup p75 over rr_cold_budget_s made it warm-only and
+left the laptop idle while hp queued): its eta carries the cold setup (setup_s), so it wins only when
+its install + run still finishes first. A cold estimate that proved wrong cannot repeat itself:
+setup_s lifts a cold worker's estimate by its measured overrun (actual prepare / the logged spred_s)
+and by this repo's own cold prepares there.
 Nothing eligible at all: plan.hosts is empty and plan.ineligible says why (rd_run: exit 77, config).
 `max_cost_s` is soft (2026-11-13; before, a hard exclusion that left the minis idle while jobs queued):
 a worker whose predicted command is over it is "slow" (slow_why) and goes first only when its
@@ -629,6 +634,9 @@ $o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 #   pk    {sha1(repo TAB sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
 #   all   [n, median] of every completed command (a slot holder's typical run, queue estimate)
 #   isa   [n, last epoch] of this repo's (q.slug) rc=132 runs (SIGILL) in the last q.isa_days days
+#   scold this repo's (q.slug) cold prepare seconds here (an install ran), newest last (<= 10)
+#   sover cold prepares that logged the setup estimate (spred_s, 2026-11-21): actual / estimate, newest
+#         last (<= 5), any repo - setup_s's overrun factor
 #   jobs[].med  the median of a running job's own command (in its repo) here (queue estimate)
 if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     require Time::Local; require Digest::SHA;
@@ -648,7 +656,7 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my @l = do { local $/ = "\n"; <$lf> }; shift @l if $sz > $max;
         unshift @text, @l;
     }
-    my (@rows, %by, @kc, @ka, @isa, @miss);
+    my (@rows, %by, @kc, @ka, @isa, @miss, @scold, @sover);
     my $slug = $q->{slug} // "";
     my $js = $q->{sig} // "";
     my $mx = ($q->{miss_x} // "") =~ /^\d+(\.\d+)?$/ ? $q->{miss_x} : 5;
@@ -671,6 +679,10 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my $cold = ($kv{setup} // "") eq "cold" ? 1 : ($kv{setup} // "") =~ /^(warm|clone)$/ ? 0
                  : defined $p ? ($p > 15 ? 1 : 0) : undef;     # rows before setup= : > 15 s means an install ran
         push @rows, [$code, $p, $cold];
+        if (($cold // 0) && defined $p) {
+            push @scold, $p if $slug ne "" && $repo eq $slug;
+            push @sover, $p / $kv{spred_s} if ($kv{spred_s} // "") =~ /^\d+(\.\d+)?$/ && $kv{spred_s} > 0;
+        }
         if ($code eq "isa" && $t >= $isa_lo && $slug ne "" && index($l, " repo=$slug ") >= 0) {
             $isa[0]++; $isa[1] = $t if !defined $isa[1] || $t > $isa[1] }
         if ($out =~ /^rc=[01]$/ && $cs =~ /^\d+(\.\d+)?$/) {
@@ -696,6 +708,8 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     $ev{kany} = [scalar @ka, $med->(@ka)];
     $ev{miss} = [scalar @miss, (sort { $b <=> $a } @miss)[0]] if @miss;
     $ev{isa} = \@isa if @isa;
+    $ev{scold} = [@scold > 10 ? @scold[-10 .. -1] : @scold] if @scold;
+    $ev{sover} = [@sover > 5 ? @sover[-5 .. -1] : @sover] if @sover;
     my @all = map { @$_ } values %by;
     $ev{all} = [scalar @all, $med->(@all)];
     for my $j (@jobs) { my $v = $by{($j->{repo} // "") . "\t" . ($j->{cmd} // "")}; $j->{med} = $med->(@$v) if $v }
@@ -879,7 +893,10 @@ def _median(xs):
 #            then, with < OWN_MIN own runs: a wild miss of this command (ev.miss, a run over MISS_X x
 #            its pred_s, any outcome) on any worker lifts it to that run's time ("+miss")
 #   setup_s  p75 of this worker's prepares, warm vs cold (>= OWN_MIN of that kind), else
-#            WARM_SETUP_S / COLD_DEPS_S; + COLD_GIT_S without the bare repo
+#            WARM_SETUP_S / COLD_DEPS_S (setup_base: logged as runs.log spred_s); cold: x the overrun
+#            factor (setup_over: the median actual / spred_s of its last cold prepares, 1..SETUP_OVER_MAX)
+#            and never below this repo's own cold-prepare p75 there (ev.scold); + COLD_GIT_S without
+#            the bare repo
 #   risk_s   p_infra x (setup + run / 2 lost + a rerun on the best other worker); p_infra = infra
 #            outcomes / runs that got a fair start, over the last EV_ROWS, with a weak prior
 #            (PRIOR_P over PRIOR_N runs) so 0 of 3 is not "never fails"
@@ -903,7 +920,7 @@ OWN_MIN = 3                  # completed runs before a worker's own median count
 RATIO_MIN = 3                # paired commands before a worker's per-kind ratio counts
 PRIOR_P, PRIOR_N = 0.03, 30  # p_infra prior: 3 % over 30 runs
 WARM_SETUP_S = 2.0           # a warm prepare (checkout + overlay) without evidence
-COLD_BUDGET_S = 60.0         # rr_cold_budget_s: measured cold-setup p75 above this -> warm jobs only
+SETUP_OVER_MAX = 4.0         # the cold-setup overrun factor is capped at this (setup_over)
 SHARD_SLOW_X = 2.0           # a worker whose shard would take > this x the fastest's gets none
 FAIR = ("pass", "fail", "infra")     # outcomes of runs that got a fair start (p_infra's denominator)
 # A worker whose CPU lacks an instruction a repo's code uses (a native package built for a newer x86
@@ -1021,14 +1038,36 @@ def cold_p75(host):
     return _pct(xs, 0.75) if len(xs) >= OWN_MIN else None
 
 
-def setup_s(host):
-    """Predicted prepare seconds for this job on this worker (probe: warm_git / warm_deps)."""
+def setup_base(host):
+    """The prepare estimate before any overrun correction: the p75 of this worker's warm or cold
+    prepares (>= OWN_MIN of that kind), else WARM_SETUP_S / COLD_DEPS_S. rd_run sends the chosen
+    worker's as the runner header spred_s (runs.log), the reference setup_over measures against - so
+    the factor is measured against the uncorrected estimate and cannot feed on itself."""
     p = host.probe or {}
     xs = setup_samples(host, not p.get("warm_deps"))
     if len(xs) >= OWN_MIN:
-        s = _pct(xs, 0.75)
-    else:
-        s = WARM_SETUP_S if p.get("warm_deps") else COLD_DEPS_S
+        return _pct(xs, 0.75)
+    return WARM_SETUP_S if p.get("warm_deps") else COLD_DEPS_S
+
+
+def setup_over(host):
+    """How far this worker's cold setups overran their estimate lately: the median of the last
+    (<= 5) actual / spred_s ratios of its cold prepares (probe ev.sover), clamped to 1..SETUP_OVER_MAX;
+    1.0 with none. Faster than estimated never lowers the estimate (the p75 already moves)."""
+    xs = [x for x in (_num(v) for v in ev(host).get("sover") or []) if x is not None and x > 0]
+    return min(SETUP_OVER_MAX, max(1.0, _median(xs))) if xs else 1.0
+
+
+def setup_s(host):
+    """Predicted prepare seconds for this job on this worker (probe: warm_git / warm_deps). Cold:
+    the base x its measured overrun factor, and never below this repo's own cold prepares there (a
+    big lockfile installs slower than the worker's typical cold setup) - so a cold estimate that
+    proved wrong once is not repeated: the next one is priced on what really happened."""
+    p = host.probe or {}
+    s = setup_base(host)
+    if not p.get("warm_deps"):
+        own = [x for x in (_num(v) for v in ev(host).get("scold") or []) if x is not None]
+        s = max(s * setup_over(host), _pct(own, 0.75) if own else 0.0)
     return s + (0.0 if p.get("warm_git") else COLD_GIT_S)
 
 
@@ -1137,15 +1176,14 @@ def default_cost(cfg, cls):
     return float(_num(table.get(cls), JOB_COST_S.get(cls, 60)))
 
 
-def eligibility(host, job, cost_s=None, probed=False, cfg=None):
+def eligibility(host, job, cost_s=None, probed=False):
     """-> None when the worker may take this job, else why not. Hard rules from its fleet entry (a
     missing field = no limit):
       classes     the job classes it takes (light / normal / heavy / db / build)
       heavy_slots 0 (probe heavy_cap 0, also after the share switch halves it): no heavy job ever gets a slot
-      cold_ok     the manual override for a job whose packages it lacks (probe warm_deps = 0):
-                  false = never; true = always; missing = MEASURED - its cold-setup p75 (runs.log)
-                  must be <= rr_cold_budget_s (COLD_BUDGET_S): a slow-disk worker is warm-only
-                  until its measured cold setup is fast enough (an SSD), with no fleet change
+      cold_ok     false = never a job whose packages it lacks (probe warm_deps = 0): a manual
+                  warm-only override. Missing / true = a cold worker competes on its eta, which
+                  carries the cold setup (setup_s; 2026-11-21: no measured cold budget any more)
     max_cost_s is not a rule here but a ranking penalty (slow_why). cold needs a probe (probed=True); an
     unprobed plan (one worker, --host) checks the class and fleet.json heavy_slots only.
     SIGILL skips are judged across the pool, not per worker: plan() adds isa_skips.
@@ -1160,14 +1198,8 @@ def eligibility(host, job, cost_s=None, probed=False, cfg=None):
         return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so
     if not probed:
         return None
-    if host.probe is not None and not host.probe.get("warm_deps"):
-        ok = _f(host.entry, "cold_ok")
-        if ok is False:
-            return "its packages for this lockfile are not prepared yet (cold_ok: false)"
-        budget = _num((cfg or {}).get("rr_cold_budget_s"), COLD_BUDGET_S)
-        c = cold_p75(host)
-        if ok is not True and c is not None and c > budget:
-            return COLD_WHY % (fmt_s(c), fmt_s(budget))
+    if host.probe is not None and not host.probe.get("warm_deps") and _f(host.entry, "cold_ok") is False:
+        return "its packages for this lockfile are not prepared yet (cold_ok: false)"
     return None
 
 
@@ -1180,17 +1212,14 @@ def slow_why(host, cost_s):
     return None
 
 
-COLD_WHY = "its packages for this lockfile are not prepared yet and its measured cold setup is ~%s (p75; rr_cold_budget_s %s): warm jobs only"
-
-
 def no_eligible_msg(job, ineligible):
     """Why no worker may take the job (plan.hosts empty): rd_run prints it and exits 77 (config)."""
     what = "class " + job["cls"]
     costs = [h.cost_s for h, _ in ineligible if getattr(h, "cost_s", None) is not None]
     if costs:
         what += ", predicted ~%s" % fmt_s(min(costs))
-    return ("no eligible worker for this job (%s): %s - each worker's classes / heavy_slots / cold_ok are "
-            "set in fleet.json; a SIGILL skip is measured (rr_isa_days)"
+    return ("no eligible worker for this job (%s): %s - each worker's classes / heavy_slots / cold_ok (false = "
+            "warm jobs only) are set in fleet.json; a SIGILL skip is measured (rr_isa_days)"
             % (what, "; ".join("%s %s" % (h.name, why) for h, why in ineligible)))
 
 
@@ -1305,6 +1334,7 @@ def score(host, job, cfg=None, model=None):
     host.run_s = host.pred_s / host.eff
     host.run_hi = model.predict_hi(host, host.pred_s, host.src) / host.eff
     host.setup_s = setup_s(host)
+    host.setup_base = setup_base(host)   # rd_run sends it as spred_s (runs.log): setup_over's reference
     per_cpu = load / ncpu
     over = _num(cfg.get("rr_overload_ratio"), OVERLOAD_RATIO)
     if free > 0 and over > 0 and per_cpu >= over:
@@ -1494,18 +1524,10 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
         if h.slow and h.eta is not None and h.run_hi is not None and h.rank_s < h.run_hi:
             h.eta += h.run_hi - h.rank_s            # a slow worker ranks on its pessimistic run
             h.rank_s = h.run_hi
-        why = eligibility(h, job, h.cost_s, probed=True, cfg=cfg)
+        why = eligibility(h, job, h.cost_s, probed=True)
         if why:
             bad.append((h, why))
     bad += isa_skips(hosts, cfg, bad)
-    # measured cold eligibility never leaves a job with nowhere to go: when no worker that can take
-    # work (free, or busy with an eta) is left, the one whose cold setup measured fastest takes it after
-    # all - a worker that merely answered (share off, low memory) does not count
-    cold_only = [h for h, w in bad if w.startswith(COLD_WHY.split("%")[0])]
-    viable = [h for h in hosts if h not in dict(bad) and h.eta is not None and h.state in ("free", "busy")]
-    if cold_only and not viable:
-        back = min(cold_only, key=lambda h: cold_p75(h) or 0.0)
-        bad = [(h, w) for h, w in bad if h is not back]
     add_risk([h for h in hosts if h not in dict(bad)])
     hosts = [h for h in hosts if h not in dict(bad)]   # never a candidate: not ranked, not a wait host
     order = rank(hosts, cfg, pool)

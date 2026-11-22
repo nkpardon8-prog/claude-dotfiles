@@ -337,7 +337,7 @@ export function parseLogTime(s) {
 
 /**
  * rr runs.log lines -> runs (format: rr_runner.pl run_log). The v2 tail after the TAB (run= owner= cls=
- * wait_s= exit_reason= setup= pred_s= client= pv= node= lock_s= slot_s=) is cut off argv; on lines that
+ * wait_s= exit_reason= setup= pred_s= client= pv= node= lock_s= slot_s= spred_s=) is cut off argv; on lines that
  * have the tail its pred_s, wait_s, slot_s and setup come back as `predS`, `waitS`, `slotS`, `setup` (pool
  * health only: Collector.newRuns keeps just the RUN_KEYS fields in a frame).
  */

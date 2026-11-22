@@ -318,9 +318,10 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
   client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused|abandoned-setup|moved|warm
   setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version> node=<node major the job ran, - if unknown>
-  lock_s=<s> slot_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
+  lock_s=<s> slot_s=<s> spred_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
   `lock_s` = the client's wait for a worktree lane on its Mac (`-` from an older client), `slot_s` = the
-  worker's own slot wait.
+  worker's own slot wait. `spred_s` (2026-11-21) = the client's setup estimate for that worker before
+  its overrun correction (`-` from an older client); the probe compares a cold `prepare_s` with it.
   **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
   `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
   elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`
@@ -684,12 +685,11 @@ fleet.json) is used once it answers.
   job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest
   predicted command it should take, in seconds on that worker: the evidence prediction below, no
   momentary load factor; **soft since 2026-11-13**, see Placement - it no longer excludes a worker) and
-  `cold_ok` (a manual override for a job whose packages are not prepared there yet:
-  `false` = never, `true` = always). Without `cold_ok`, cold eligibility is **measured**: a worker whose
-  cold-setup p75 (its own `runs.log` prepares that ran an install) is over `rr_cold_budget_s` (60 s)
-  takes warm jobs only, and qualifies again by itself once it measures faster (an SSD) - no fleet
-  change. If that rule alone would leave a job nowhere to go, the worker with the fastest measured cold
-  setup takes it. No field = no limit. A heavy job never goes to a worker with `heavy_slots: 0` (it could
+  `cold_ok: false` (a manual override: never a job whose packages are not prepared there yet - a
+  warm-only worker). **No cold budget since 2026-11-21:** before, a worker whose measured cold-setup
+  p75 was over `rr_cold_budget_s` (60 s) took warm jobs only, which left the laptop (cold p75 ~150 s)
+  idle while hp queued for many minutes. Now a cold worker is a candidate like any other and competes
+  on its finish estimate, which carries its cold setup (see **setup** under Placement). No field = no limit. A heavy job never goes to a worker with `heavy_slots: 0` (it could
   never get a slot there) - read from fleet.json too, so it holds for a worker that did not answer the
   probe and for an unprobed plan (one worker, `--host`). A worker that fails one is **not a candidate at all** for that
   job: not ranked, not the wait host, no shard, no hedge. `rrun --where` lists it as `never <why>`.
@@ -729,7 +729,11 @@ fleet.json) is used once it answers.
     (`kind-any`, `default`), so a guess never beats a measured worker by a hair. `rrun --where` shows
     both as `run` `48s` or `40s-80s`.
   - **setup**: the p75 of its measured warm or cold prepares (as the probe sees the packages), else 2 s
-    warm / 90 s cold; + 30 s without the repo's git mirror.
+    warm / 90 s cold; + 30 s without the repo's git mirror. A cold setup is corrected by what happened
+    (2026-11-21), so a wrong estimate cannot keep winning jobs: it is multiplied by the worker's
+    overrun factor (the median actual / `spred_s` of its last 5 cold prepares, 1x to 4x; faster never
+    discounts it), and is never below this repo's own cold-prepare p75 on that worker. `spred_s` logs
+    the estimate before that correction, so the factor never feeds on itself.
   - **queue**: 0 with a free slot of the job's kind (a heavy job: a heavy slot), else when one frees up
     after the runs already waiting there (the probe counts the runner's `wait/` queue) got theirs:
     each holder ends at its own command's median there minus how long it has run (else the worker's
@@ -741,8 +745,9 @@ fleet.json) is used once it answers.
     own runs) and goes first only when that finish beats the best other worker's by `rr_slow_gain_ratio`
     (25 %) of it + `rr_slow_gain_s` (15 s); otherwise it is tried after the others. Owner: "if they're
     just waiting it wouldn't hurt to use the Mac Mini ... I don't want to be constraining this in a way
-    where we'll accidentally take even longer because we're predicting the wrong times." The cold-setup
-    rule above still makes a mini warm-only.
+    where we'll accidentally take even longer because we're predicting the wrong times." The margin
+    applies only over `max_cost_s`: a worker under it (a cold laptop with a short run) pays only its
+    cold setup in the eta, no margin.
   Each job logs its prediction (`pred_s=` in `runs.log` and `route.log`) next to the real `cmd_s`.
   Order tried: every worker that can take the job now (free or busy with an eta) by eta, slow ones that
   did not win after them, then the ones with no eta (low memory, no slot of the kind), down, off. The
@@ -865,9 +870,10 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   share is off (fleet.json `share` or the owner's switch), never Docker (the warm is not a db job, so
   the runner starts no engine on the home machine or anywhere), no allowlisted env files, no
   `route.log` line. A worktree with an rrun in flight is skipped this pass.
-- **Every worker is warmed (2026-11-11)**, slow-disk and warm-only ones included: a warm-only worker
-  (`cold_ok: false`, or a measured cold setup over `rr_cold_budget_s`, like the HDD minis) takes only
-  jobs whose packages it already has, so warming is how it gets work at all. A detached prepare
+- **Every worker is warmed (2026-11-11)**, slow-disk and warm-only ones included: a slow-disk worker
+  (the HDD minis, cold setup ~6 min) pays that setup in its eta, so it wins jobs mostly once warm; a
+  warm-only worker (`cold_ok: false`) takes only jobs whose packages it already has, so warming is how
+  it gets work at all. A detached prepare
   survives a long `npm ci`.
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
   comes back online (Nick's MacBook waking up) starts a pass at once. And event-driven: a job that
@@ -1152,7 +1158,8 @@ every threshold above is a key there).
   fail-closed stubs via `tests/rdmods.py`; files `test_args`, `test_daemon`, `test_engine`, `test_entry`,
   `test_janitor`, `test_laptop_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`,
   `test_zz_hermetic`; rrun: `test_run` (laptop side end to end through a fake ssh), `test_pool` /
-  `test_sched` (placement by finish, slow-worker margin, wild misses, shards, hedges, membership), `test_runner`
+  `test_sched` (placement by finish, cold workers on net time, setup-overrun feedback, slow-worker margin,
+  wild misses, shards, hedges, membership), `test_runner`
   (`rr_runner.pl`: READY/GO handshake, heartbeat kill, INT, env-file deletion, keep-on-failure,
   symlink refusals, tmutil exclusion), `test_hook` (hook rewrite matrix incl. adversarial inputs)):
   `cd ~/.claude-dotfiles/scripts/rdocker && /usr/bin/python3 -m unittest discover -s tests`

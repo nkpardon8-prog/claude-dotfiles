@@ -18,10 +18,11 @@ is the real rrun path:
             it exits 130 having started nothing. The packages land in the worktree's mirror and in
             the worker's shared store (~/rr/deps).
 
-Slow workers (2026-11-11): warmed too - they need it most. A warm-only worker (cold_ok: false, or a
-measured cold-setup p75 over rr_cold_budget_s: the 5400 rpm minis) takes only jobs whose packages
-it already has, so background warming is what lets it take work at all; a detached prepare now
-survives a long npm ci. The runner runs a warm (header warm) at nice 19 and the idle I/O class.
+Slow workers (2026-11-11): warmed too - they need it most. A slow-disk worker (the 5400 rpm minis)
+competes with its cold setup in its eta (rd_pool.setup_s, ~6 min there), so it wins a job mostly once
+its packages are warm; a warm-only worker (fleet cold_ok: false) takes only jobs whose packages it
+already has, so background warming is what lets it take work at all. A detached prepare survives a
+long npm ci. The runner runs a warm (header warm) at nice 19 and the idle I/O class.
 Triggers: this loop (com.rdocker.warm), and rrun itself (rd_run.trigger_warm: `rdocker warm --once
 --repo <worktree>` in the background when a worker is cold for the job it just placed).
 Politeness: workers are warmed one at a time (a pass is sequential, and a ~/rr/state/warm.lock dir
@@ -166,9 +167,9 @@ def fleet_off(h):
 
 
 def warmable(h):
-    """Workers the warmer visits: every one not shared off in fleet.json - slow and warm-only ones
-    included (a warm is how a warm-only worker gets jobs at all; its job class does not matter, a
-    warm runs no command)."""
+    """Workers the warmer visits: every one not shared off in fleet.json - slow and warm-only (cold_ok:
+    false) ones included (a warm is how a slow-disk worker wins jobs and how a warm-only one gets any
+    at all; its job class does not matter, a warm runs no command)."""
     return not fleet_off(h)
 
 

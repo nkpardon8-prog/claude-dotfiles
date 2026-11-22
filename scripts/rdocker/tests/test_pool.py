@@ -1123,8 +1123,8 @@ class Eligibility(PlanUnit):
                 self.assertTrue([x for x in rd_fleet.problems(doc) if want in x], rd_fleet.problems(doc))
 
     def test_warm_visits_warm_only_and_slow_workers_too(self):
-        """2026-11-11: a warm-only worker (cold_ok false / measured slow cold setup) gets jobs only
-        once its packages are there, so the warmer visits it; only a fleet share: off is skipped."""
+        """2026-11-11: a warm-only worker (cold_ok false) gets jobs only once its packages are there and
+        a slow-disk one wins mostly then, so the warmer visits both; only a fleet share: off is skipped."""
         import rd_warm
         hs = [rd_pool.host_for(self.cfg, dict(worker("a", 1.0), cold_ok=False)),
               rd_pool.host_for(self.cfg, dict(worker("b", 1.0), shards=False)),

@@ -149,29 +149,93 @@ class Eta(unittest.TestCase):
         self.assertEqual(self.names(p), ["b", "a"])
         self.assertGreater(p.hosts[1].risk_s, 30)
 
-    def test_measured_cold_setup_makes_a_worker_warm_only(self):
-        """b2 (owner: "make the system dynamic"): no fleet cold_ok -> eligibility from the measured
-        cold-setup p75 vs rr_cold_budget_s; cold_ok stays a manual override; never nowhere to go."""
-        slow = [["pass", 400.0, 1]] * 4
-        fast = [["pass", 20.0, 1]] * 4
-        ans = {"mini": dict(probe(warm_deps=0), ev=ev(rows=slow)), "hp": dict(probe(warm_deps=0), ev=ev(rows=fast))}
-        p, _ = self.plan([worker("mini", 2.0), worker("hp", 1.0)], ans, job=TSC)
-        self.assertEqual(self.names(p), ["hp"])
-        self.assertIn("measured cold setup is ~400s (p75; rr_cold_budget_s 60s): warm jobs only", p.ineligible[0][1])
-        p, _ = self.plan([worker("mini", 2.0), worker("hp", 1.0)],
-                         dict(ans, mini=dict(ans["mini"], warm_deps=1)), job=TSC)   # warm: takes it
+    def queued(self, q, **kw):
+        """A worker probe with its one slot held by a job that ends in ~q seconds (queue_wait)."""
+        now = time.time()
+        return dict(probe(slots_cap=1, slots_busy=1, heavy_busy=1, ncpu=8, **kw), ages=[5],
+                    jobs=[{"cmd": "npx tsc --noEmit", "start": now - 5, "med": q + 5}])
+
+    def test_a_cold_worker_competes_on_net_time(self):
+        """2026-11-21 (plan "use idle workers"): no measured cold budget any more. A cold laptop whose
+        cold setup p75 is 184 s beats hp when hp's queue is 13 min, and loses when hp is free; the
+        manual cold_ok: false still keeps it warm-only."""
+        cold = [["pass", 184.0, 1]] * 4
+        lap = dict(probe(warm_deps=0, ncpu=8), ev=ev(sig=[100] * 3, rows=cold))
+        hp = ev(sig=[60] * 3)
+        p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)],
+                         {"laptop": lap, "hp": dict(self.queued(780), ev=hp)}, job=TSC)
+        self.assertEqual(self.names(p), ["laptop", "hp"])
         self.assertEqual(p.ineligible, [])
-        self.cfg["rr_cold_budget_s"] = 500                               # a looser budget: cold is fine
+        self.assertAlmostEqual(p.hosts[0].setup_s, 184.0)                  # the cold p75, priced in
+        self.assertAlmostEqual(p.hosts[1].queue_s, 780, delta=3)
+        p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)],
+                         {"laptop": lap, "hp": dict(probe(ncpu=8), ev=hp)}, job=TSC)
+        self.assertEqual(self.names(p), ["hp", "laptop"])                  # hp free: its 60 s wins
+        p, _ = self.plan([dict(worker("laptop", 0.45), cold_ok=False), worker("hp", 1.5)],
+                         {"laptop": lap, "hp": dict(self.queued(780), ev=hp)}, job=TSC)
+        self.assertEqual(self.names(p), ["hp"])                            # manual override: warm only
+        self.assertIn("(cold_ok: false)", p.ineligible[0][1])
+        self.assertFalse(hasattr(rd_pool, "COLD_BUDGET_S") or hasattr(rd_pool, "COLD_WHY"))
+        self.assertNotIn("rr_cold_budget_s", rd_common.DEFAULTS)
+
+    def test_a_cold_only_pool_still_places(self):
+        """With no fallback left in plan(): every worker cold and slow to install - both are ranked by
+        their finish, never "nowhere to go"."""
+        ans = {"mini": dict(probe(warm_deps=0), ev=ev(sig=[50] * 3, rows=[["pass", 400.0, 1]] * 4)),
+               "hp": dict(probe(warm_deps=0), ev=ev(sig=[50] * 3, rows=[["pass", 300.0, 1]] * 4))}
         p, _ = self.plan([worker("mini", 2.0), worker("hp", 1.0)], ans, job=TSC)
+        self.assertEqual(self.names(p), ["hp", "mini"])
         self.assertEqual(p.ineligible, [])
-        self.cfg["rr_cold_budget_s"] = 60
-        p, _ = self.plan([dict(worker("mini", 2.0), cold_ok=True), worker("hp", 1.0)], ans, job=TSC)
-        self.assertEqual(p.ineligible, [])                                # manual override: yes
-        # every worker slow cold: the fastest-measured one still takes it (never "nowhere to go")
-        p, _ = self.plan([worker("mini", 2.0), worker("hp", 1.0)],
-                         dict(ans, hp=dict(ans["hp"], ev=ev(rows=[["pass", 300.0, 1]] * 4))), job=TSC)
-        self.assertEqual(self.names(p), ["hp"])
-        self.assertEqual([h.name for h, _ in p.ineligible], ["mini"])
+        self.assertEqual([h.setup_s for h in p.hosts], [300.0, 400.0])
+
+    def test_mini_margin_only_over_its_max_cost_s(self):
+        """The 25 % + 15 s margin applies only when the predicted run is over the worker's max_cost_s
+        (slow_why). Under it a cold mini pays only its cold setup: it wins on a plain eta race."""
+        DB = rd_pool.classify(["npm", "run", "test:db"])
+        mini = lambda: dict(worker("mini-a", 0.42), classes=["light", "normal", "db"], max_cost_s=120)  # noqa: E731
+        hp = lambda q: dict(self.queued(q), ev=ev(sig=[50] * 3))  # noqa: E731
+        # under the cap: run 60 s + cold setup 30 s = ~90 s vs hp's 60 s queue + 50 s run = ~112 s
+        m = dict(probe(warm_deps=0), ev=ev(sig=[60] * 3, rows=[["pass", 30.0, 1]] * 4))
+        p, _ = self.plan([mini(), worker("hp", 1.5)], {"mini-a": m, "hp": hp(60)}, job=DB)
+        self.assertEqual(self.names(p), ["mini-a", "hp"])
+        self.assertIsNone(p.hosts[0].slow)
+        self.assertGreater(p.hosts[0].eta, p.hosts[1].eta - (0.25 * p.hosts[1].eta + 15))   # the margin would lose
+        # over the cap (run 200 s > 120 s): it must win by the margin
+        m = dict(probe(), ev=ev(sig=[200] * 3))
+        p, _ = self.plan([mini(), worker("hp", 1.5)], {"mini-a": m, "hp": hp(180)}, job=DB)
+        self.assertEqual(self.names(p), ["hp", "mini-a"])                  # ~202 vs ~232: not by 25 % + 15 s
+        self.assertIn("over its max_cost_s", p.hosts[1].slow)
+        self.assertLess(p.hosts[1].eta, p.hosts[0].eta)                     # sooner, but not by enough
+        p, _ = self.plan([mini(), worker("hp", 1.5)], {"mini-a": m, "hp": hp(400)}, job=DB)
+        self.assertEqual(self.names(p), ["mini-a", "hp"])                  # ~202 vs ~452: wins by it
+
+    def test_cold_setup_overrun_feeds_the_next_estimate(self):
+        """A cold placement whose install overran its estimate (runs.log prepare_s vs spred_s, probe
+        ev.sover) lifts that worker's next cold estimate, capped; this repo's own cold prepares there
+        (ev.scold) are a floor. The logged reference (setup_base) stays uncorrected, so the factor
+        never feeds on itself; a warm estimate is untouched."""
+        def h(warm=0, **e):
+            x = rd_pool.Host("w", {}, {})
+            x.probe = dict(probe(warm_deps=warm), ev=ev(rows=[["pass", 60.0, 1]] * 4 + [["pass", 1.0, 0]] * 4))
+            x.probe["ev"].update(e)
+            return x
+        self.assertEqual((rd_pool.setup_s(h()), rd_pool.setup_base(h())), (60.0, 60.0))
+        self.assertEqual(rd_pool.setup_s(h(sover=[3.0, 2.5, 3.5])), 180.0)            # median 3x
+        self.assertEqual(rd_pool.setup_base(h(sover=[3.0, 2.5, 3.5])), 60.0)          # spred_s: uncorrected
+        self.assertEqual(rd_pool.setup_s(h(sover=[40.0])), 60.0 * rd_pool.SETUP_OVER_MAX)  # capped
+        self.assertEqual(rd_pool.setup_s(h(sover=[0.5, 0.4])), 60.0)                  # faster: no discount
+        self.assertEqual(rd_pool.setup_s(h(scold=[400.0])), 400.0)                    # this repo's own floor
+        self.assertEqual(rd_pool.setup_s(h(warm=1, sover=[3.0], scold=[400.0])), 1.0)  # warm: untouched
+        # in a plan: the laptop's 60 s cold estimate beat hp's 3 min queue; after a 5x overrun it does not
+        lap = lambda **e: dict(probe(warm_deps=0, ncpu=8),  # noqa: E731
+                               ev=dict(ev(sig=[100] * 3, rows=[["pass", 60.0, 1]] * 4), **e))
+        hp = dict(self.queued(180), ev=ev(sig=[60] * 3))
+        p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)], {"laptop": lap(), "hp": hp}, job=TSC)
+        self.assertEqual(self.names(p), ["laptop", "hp"])
+        self.assertEqual(p.hosts[0].setup_base, 60.0)
+        p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)], {"laptop": lap(sover=[5.0]), "hp": hp}, job=TSC)
+        self.assertEqual(self.names(p), ["hp", "laptop"])
+        self.assertEqual((p.hosts[1].setup_s, p.hosts[1].setup_base), (240.0, 60.0))
 
     def test_history_since_and_window_go_to_the_probe(self):
         reqs = {}
@@ -555,6 +619,25 @@ class ProbeExtras(unittest.TestCase):
         os.unlink(os.path.join(self.root, "log", "runs.log"))
         os.symlink(os.path.join(self.d, "elsewhere"), os.path.join(self.root, "log", "runs.log"))
         self.assertEqual(self.run_probe(self.evreq())["ev"]["rows"], [])
+
+    def test_cold_setup_evidence(self):
+        """ev.scold: this repo's cold prepares (setup=cold, or > 15 s on old rows); ev.sover: actual /
+        spred_s of cold prepares that logged it (any repo, the last 5), never of warm ones."""
+        def line(repo, prep, setup, spred=None):
+            return ("2026-11-11T11:00:00+0000 repo=%s wt=b sha=c outcome=rc=0 prepare_s=%s cmd_s=10.0 argv=npx tsc --noEmit"
+                    "\trun=x owner=- cls=heavy wait_s=0 exit_reason=pass setup=%s pred_s=10 client=- pv=1 node=20 "
+                    "lock_s=0.0 slot_s=0.0%s\n" % (repo, prep, setup, "" if spred is None else " spred_s=%s" % spred))
+        log = "".join([line("a", "300.0", "cold", "60.0"), line("a", "2.0", "warm", "1.0"),
+                       line("other", "120.0", "cold", "60.0"), line("a", "90.0", "cold"),
+                       line("a", "50.0", "cold", "-")])
+        test_run.wfile(os.path.join(self.root, "log", "runs.log"), log)
+        e = self.run_probe(self.evreq())["ev"]
+        self.assertEqual(e["scold"], [300, 90, 50])
+        self.assertEqual(e["sover"], [5, 2])
+        test_run.wfile(os.path.join(self.root, "log", "runs.log"), "".join(line("a", "1.0", "warm", "1") for _ in range(3)))
+        e = self.run_probe(self.evreq())["ev"]
+        self.assertNotIn("scold", e)
+        self.assertNotIn("sover", e)
 
     def test_pool_version(self):
         self.assertEqual(self.run_probe({"slots": 1})["pool_version"], 0)

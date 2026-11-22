@@ -31,7 +31,8 @@
 #   detach_hb_s (180): how long a started command lives on without any client. waited_s: seconds the
 #   client spent before this attempt (worktree lock, other workers); job_cls: the job class (runs.log).
 #   pred_s / client / pool_version (optional, runs.log; pool_version also raises $ROOT/pool_version):
-#   the client's predicted command seconds, its code sha, its pool version. warm: a background
+#   the client's predicted command seconds, its code sha, its pool version; spred_s (optional, runs.log):
+#   its setup estimate before the overrun correction (rd_pool.setup_base). warm: a background
 #   prepare (rd_warm) that never sends GO: nice 19 + idle I/O class, runs.log outcome `warm`.
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start;
@@ -381,6 +382,7 @@ sub read_header {
     delete $h{client} if defined $h{client} && $h{client} !~ /^[0-9a-f]{7,40}$/;
     delete $h{pool_version} if defined $h{pool_version} && $h{pool_version} !~ /^\d{1,6}$/;
     delete $h{lock_s} if defined $h{lock_s} && $h{lock_s} !~ /^\d{1,7}(\.\d+)?$/;    # runs.log lock_s (C0)
+    delete $h{spred_s} if defined $h{spred_s} && $h{spred_s} !~ /^\d{1,7}(\.\d+)?$/;  # runs.log spred_s
     check_policy($h{repo_policy}) if defined $h{repo_policy};
     fail("bad pg_lane", 65) if $h{pg_lane} && !defined $h{repo_policy};
     $h{tar_len} //= 0;
@@ -2199,6 +2201,8 @@ sub finish {
 # Then (2026-11-13, Phase C0) "lock_s=<s|-> slot_s=<s>": the two waits inside wait_s, apart - lock_s = the
 # client's wait for a worktree lane on its Mac (header lock_s; `-` from an older client), slot_s = this
 # runner's own wait for a slot (the same slot wait wait_s adds; a mirror-lock wait is in prepare_s).
+# Then (2026-11-21) "spred_s=<s|->": the client's setup estimate before its overrun correction (header
+# spred_s, rd_pool.setup_base) - rd_pool's probe compares a cold prepare_s with it (ev.sover).
 # Truthful labels (2026-11-11; every reader - rd_pool's PROBE, rd-doctor, rd-steward, the reporter -
 # accepts them): before GO, a client that left is `abandoned-setup` (it gave up or was killed during
 # the prepare or the slot wait), or `moved` when it said MOVE first (a deliberate re-plan elsewhere);
@@ -2240,10 +2244,10 @@ sub log_fields {
     (my $owner = $owner_id // '-') =~ tr/ \t/__/;
     my $setup = $setup_kind // (defined $t_ready ? 'warm' : '-');
     my $lock_s = defined $h{lock_s} ? sprintf('%.1f', $h{lock_s}) : '-';
-    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s lock_s=%s slot_s=%.1f",
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s lock_s=%s slot_s=%.1f spred_s=%s",
         $run_id // '-', $owner, $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait,
         exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-', $node_major // '-',
-        $lock_s, $slot_wait;
+        $lock_s, $slot_wait, $h{spred_s} // '-';
 }
 
 # Version guarantee (layer 2): $ROOT/pool_version holds the highest pool_version any client that ran

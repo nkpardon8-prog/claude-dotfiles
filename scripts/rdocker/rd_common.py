@@ -173,7 +173,6 @@ DEFAULTS = {
     "rr_warm_trigger": True,           # rrun starts a background `rdocker warm --once --repo` when a worker is cold for it
     "rr_warm_trigger_every_s": 600,    # ...at most once per repo + lockfiles in this long
     # evidence-based placement (rd_pool.Model; each worker's runs.log)
-    "rr_cold_budget_s": 60,            # a worker whose measured cold-setup p75 is above this takes warm jobs only
     "rr_history_days": 14,             # evidence window (fleet.json history_since cuts it further per worker)
     "rr_history_rows": 300,            # rates (infra, setup) over the last this many runs of it
     "rr_isa_days": 7,                  # a repo whose command died of SIGILL (exit 132) on a worker skips it this long
