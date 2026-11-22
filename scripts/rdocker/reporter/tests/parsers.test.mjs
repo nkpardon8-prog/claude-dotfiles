@@ -362,3 +362,55 @@ test('shouldReconnect: silence, stalled sends, undrained buffer, send errors', (
   assert.equal(r.shouldReconnect({ ...base, bufferedHistory: [900, 1900] }), null);
   assert.equal(r.shouldReconnect({ ...base, sendFailed: true }), 'send failed');
 });
+
+test('share level -> level + CPU % lent (mirror of rr_runner.pl share_spec)', () => {
+  assert.deepEqual(r.parseShareLevel(null), { level: 'max', cpu: 100 }); // no file = everything
+  assert.deepEqual(r.parseShareLevel('off\n'), { level: 'off', cpu: 0 });
+  assert.deepEqual(r.parseShareLevel('low'), { level: 'low', cpu: 25 });
+  assert.deepEqual(r.parseShareLevel(' some '), { level: 'medium', cpu: 50 });
+  assert.deepEqual(r.parseShareLevel('max'), { level: 'high', cpu: 100 });
+  assert.deepEqual(r.parseShareLevel('cpu=75 ram=4'), { level: 'custom', cpu: 75 });
+  assert.deepEqual(r.parseShareLevel('ram=4'), { level: 'custom', cpu: 100 });
+  for (const bad of ['', 'cpu=5', 'cpu=101', 'ram=0', 'cpu=50 cpu=60', 'lots', 'cpu=50 x=1']) assert.deepEqual(r.parseShareLevel(bad), { level: 'off', cpu: 0 }, bad);
+});
+
+test('rd-worker-mac status -> pool jobs here, null when stale or malformed', () => {
+  const now = 1_800_000_000_000;
+  assert.equal(r.parseWorkerStatus('jobs=2\nts=1800000000\n', now), 2);
+  assert.equal(r.parseWorkerStatus('jobs=0\nts=1799999890\n', now), 0); // 110 s old: fresh enough
+  assert.equal(r.parseWorkerStatus('jobs=3\nts=1799999000\n', now), null); // 1000 s old: the daemon stopped
+  assert.equal(r.parseWorkerStatus('jobs=x\nts=1800000000\n', now), null);
+  assert.equal(r.parseWorkerStatus(null, now), null);
+});
+
+test('ps user CPU -> % of the whole machine used by the pool user', () => {
+  const ps = '  rd   250.0\nomid  80.5\n  rd    50\nroot 3.0\n';
+  assert.equal(r.psUserCpu(ps, 'rd', 10), 30);
+  assert.equal(r.psUserCpu(ps, 'nobody', 10), 0);
+  assert.equal(r.psUserCpu('rd 2000\n', 'rd', 10), 100);
+  assert.equal(r.psUserCpu(null, 'rd', 10), null);
+});
+
+test('lend: only where the status file exists; share file missing = max, unreadable = off', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'lend-'));
+  const share = path.join(d, 'share');
+  const status = path.join(d, 'status');
+  const c = new r.Collector({ name: 't', role: 'agents', shareFile: share, statusFile: status, lendStateFile: path.join(d, 'state', 'last-job') }, 'darwin');
+  const now = Date.now();
+  assert.equal(await c.lend(now), null);
+  fs.writeFileSync(status, `jobs=2\nts=${Math.floor(now / 1000)}\n`);
+  let l = await c.lend(now);
+  assert.deepEqual({ level: l.level, cpu: l.cpu, jobs: l.jobs, at: l.at, lastJob: l.lastJob }, { level: 'max', cpu: 100, jobs: 2, at: now, lastJob: now });
+  // the last job time survives the job ending and a reporter restart
+  fs.writeFileSync(status, `jobs=0\nts=${Math.floor(now / 1000)}\n`);
+  const c2 = new r.Collector({ name: 't', role: 'agents', shareFile: share, statusFile: status, lendStateFile: path.join(d, 'state', 'last-job') }, 'darwin');
+  assert.equal((await c2.lend(now + 5000)).lastJob, now);
+  assert.ok(l.busy === null || (l.busy >= 0 && l.busy <= 100));
+  fs.writeFileSync(share, 'medium\n');
+  l = await c.lend(now);
+  assert.equal(l.level, 'medium');
+  fs.rmSync(share);
+  fs.mkdirSync(share); // not a regular file: off, as the runner reads it
+  assert.equal((await c.lend(now)).level, 'off');
+  fs.rmSync(d, { recursive: true });
+});

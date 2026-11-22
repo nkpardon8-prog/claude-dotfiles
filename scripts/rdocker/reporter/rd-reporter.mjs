@@ -31,6 +31,10 @@
 //   p50/p90 and worktree setup, 24 h job count, slot-wait total and prediction error.
 // Agent hosts: route (24 h rruns by placement: pool, cache, local, fallback-local) from the client's
 //   route.log (~/.local/state/rdocker/route.log, or "routeLog" in the config).
+// Mac workers lent by their owner (lend): the owner's share switch /Users/Shared/rdocker/share (level),
+//   root's rd-worker-mac status file /Users/Shared/rdocker/status ("jobs=N ts=EPOCH": pool jobs running
+//   here) and the pool user's (rd) CPU from ps. All three are readable by the owner, whose reporter
+//   cannot read rd's ~/rr (the Air: reporter `air` runs as the owner). Sent only where the status file exists.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
@@ -41,7 +45,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.2.0'; // 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.3.0'; // 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -262,6 +266,55 @@ export function parsePower(text, nowMs, maxAgeS = 30) {
   return Number.isFinite(w) && w >= 0 && w < 5000 && age >= -60 && age <= maxAgeS ? w : null;
 }
 
+// ---- lend: a Mac worker lent by its owner (dashboard/shared/protocol.ts Lend) --------------------
+
+/** The share-spec presets (rr_runner.pl share_presets: CPU % per level) and its old words. */
+const SHARE_CPU = { low: 25, medium: 50, high: 100 };
+const SHARE_ALIAS = { some: 'medium', max: 'high' };
+
+/**
+ * The owner's share file text -> {level, cpu: % of the cores lent}. MIRROR of rr_runner.pl share_spec:
+ * null (no file) = "max", every core; a preset word (old words some/max too); `cpu=<10-100> ram=<1-256>`
+ * (either or both) = "custom"; anything else, or "" (unreadable), = off. Off lends 0 %.
+ */
+export function parseShareLevel(text) {
+  if (text == null) return { level: 'max', cpu: 100 };
+  const off = { level: 'off', cpu: 0 };
+  let s = String(text).trim();
+  s = SHARE_ALIAS[s] ?? s;
+  if (s === 'off') return off;
+  if (SHARE_CPU[s]) return { level: s, cpu: SHARE_CPU[s] };
+  const v = {};
+  for (const w of s.split(/\s+/)) {
+    const m = /^(cpu|ram)=(\d{1,3})$/.exec(w);
+    if (!m || m[1] in v) return off;
+    const n = Number(m[2]);
+    if (m[1] === 'cpu' ? n < 10 || n > 100 : n < 1 || n > 256) return off;
+    v[m[1]] = n;
+  }
+  return Object.keys(v).length ? { level: 'custom', cpu: v.cpu ?? 100 } : off;
+}
+
+/** rd-worker-mac's status file ("jobs=N" / "ts=EPOCH", rewritten at least every 45 s) -> N, null when missing, malformed or older than maxAgeS. */
+export function parseWorkerStatus(text, nowMs, maxAgeS = 120) {
+  const j = /^jobs=(\d{1,4})\s*$/m.exec(text ?? '');
+  const t = /^ts=(\d{9,12})\s*$/m.exec(text ?? '');
+  if (!j || !t) return null;
+  const age = nowMs / 1000 - Number(t[1]);
+  return age >= -60 && age <= maxAgeS ? Number(j[1]) : null;
+}
+
+/** `ps -axo user=,pcpu=` -> % of the whole machine used by `user`'s processes (sum of per-process % / cores), null without output. */
+export function psUserCpu(text, user, ncpu) {
+  if (text == null || !(ncpu > 0)) return null;
+  let sum = 0;
+  for (const line of text.split('\n')) {
+    const m = /^\s*(\S+)\s+(\d+(?:\.\d+)?)\s*$/.exec(line);
+    if (m && m[1] === user) sum += Number(m[2]);
+  }
+  return Math.min(100, Math.round((10 * sum) / ncpu) / 10);
+}
+
 /**
  * `ioreg -rn AppleSmartBattery` (Apple laptops, no root) -> whole-machine power draw.
  * Preferred: PowerTelemetryData.SystemLoad (mW), the machine's own draw excluding battery charging.
@@ -389,15 +442,18 @@ export function parseRouteLog(text) {
 /** route.log entries -> RouteStats: the last 24 h's rruns by where they went (shared/protocol.ts). */
 export function routeStats(entries, now) {
   const day = { rrun: 0, pool: 0, cache: 0, local: 0, fallback: 0 };
+  let last = null; // the newest rrun of any age in the tail (1.3.0): use older than the 24 h counts
   for (const e of entries) {
-    if (e.ts <= now - DAY_MS || e.ts > now + 60_000) continue;
+    if (e.ts > now + 60_000) continue;
+    if (last === null || e.ts > last) last = e.ts;
+    if (e.ts <= now - DAY_MS) continue;
     day.rrun++;
     if (e.target === 'cache' || e.target === 'pcache') day.cache++;
     else if (e.target === 'local') day.local++;
     else if (e.target === 'fallback-local') day.fallback++;
     else if (e.target !== 'none') day.pool++;
   }
-  return { at: now, day };
+  return { at: now, day, last };
 }
 
 // ---------------------------------------------------------------------------- slot queue
@@ -1023,6 +1079,15 @@ export class Collector {
     // agent hosts: where their rruns went (route.log), recomputed about once a minute
     this.routeLog = expandHome(cfg.routeLog ?? '~/.local/state/rdocker/route.log');
     this.routeC = cached(async () => this.route(), HEALTH_EVERY_MS - 1000);
+    // Mac workers: the owner's share switch + root's job count (readable without access to rd's ~/rr)
+    const shared = this.mac ? '/Users/Shared/rdocker' : null;
+    this.shareFile = expandHome(cfg.shareFile ?? process.env.RR_SHARE_FILE ?? (shared ? `${shared}/share` : ''));
+    this.statusFile = expandHome(cfg.statusFile ?? process.env.RD_STATUS_FILE ?? (shared ? `${shared}/status` : ''));
+    this.poolUser = String(cfg.poolUser ?? 'rd');
+    // when a pool job last ran here (the status count is live only): kept across restarts in a small file
+    this.lendStateFile = expandHome(cfg.lendStateFile ?? '~/.local/state/rdocker/lend-last-job');
+    this.lendJobAt = undefined; // loaded on first use
+    this.lendSavedAt = 0;
     this.healthSent = null;
     this.peers = [];
     this.selfIps = [];
@@ -1123,6 +1188,48 @@ export class Collector {
     if (!this.wsl) return null;
     const out = await sh('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json -Compress'], 8000);
     return out ? parsePsMem(out) : null;
+  }
+
+  /** Shared/rdocker/share text: null = no file (lends everything), '' = not a small regular file (off), as the runner reads it. */
+  shareText() {
+    try {
+      fs.lstatSync(this.shareFile);
+    } catch (e) {
+      if (e?.code === 'ENOENT') return null;
+    }
+    return readBounded(this.shareFile, 64) ?? ''; // no-follow, non-blocking, regular files only, at most 64 bytes
+  }
+
+  /** ms of the last frame that saw a pool job running here (null: none on record); saved at most once a minute. */
+  lendLastJob(jobs, now) {
+    if (this.lendJobAt === undefined) {
+      const t = Number((readBounded(this.lendStateFile, 32) ?? '').trim());
+      this.lendJobAt = Number.isFinite(t) && t > 0 && t <= now + 60_000 ? t : null;
+    }
+    if (jobs > 0) {
+      this.lendJobAt = now;
+      if (now - this.lendSavedAt >= 60_000) {
+        this.lendSavedAt = now;
+        try {
+          fs.mkdirSync(path.dirname(this.lendStateFile), { recursive: true, mode: 0o700 });
+          const tmp = `${this.lendStateFile}.${process.pid}.tmp`;
+          fs.writeFileSync(tmp, `${now}\n`, { mode: 0o600 });
+          fs.renameSync(tmp, this.lendStateFile);
+        } catch {
+          /* best effort: the time is still sent from memory */
+        }
+      }
+    }
+    return this.lendJobAt;
+  }
+
+  /** shared/protocol.ts Lend, or null where there is no rd-worker-mac status file (not a lent Mac). */
+  async lend(now) {
+    if (!this.statusFile || !fs.existsSync(this.statusFile)) return null;
+    const { level, cpu } = parseShareLevel(this.shareText());
+    const ps = await sh('ps', ['-axo', 'user=,pcpu='], 3000);
+    const jobs = parseWorkerStatus(readBounded(this.statusFile, 256), now);
+    return { at: now, level, cpu, jobs, busy: psUserCpu(ps, this.poolUser, os.cpus().length), lastJob: this.lendLastJob(jobs ?? 0, now) };
   }
 
   slots() {
@@ -1236,6 +1343,7 @@ export class Collector {
     const { jobs, deadSlots } = this.slots();
     const q = waitQueue(path.join(this.rrRoot, 'wait'), now);
     const route = this.agentHost ? await this.routeC() : null;
+    const lend = await this.lend(now);
     const hist = this.hist;
     this.hist = [];
     const frame = {
@@ -1260,6 +1368,7 @@ export class Collector {
       pressure,
       ...(leaks.length ? { leaks } : {}),
       ...(route ? { route } : {}), // agent hosts with a route.log; small, so every frame
+      ...(lend ? { lend } : {}), // lent Mac workers (status file present); small, so every frame
       ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)
     };
     if (withInfo) frame.info = this.info();

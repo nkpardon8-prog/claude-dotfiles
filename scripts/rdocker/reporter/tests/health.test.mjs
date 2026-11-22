@@ -259,7 +259,12 @@ test('route.log: one rrun per line by placement over 24 h; docker verbs and olde
     `${at(25 * 3600_000)} hp    rrun     old rc=0 1.0s | /repo`,
     'garbage',
   ].join('\n');
-  assert.deepEqual(r.routeStats(r.parseRouteLog(text), NOW), { at: NOW, day: { rrun: 7, pool: 2, cache: 2, local: 1, fallback: 1 } });
+  const entries = r.parseRouteLog(text);
+  const newest = Math.max(...entries.map((e) => e.ts));
+  assert.deepEqual(r.routeStats(entries, NOW), { at: NOW, day: { rrun: 7, pool: 2, cache: 2, local: 1, fallback: 1 }, last: newest });
+  // the newest rrun of any age (1.3.0): older than the 24 h counts still says when it last ran
+  const old = r.parseRouteLog(`${at(30 * 3600_000)} hp    rrun     old rc=0 1.0s | /repo`);
+  assert.deepEqual(r.routeStats(old, NOW), { at: NOW, day: { rrun: 0, pool: 0, cache: 0, local: 0, fallback: 0 }, last: old[0].ts });
 });
 
 test('Collector frames: queued from <rrRoot>/wait; route on agent hosts only', async () => {
