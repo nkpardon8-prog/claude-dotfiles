@@ -838,7 +838,7 @@ Then proceed to the SID-tagged write protocol:
 2. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
 3. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
 
-(R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file, unless Defense H12 alias-with-marker-binding applies (R7-INC-04). HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
+(R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file; the Defense H12 alias probe was deleted in R8, so a `CLAUDE.local.md` alias is never read. HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
 
 **Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the handoff skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
 

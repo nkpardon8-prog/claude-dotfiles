@@ -153,8 +153,8 @@ for _scan_dir in "$DIAG_CWD" "$DIAG_REPO"; do
 done
 [ "$SID_TAGGED_COUNT" -eq 0 ] && echo "(no SID-tagged CLAUDE.local.<sid>.md found in cwd/repo)"
 
-# Alias — R7-INC-04 (Defense H12): alias is no longer legacy-only when it has a valid marker.
-# Distinguish: marker-bound (first-class under Defense H12) vs legacy (no marker).
+# Alias: the resolver never reads CLAUDE.local.md for a known session id (the Defense H12 alias probe
+# was deleted in R8). Reported only so a leftover alias file is visible.
 HANDOFF_PATH=""
 if [ -f "$DIAG_CWD/CLAUDE.local.md" ]; then
   HANDOFF_PATH="$DIAG_CWD/CLAUDE.local.md"
@@ -173,9 +173,9 @@ if [ -n "$HANDOFF_PATH" ]; then
   if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null; then
     _NONCE=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null | head -1 | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
     _MSID=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null | head -1 | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
-    echo "Alias (marker-bound, Defense H12): $HANDOFF_PATH"
+    echo "Alias (leftover, NOT read by the resolver): $HANDOFF_PATH"
     echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
-    echo "  marker: PRESENT sid=${_MSID:-EXTRACT_FAILED} nonce=${_NONCE:-EXTRACT_FAILED} (alias-with-marker-binding; readable by resolver when sid matches session SID8)"
+    echo "  marker: PRESENT sid=${_MSID:-EXTRACT_FAILED} nonce=${_NONCE:-EXTRACT_FAILED} (ignored: resume reads only CLAUDE.local.<sid>.md)"
   elif grep -qF '<!-- END-OF-HANDOFF -->' "$HANDOFF_PATH" 2>/dev/null; then
     echo "Alias (legacy, no sid marker): $HANDOFF_PATH"
     echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
