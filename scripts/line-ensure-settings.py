@@ -24,6 +24,10 @@ What it ensures (adds what is missing, never reorders or touches anything else):
                                        a stale checkout gets the base branch's copy, a rule edit
                                        reaches open windows as a diff; added 2026-11-17)
 and REMOVES the hook entries listed in RETIRED.
+Once per Mac (done-marker ~/.claude/progress/settings-once.json, so a hand undo stays undone): hides
+internal sub-files and owner-only commands from agents (skillOverrides "user-invocable-only", still
+typeable), sets skillListingBudgetFraction 0.01 and blocks the Apollo/Google Drive/Google Calendar
+connectors (deniedMcpServers). Owner-approved 2026-11-21. Tests: scripts/test-line-ensure-settings.sh.
 
 Safety: refuses a symlinked or unparseable settings file (prints why, changes nothing); takes a lock
 so windows starting together cannot interleave writes; backs the file up before the first change;
