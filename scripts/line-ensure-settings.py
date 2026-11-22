@@ -74,6 +74,95 @@ RETIRED = [
 ]
 
 
+# Applied ONCE per Mac (owner-approved 2026-11-21, context trim Phase 1), then never re-applied, so the owner
+# can undo any of it by hand and it stays undone. Done-marker: ~/.claude/progress/settings-once.json.
+# Hidden skills stay typeable by the owner ("user-invocable-only"); agents stop seeing them in the list.
+#   - internal sub-files their parent reads by PATH (god-review, ui-audit, database-audit, macmini, windows...)
+#   - commands only the owner starts. Never hide pre-compact, post-compact-resume or mission.
+HIDE_SUBFILES = [
+    "database-audit:core", "database-audit:guards", "database-audit:providers:neon",
+    "database-audit:providers:postgres", "database-audit:providers:supabase", "database-audit:redaction",
+    "database-audit:tests:README", "devtools-CHANGELOG",
+    "god-review:broad-reviewers:claude-architecture-prod",
+    "god-review:broad-reviewers:claude-deep-correctness",
+    "god-review:broad-reviewers:claude-ruthless-redteam",
+    "god-review:broad-reviewers:claude-security-resilience",
+    "god-review:broad-reviewers:codex-cross-layer", "god-review:broad-reviewers:codex-data-integrity",
+    "god-review:broad-reviewers:codex-deep-correctness",
+    "god-review:broad-reviewers:codex-prod-scalability",
+    "god-review:broad-reviewers:codex-ruthless-redteam",
+    "god-review:broad-reviewers:codex-security-safeguards", "god-review:CHANGELOG", "god-review:CRITERIA",
+    "god-review:lib:editor-agent", "god-review:principles:antipatterns",
+    "god-review:principles:architecture-backend", "god-review:principles:architecture-frontend",
+    "god-review:principles:ci-yaml-tampering", "god-review:principles:circular-deps",
+    "god-review:principles:clarity", "god-review:principles:contradiction-detector",
+    "god-review:principles:database-audit", "god-review:principles:dead-code-conservatism",
+    "god-review:principles:dead-end-detector", "god-review:principles:documentation",
+    "god-review:principles:gap-detector", "god-review:principles:hallucinated-imports",
+    "god-review:principles:info-loss-detector", "god-review:principles:perf-benchmark",
+    "god-review:principles:perf-heuristic", "god-review:principles:prompt-injection",
+    "god-review:principles:reuse", "god-review:principles:scope", "god-review:principles:secret-leak",
+    "god-review:principles:self-contained", "god-review:principles:single-pattern",
+    "god-review:principles:tanstack-query", "god-review:principles:test-deletion", "god-review:README",
+    "macmini:act", "macmini:connect", "macmini:crd", "macmini:setup", "plan_base", "pre-compact-template",
+    "speedeval:README", "ui-audit:CHANGELOG", "ui-audit:passes:dynamic-exercise",
+    "ui-audit:passes:quality", "ui-audit:passes:reconcile", "ui-audit:passes:static-trace",
+    "ui-audit:passes:vision-inspect", "ui-audit:README", "ui-audit:rubric", "windows:act",
+    "windows:connect", "windows:crd",
+]
+HIDE_OWNER_ONLY = [
+    "outreach", "master-review", "afk", "transcribe", "wispralt-update", "share-fix", "skill-improve",
+    "claudemd", "dockersetup", "simple-plan", "commit", "investigate", "prepare-pr",
+]
+# Connectors kept off unless the owner turns one back on (remove its entry from deniedMcpServers).
+DENY_SERVERS = ["claude.ai Apollo.io", "claude.ai Google Drive", "claude.ai Google Calendar"]
+ONCE_ID = "context-trim-phase1-2026-11-21"
+ONCE_MARKER = HOME / ".claude" / "progress" / "settings-once.json"
+
+
+def once_done() -> bool:
+    try:
+        return ONCE_ID in json.loads(ONCE_MARKER.read_text())
+    except Exception:
+        return False
+
+
+def mark_once() -> None:
+    try:
+        d = json.loads(ONCE_MARKER.read_text()) if ONCE_MARKER.exists() else {}
+    except Exception:
+        d = {}
+    d[ONCE_ID] = int(time.time())
+    ONCE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ONCE_MARKER.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, indent=1))
+    os.replace(tmp, ONCE_MARKER)
+
+
+def apply_once(d: dict) -> list[str]:
+    """The one-time context-trim settings. Merges; never removes anything the owner set."""
+    changed = []
+    ov = d.get("skillOverrides")
+    ov = dict(ov) if isinstance(ov, dict) else {}
+    added = [n for n in HIDE_SUBFILES + HIDE_OWNER_ONLY if n not in ov]
+    for n in added:
+        ov[n] = "user-invocable-only"
+    if added:
+        d["skillOverrides"] = ov
+        changed.append(f"skillOverrides +{len(added)}")
+    if d.get("skillListingBudgetFraction", 0.01) != 0.01:
+        d["skillListingBudgetFraction"] = 0.01
+        changed.append("skillListingBudgetFraction 0.01")
+    deny = d.get("deniedMcpServers")
+    deny = list(deny) if isinstance(deny, list) else []
+    have = {e.get("serverName") for e in deny if isinstance(e, dict)}
+    new = [{"serverName": n} for n in DENY_SERVERS if n not in have]
+    if new:
+        d["deniedMcpServers"] = deny + new
+        changed.append(f"deniedMcpServers +{len(new)}")
+    return changed
+
+
 def log(msg: str) -> None:
     try:
         LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -150,11 +239,15 @@ def main() -> int:
                 if not isinstance(d, dict):
                     raise ValueError("top level is not an object")
                 changed = converge(d)
+                once = [] if once_done() else apply_once(d)
+                changed += once
             except ValueError as e:
                 say(f"{SETTINGS} could not be read as settings ({e}) - changed nothing.", True)
                 log(f"refused unparseable settings: {e}")
                 return 0
             if not changed:
+                if not once_done() and not dry:
+                    mark_once()
                 say("already configured")
                 return 0
             if dry:
@@ -168,6 +261,8 @@ def main() -> int:
             tmp.write_text(json.dumps(d, indent=2) + "\n")
             os.chmod(tmp, mode)
             os.replace(tmp, SETTINGS)
+            if not once_done():
+                mark_once()
             say("updated: " + ", ".join(changed) + f" (backup {backup.name})", True)
             log("updated: " + ", ".join(changed) + f" backup={backup.name}")
     except OSError as e:
