@@ -988,10 +988,10 @@ _p2_partdone() {
   # sweep coverage: every repeat key raised in the part, by a clean sweep logged after the last fix line.
   _pd_keys=$(_p2_evid "$1" '(delta|close)' | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p' | while IFS= read -r _pk; do
                case "$_pk" in
-                 @*) _pkf="$2/.mission-backups/rkeys/${_pk#@}"
+                 (@*) _pkf="$2/.mission-backups/rkeys/${_pk#@}"
                      { [ -f "$_pkf" ] && [ "$(shasum -a 256 < "$_pkf" | cut -c1-12)" = "${_pk#@}" ]; } || { echo "__RKEYS_SIDECAR_BAD__${_pk}"; continue; }
                      cat "$_pkf" ;;
-                 *) printf '%s\n' "$_pk" ;;
+                 (*) printf '%s\n' "$_pk" ;;
                esac
              done | tr ',' '\n' | grep -v '^-$' | grep . | sort -u)
   case "$_pd_keys" in *__RKEYS_SIDECAR_BAD__*) _mw_emit_refuse log 4 "REFUSED: PART-DONE: a repeat-key sidecar is missing or altered ($(printf '%s' "$_pd_keys" | grep __RKEYS_SIDECAR_BAD__ | head -1))" ;; esac

@@ -410,6 +410,21 @@ has "CLEAR" "$(bash "$DC" "$S" "$R")" "11f v1 snapshot compares with v1 (clean)"
 printf 'edit\n' >> "$R/code.txt"
 has "DRIFT" "$(bash "$DC" "$S" "$R")" "11g v1 snapshot still detects a root change"
 
+echo "== long repeat-key list (pd:19) =="
+mk rkeys
+start_part 1
+_h=$(commit "$W" "rk-work")
+_tags=""; for k in GATE-ORDER GRANT-CLASS-SCOPE EGRESS-RECHECK AUDIT-TWIN CARD-COPY LOCK-REASON DIRECTOR-SEAT SWEEP-SCANNER RACE-WINDOW CACHE-ARB; do _tags="$_tags|$(tag "$k" repeat)"; done
+IFS='|' read -r _x t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 <<EOF
+$_tags
+EOF
+has "bank-review ok" "$(mw bank-review "$S" "$R" 1 3 delta "$(code_report "$B" "$_h" full 4 3 ok 10 "$t1" "$t2" "$t3" "$t4" "$t5" "$t6" "$t7" "$t8" "$t9" "$t10")" "$(IMPLOUT)")" "rk1 a delta round naming 10 repeat types is banked, not rerouted"
+_rkv=$(grep -a 'REVIEW-EVIDENCE part=1 round=3' "$R/MISSION.$S.log" | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p')
+has "@" "$_rkv" "rk2 the long key list is stored as a sidecar reference"
+eq "CACHE-ARB,AUDIT-TWIN,CARD-COPY,DIRECTOR-SEAT,EGRESS-RECHECK,GATE-ORDER,GRANT-CLASS-SCOPE,LOCK-REASON,RACE-WINDOW,SWEEP-SCANNER" "$(cat "$R/.mission-backups/rkeys/${_rkv#@}" 2>/dev/null)" "rk3 the sidecar holds every repeat key"
+printf 'X\n' >> "$R/.mission-backups/rkeys/${_rkv#@}"
+has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk4 PART-DONE refused (an altered sidecar or the missing sweep both refuse)"
+
 echo "== wake origin =="
 PY="$HERE/lib/mission-liveness-parse.py"
 TN='{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>x</task-id>\n<status>completed</status>\n</task-notification>"}}'
