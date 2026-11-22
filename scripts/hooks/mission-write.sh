@@ -1114,7 +1114,19 @@ _p2_bank_review() {
     _bdry=1
   fi
   [ "$_bsc" = close ] && [ "$_bres" = clean ] && _bdry=1
-  _p2_append "$_bs" "$_br" "[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brk result=$_bres report=$_brep" "m$_bn-review-evidence-$_bsc-r$_bk"
+  # A long repeat-key list would push the evidence line past the 480B budget (owner pd:19, 2026-11-22). Then the
+  # list goes to a sidecar under <root>/.mission-backups/rkeys/ and the line carries rkeys=@<sha12> of its content;
+  # _p2_rkeys (the PART-DONE reader) expands it and fails closed on a missing or altered sidecar.
+  _brkv=$_brk
+  _bline="[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brkv result=$_bres report=$_brep"
+  if [ "$_brk" != - ] && [ "$(printf '%s\tm%s-review-evidence-%s-r%s at=0000000000\n' "$_bline" "$_bn" "$_bsc" "$_bk" | LC_ALL=C wc -c | tr -d ' ')" -ge 440 ]; then
+    _brkd="$_br/.mission-backups/rkeys"; mkdir -p "$_brkd" || _mw_emit_refuse bank-review 1 "REFUSED: cannot create $_brkd"
+    _brkh=$(printf '%s\n' "$_brk" | shasum -a 256 | cut -c1-12)
+    printf '%s\n' "$_brk" > "$_brkd/$_bs.$_brkh" || _mw_emit_refuse bank-review 1 "REFUSED: cannot write the rkeys sidecar"
+    _brkv="@$_brkh"
+    _bline="[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brkv result=$_bres report=$_brep"
+  fi
+  _p2_append "$_bs" "$_br" "$_bline" "m$_bn-review-evidence-$_bsc-r$_bk"
   case "$_MLA_OUTCOME" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "evidence write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-}" ;; esac
   if [ "$_bsc" = delta ] || { [ "$_bsc" = close ] && [ "$_bres" = blocking ]; }; then
     # stamped with the evidence's own at= (deterministic across retries: the evidence dedup keeps it)
