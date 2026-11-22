@@ -419,8 +419,12 @@ has "bank-review ok" "$(mw bank-review "$S" "$R" 1 3 delta "$(code_report "$B" "
 _rkv=$(grep -a 'REVIEW-EVIDENCE part=1 round=3' "$R/MISSION.$S.log" | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p')
 has "@" "$_rkv" "rk2 the long key list is stored as a sidecar reference"
 eq "$(printf '%s\n' $_rkall | sort -u | paste -sd, -)" "$(cat "$R/.mission-backups/rkeys/${_rkv#@}" 2>/dev/null)" "rk3 the sidecar holds every repeat key"
+_kl=$(mw keylist "$S" "$R" "$(printf '%s\n' $_rkall | paste -sd, -)")
+has "$_rkv" "$_kl" "rk4 keylist verb stores the same sorted list under the same @ref"
+has "log ok" "$(lg "[mission] SWEEP part=1 round=3 types=$_kl sha=$_h instances=0 report=$(IMPLOUT)" m1-sweep-r3-s1)" "rk5 a SWEEP line may name its types by @ref"
+has "FAILED" "$(mw keylist "$S" "$R" "bad key")" "rk6 keylist refuses a malformed key"
 printf 'X\n' >> "$R/.mission-backups/rkeys/${_rkv#@}"
-has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk4 PART-DONE refused after the sidecar is altered"
+has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk7 PART-DONE refused (sidecar altered; join also missing)"
 
 echo "== wake origin =="
 PY="$HERE/lib/mission-liveness-parse.py"
