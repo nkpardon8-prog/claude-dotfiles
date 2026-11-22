@@ -14,6 +14,9 @@
 # Title: "⚙ 75% · 4G" (CPU share · RAM cap), "· 2▶" with jobs running here, "⏸" while the memory guard
 # holds new jobs back, "⚙ off" when sharing is off.
 here=$(cd "$(dirname "$0")" && pwd)
+# SwiftBar's first launch can leave an empty copy of its own plugin path inside this folder (Users/...): drop
+# it (empty folders only, never a file)
+[ -d "$here/Users" ] && find "$here/Users" -depth -type d -empty -delete 2>/dev/null
 cmd=${RDOCKER_SHARE_CMD:-}
 # RDOCKER_SHARE_PATHS (tests): the install places to look in instead of the two below
 for c in "$here/rdocker-share.sh" ${RDOCKER_SHARE_PATHS-/usr/local/bin/rdocker-share /opt/homebrew/bin/rdocker-share}; do
