@@ -194,11 +194,6 @@ test('order: one at a time', async () => {
 
 // ---- the runner
 test('runShare: argv only (no shell), PATH + LC_ALL only in the env', async () => {
-  const env = await new Promise((res) => {
-    // /usr/bin/env prints its environment: exactly what the switch would see
-    import('node:child_process').then(({ execFile }) => res(execFile));
-  });
-  assert.ok(env);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rd-share-env-'));
   const script = path.join(tmp, 'dump.sh');
   fs.writeFileSync(script, '#!/bin/sh\nprintf "%s|" "$@"; /usr/bin/env | /usr/bin/sort | /usr/bin/tr "\\n" " "\n', { mode: 0o755 });
