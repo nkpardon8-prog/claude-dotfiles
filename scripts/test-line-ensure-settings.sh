@@ -17,7 +17,7 @@ ok "hides an owner-only command" '[ "$(j "d[\"skillOverrides\"][\"commit\"]")" =
 ok "never hides pre-compact" '[ "$(j "\"pre-compact\" in d[\"skillOverrides\"]")" = False ]'
 ok "budget back to 0.01" '[ "$(j "d[\"skillListingBudgetFraction\"]")" = 0.01 ]'
 ok "keeps existing denied server and adds Apollo/Drive/Calendar" \
-   '[ "$(j "sorted(e[\"serverName\"] for e in d[\"deniedMcpServers\"])")" = "[\x27claude.ai Apollo.io\x27, \x27claude.ai Google Calendar\x27, \x27claude.ai Google Drive\x27, \x27x\x27]" ]'
+   '[ "$(j "\",\".join(sorted(e[\"serverName\"] for e in d[\"deniedMcpServers\"]))")" = "claude.ai Apollo.io,claude.ai Google Calendar,claude.ai Google Drive,x" ]'
 ok "done-marker written" '[ -f "$T/.claude/progress/settings-once.json" ]'
 
 # Owner undoes one entry by hand: it must stay undone.
