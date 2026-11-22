@@ -6,7 +6,8 @@
 #   - /usr/local/bin/rdocker-share (the owner's switch; the menu-bar plugin finds it there), and a root-owned
 #     copy in /usr/local/libexec that the root daemon runs (never through PATH)
 #   - com.rdocker.worker LaunchDaemon (rd-worker-mac: AC-only keep-awake while sharing, sshd re-kick, the
-#     jobs count for the menu bar, the owner's "Off now (stop jobs)")
+#     jobs count for the menu bar, the owner's "Off now (stop jobs)", the ~/rr prune every 10 min) and the
+#     prune it runs as rd: server/rd-tune.sh -> /usr/local/libexec/rd-tune
 #   - com.rdocker.doctor (install-doctor-mac.sh) and com.rdocker.power (install-power-mac.sh)
 #   - the owner's reporter (his LaunchAgent com.rdocker.reporter), when it is installed: new rd-reporter.mjs + restart
 # Never touches the share level, the rd user, the sshd config or Tailscale (setup-mac-worker.sh owns those).
@@ -25,6 +26,8 @@ SRC=$(cd "$(dirname "$0")" && pwd)
 for f in rdocker-share.sh rd-worker-mac.sh com.rdocker.worker.plist install-doctor-mac.sh install-power-mac.sh; do
   [ -f "$SRC/$f" ] || { echo "install-worker-mac: $f missing next to this script"; exit 1; }
 done
+TUNE="$SRC/rd-tune.sh"; [ -f "$TUNE" ] || TUNE="$SRC/../server/rd-tune.sh"
+[ -f "$TUNE" ] || { echo "install-worker-mac: rd-tune.sh not found next to this script or in ../server"; exit 1; }
 
 # The owner's switch writes the share file in /Users/Shared/rdocker as the owner: the folder is his, 0755, never
 # group/world-writable (the root daemon reads the level from it). Made before install-power-mac.sh, which
@@ -52,6 +55,7 @@ chown root:wheel /usr/local/libexec && chmod 755 /usr/local/libexec
 install -m 755 "$SRC/rdocker-share.sh" /usr/local/bin/rdocker-share
 install -o root -g wheel -m 755 "$SRC/rdocker-share.sh" /usr/local/libexec/rdocker-share
 install -o root -g wheel -m 755 "$SRC/rd-worker-mac.sh" /usr/local/libexec/rd-worker-mac
+install -o root -g wheel -m 755 "$TUNE" /usr/local/libexec/rd-tune
 install -m 644 "$SRC/com.rdocker.worker.plist" /Library/LaunchDaemons/com.rdocker.worker.plist
 launchctl bootout system/com.rdocker.worker 2>/dev/null || true
 launchctl bootstrap system /Library/LaunchDaemons/com.rdocker.worker.plist

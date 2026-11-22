@@ -79,12 +79,12 @@ class WorkerLoop(unittest.TestCase):
                  "\tinet %s --> %s netmask 0xffffffff\n" % (TS_IP, TS_IP) if up else
                  "en0: flags=8863<UP> mtu 1500\n\tinet 192.168.1.20 netmask 0xffffff00\n")
 
-    def run_worker(self, ticks):
-        env = rdmods.child_env(self.d, self.bin, RR_SHARE_FILE=self.share_file, RD_SHARE_CMD=SHARE_CMD,
-                               RD_SSHD_CONF=self.conf, RD_SSHD_PLIST=self.plist, RD_IFCONFIG=self.ifconfig,
-                               RD_LSOF=self.lsof, RD_LAUNCHCTL=self.lctl, RD_CAFFEINATE=self.caff,
-                               RD_TICK_S="0.1", RD_TICKS=str(ticks), RD_SLOTS_DIR=self.slots,
-                               RD_STATUS_FILE=self.status_file, RD_STOP_REQ=self.req, RD_PKILL=self.pkill)
+    def run_worker(self, ticks, **extra):
+        env = rdmods.child_env(self.d, self.bin, **{**dict(
+            RR_SHARE_FILE=self.share_file, RD_SHARE_CMD=SHARE_CMD, RD_SSHD_CONF=self.conf, RD_SSHD_PLIST=self.plist,
+            RD_IFCONFIG=self.ifconfig, RD_LSOF=self.lsof, RD_LAUNCHCTL=self.lctl, RD_CAFFEINATE=self.caff,
+            RD_TICK_S="0.1", RD_TICKS=str(ticks), RD_SLOTS_DIR=self.slots, RD_STATUS_FILE=self.status_file,
+            RD_STOP_REQ=self.req, RD_PKILL=self.pkill), **extra})
         r = subprocess.run(["/bin/sh", WORKER], capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
@@ -239,6 +239,31 @@ class WorkerLoop(unittest.TestCase):
         self.assertEqual(self.calls_of("launchctl"), [])
 
 
+    # ---- prune
+    def test_prunes_rr_as_rd_at_start_then_every_interval_in_the_background(self):
+        tune = write(os.path.join(self.d, "rd-tune"), "echo should-not-run-directly\n")
+        sudo = self.stub("sudo", 'shift 4; echo "pruned $*"; sleep 1')   # drops "-n -u rd -H"; slow on purpose
+        t0 = time.time()
+        out = self.run_worker(3, RD_TUNE=tune, RD_SUDO=sudo)
+        self.assertLess(time.time() - t0, 5)                               # never waited for: background
+        time.sleep(1.5)
+        self.assertEqual(self.calls_of("sudo"), ["-n -u rd -H /bin/bash %s prune" % tune])   # once in 3 ticks
+        os.unlink(self.calls)
+        self.run_worker(3, RD_TUNE=tune, RD_SUDO=sudo, RD_PRUNE_EVERY_S="0")
+        time.sleep(1.5)
+        self.assertEqual(len(self.calls_of("sudo")), 3)
+        self.assertNotIn("should-not-run-directly", out)
+
+    def test_prune_output_is_logged_and_a_missing_rd_tune_is_skipped(self):
+        tune = write(os.path.join(self.d, "rd-tune"), "")
+        sudo = self.stub("sudo", 'echo "rd-tune: prune rm mirror x (disk low)"')
+        out = self.run_worker(2, RD_TUNE=tune, RD_SUDO=sudo, RD_TICK_S="0.5")
+        self.assertRegex(out, r"\d{4}-\d\d-\d\dT[^ ]+ rd-tune: prune rm mirror x")
+        os.unlink(self.calls)
+        self.run_worker(2, RD_TUNE=os.path.join(self.d, "none"), RD_SUDO=sudo)
+        self.assertEqual(self.calls_of("sudo"), [])
+
+
 class Units(unittest.TestCase):
     def test_plist_is_a_boot_daemon_that_launchd_keeps_alive(self):
         with open(PLIST, "rb") as f:
@@ -355,6 +380,12 @@ class Setup(unittest.TestCase):
         self.assertNotIn("/usr/local/bin/rdocker-share", w)
         self.assertIn('install -o root -g wheel -m 755 "$SRC/rdocker-share.sh" /usr/local/libexec/rdocker-share', it)
         self.assertIn("chown root:wheel /usr/local/libexec && chmod 755 /usr/local/libexec", it)
+        # its ~/rr prune: the Linux workers' rd-tune.sh, root-owned, run as rd (never as root)
+        self.assertIn("TUNE=${RD_TUNE:-/usr/local/libexec/rd-tune}", w)
+        self.assertIn('install -o root -g wheel -m 755 "$TUNE" /usr/local/libexec/rd-tune', it)
+        self.assertIn('TUNE="$SRC/../server/rd-tune.sh"', it)
+        self.assertTrue(os.path.exists(os.path.join(SHARE_DIR, "..", "server", "rd-tune.sh")))
+        self.assertIn('"$SUDO" -n -u "$RDU" -H /bin/bash "$TUNE" prune', w)
 
     def test_sshd_is_tailscale_only_and_reloaded_only_on_change(self):
         t = read(SETUP)

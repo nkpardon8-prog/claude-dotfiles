@@ -571,6 +571,7 @@ class Tune(unittest.TestCase):
         return p
 
     def tune(self, *args, mem=(1000, 900), temp=None, conf=None, **extra):
+        extra.setdefault("RD_OS", "Linux")   # the Linux defaults, also when the suite runs on a Mac
         files = []
         if temp is not None:
             t = os.path.join(self.tmp, "temp1_input")
@@ -781,6 +782,145 @@ class Tune(unittest.TestCase):
         m = self.mirror(0, 3600)
         r = self.prune(base_gb=0, conf={"PRUNE_MIN_FREE_GB": 95, "PRUNE_TARGET_FREE_GB": 95})   # 90 GB free = low
         self.assertFalse(os.path.exists(m), r.stdout)
+
+    # --- a Mac worker: `rd-tune prune` as rd (rd-worker-mac every 10 min, or rd's own prune-loop)
+    def mac_prune(self, base_gb, *args, **extra):
+        env = rdmods.child_env(self.tmp, self.bin, RD_CONF=self.conf(), RD_RR_ROOT=self.rr, RD_OS="Darwin",
+                               RD_DF_CMD=self.fake_df(base_gb), **extra)
+        return subprocess.run(["/bin/bash", TUNE] + (list(args) or ["prune"]), capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    def fake_docker(self):
+        """A fake docker CLI (logs "$DOCKER_HOST $*") and a real unix socket standing in for Colima's."""
+        import socket
+        log = os.path.join(self.tmp, "docker.log")
+        p = os.path.join(self.bin, "docker")
+        with open(p, "w") as f:
+            f.write('#!/bin/sh\necho "$DOCKER_HOST $*" >> "%s"\n'
+                    '[ "$1" = version ] && echo "${FAKE_API:-1.47 1.47}"\nexit 0\n' % log)
+        os.chmod(p, 0o755)
+        sock = os.path.join(self.tmp, "docker.sock")
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(sock)
+        self.addCleanup(srv.close)
+        return sock, log
+
+    def docker_calls(self, log):
+        return read(log).splitlines() if os.path.exists(log) else []
+
+    def test_mac_pressure_starts_below_25_pct_free_with_a_10_min_guard(self):
+        # 100 GB, 60 base + 2 mirrors x 10 = 80 used: 20 % free (not low on Linux). The 15-min-old mirror
+        # goes (Linux keeps 30 min), which reaches the 30 % target; the 5-min-old one stays.
+        old, new = self.mirror(0, 15 * 60), self.mirror(1, 5 * 60)
+        r = self.mac_prune(60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.exists(old, new), (False, True), r.stdout)
+        self.assertIn("rd-tune: prune rm mirror repo-%s (disk low: 20%% / 20 GB free" % self.WT[0], r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.rr, "state", "tune", "prune")))   # its cooldowns: ~/rr/state
+        r = self.tune(RD_DF_CMD=self.fake_df(60))                         # the same disk on Linux: not low
+        self.assertTrue(os.path.exists(new))
+
+    def test_mac_pressure_never_takes_a_mirror_a_run_uses(self):
+        used, idle = self.mirror(0, 3 * 3600), self.mirror(1, 3 * 3600)
+        lock = os.path.join(self.rr, "slots", "0")
+        open(lock, "a").close()
+        self.who(0, self.hold(lock), self.WT[0])
+        r = self.mac_prune(80)                                            # 0 % free after both: still kept
+        self.assertEqual(self.exists(used, idle), (True, False), r.stdout)
+
+    def test_prune_is_single_instance(self):
+        m = self.mirror(0, 3 * 3600)
+        lock = os.path.join(self.rr, "state", "prune.lock")
+        os.makedirs(os.path.dirname(lock))
+        open(lock, "a").close()
+        self.hold(lock)
+        r = self.mac_prune(80)
+        self.assertEqual(r.returncode, 75, r.stderr)                      # another prune holds it: nothing done
+        self.assertTrue(os.path.exists(m))
+
+    def test_prune_loop_is_single_instance_and_logs(self):
+        self.mirror(0, 3 * 3600)
+        env = rdmods.child_env(self.tmp, self.bin, RD_CONF=self.conf(), RD_RR_ROOT=self.rr, RD_OS="Darwin",
+                               RD_DF_CMD=self.fake_df(80))
+        r = subprocess.run(["/bin/bash", TUNE, "prune-loop", "1"], env=env, capture_output=True, text=True,
+                           timeout=30)                                    # returns at once: it detaches
+        self.assertEqual(r.returncode, 0, r.stderr)
+        pid = int(r.stdout.split("pid ")[1].rstrip(")\n"))
+        self.addCleanup(lambda: subprocess.run(["/bin/kill", "-9", "--", "-%d" % pid], capture_output=True))
+        self.assertEqual(os.getpgid(pid), pid)                            # its own session
+        log = os.path.join(self.rr, "log", "prune.log")
+        for _ in range(100):
+            if os.path.exists(log) and "prune rm mirror" in read(log):
+                break
+            time.sleep(0.1)
+        self.assertRegex(read(log), r"prune-loop start \(pid \d+, every 1s\)")
+        self.assertRegex(read(log), r"\d{4}-\d\d-\d\dT\S+ rd-tune: prune rm mirror repo-")
+        r = subprocess.run(["/bin/bash", TUNE, "prune-loop", "1"], env=env, capture_output=True, timeout=30)
+        self.assertEqual(r.returncode, 75)
+
+    def test_mac_pressure_prunes_colima_only_while_it_runs_and_no_slot_is_held(self):
+        self.mirror(0, 60)                                                # 15 % free, nothing evictable
+        sock, log = self.fake_docker()
+        r = self.mac_prune(75, RD_DOCKER_SOCK=sock)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.docker_calls(log)
+        host = "unix://" + sock
+        self.assertIn(host + " info", calls)
+        for want in ("container prune -f --filter until=24h --filter label!=rdocker.keep",
+                     "image prune -a -f --filter until=10m --filter label!=rdocker.keep",
+                     "volume prune -f --filter label!=rdocker.keep"):
+            self.assertIn("%s %s" % (host, want), calls)
+        self.assertIn("rd-tune: prune docker (disk low", r.stdout)
+        # again within 10 min: not again (the normal 30-min docker pass already ran too)
+        os.unlink(log)
+        self.mac_prune(75, RD_DOCKER_SOCK=sock)
+        self.assertEqual(self.docker_calls(log), [])
+
+    def test_mac_volume_prune_needs_api_1_42_on_both_ends(self):
+        self.mirror(0, 60)
+        sock, log = self.fake_docker()
+        for api in ("1.41 1.47", "1.47 1.41", "unknown"):
+            shutil.rmtree(os.path.join(self.rr, "state"), True)
+            os.path.exists(log) and os.unlink(log)
+            self.mac_prune(75, RD_DOCKER_SOCK=sock, FAKE_API=api)
+            calls = " | ".join(self.docker_calls(log))
+            self.assertIn("image prune -a -f --filter until=10m", calls)
+            self.assertNotIn("volume prune", calls, api)
+
+    def test_a_hung_docker_is_killed_not_waited_for(self):
+        self.mirror(0, 60)
+        sock, log = self.fake_docker()
+        hang = os.path.join(self.bin, "docker")
+        with open(hang, "w") as f:   # `info` answers; everything else hangs (and ignores ALRM like Go)
+            f.write('#!/usr/bin/perl\n$SIG{ALRM} = "IGNORE"; exit 0 if $ARGV[0] eq "info"; sleep 300\n')
+        os.chmod(hang, 0o755)
+        env = rdmods.child_env(self.tmp, self.bin, RD_CONF=self.conf(), RD_RR_ROOT=self.rr, RD_OS="Darwin",
+                               RD_DF_CMD=self.fake_df(75), RD_DOCKER_SOCK=sock)
+        t0 = time.time()
+        r = subprocess.run(["/bin/bash", "-c", '. "$0" --source; tmo 1 docker image ls; echo "rc=$?"', TUNE],
+                           env=env, capture_output=True, text=True, timeout=30)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("rc=124", r.stdout, r.stderr)
+
+    def test_mac_docker_is_left_alone_when_colima_is_down_or_a_run_holds_a_slot(self):
+        self.mirror(0, 60)
+        sock, log = self.fake_docker()
+        self.mac_prune(75, RD_DOCKER_SOCK=os.path.join(self.tmp, "no.sock"))   # Colima not running
+        self.assertEqual(self.docker_calls(log), [])
+        shutil.rmtree(os.path.join(self.rr, "state"))
+        lock = os.path.join(self.rr, "slots", "0")
+        open(lock, "a").close()
+        self.hold(lock)
+        self.mac_prune(75, RD_DOCKER_SOCK=sock)
+        self.assertEqual(self.docker_calls(log), [])
+
+    def test_mac_disk_fine_only_the_normal_docker_pass(self):
+        sock, log = self.fake_docker()
+        self.mac_prune(0, RD_DOCKER_SOCK=sock)
+        calls = " | ".join(self.docker_calls(log))
+        self.assertIn("image prune -a -f --filter until=72h --filter label!=rdocker.keep", calls)
+        self.assertNotIn("volume prune", calls)
+        self.assertNotIn("until=10m", calls)
 
     def test_bench_writes_speed_relative_to_reference(self):
         node = os.path.join(self.bin, "node")

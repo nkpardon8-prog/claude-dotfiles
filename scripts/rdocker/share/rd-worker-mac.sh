@@ -16,10 +16,13 @@
 #          and can drop and return on wake, a wifi change or a reconnect. When that address is on an interface
 #          but nothing listens on it for 2 ticks in a row -> `launchctl kickstart -k system/com.rdocker.sshd` (a
 #          plist that is not loaded is bootstrapped). While the address is not up, nothing is done.
+#   prune  every RD_PRUNE_EVERY_S (600 s, and at start): `rd-tune prune` as rd, in the background - the Linux
+#          workers' ~/rr prune (rd-tune.sh: never a mirror a run uses; under disk pressure also the Colima
+#          images/volumes no container uses), single instance and at low priority; it logs what it removed.
 # Logs only changes (stdout; the plist sends it to /var/log/rd-worker-mac.log).
 # Env (tests): RD_SHARE_CMD, RD_SSHD_CONF, RD_SSHD_PLIST, RD_IFCONFIG, RD_LSOF, RD_LAUNCHCTL, RD_CAFFEINATE,
 # RD_TICK_S, RD_TICKS (stop after that many ticks; 0 = run forever), RD_USER, RD_SLOTS_DIR, RD_STATUS_FILE,
-# RD_STOP_REQ, RD_PKILL.
+# RD_STOP_REQ, RD_PKILL, RD_TUNE (rd-tune.sh), RD_SUDO, RD_PRUNE_EVERY_S.
 set -u
 SHARE=${RD_SHARE_CMD:-/usr/local/libexec/rdocker-share}   # root-owned copy (install-worker-mac.sh), never PATH
 RDU=${RD_USER:-rd}
@@ -36,6 +39,9 @@ LCTL=${RD_LAUNCHCTL:-/bin/launchctl}
 CAFF=${RD_CAFFEINATE:-/usr/bin/caffeinate}
 TICK=${RD_TICK_S:-15}
 TICKS=${RD_TICKS:-0}
+TUNE=${RD_TUNE:-/usr/local/libexec/rd-tune}   # root-owned copy (install-worker-mac.sh)
+SUDO=${RD_SUDO:-/usr/bin/sudo}
+PRUNE_EVERY=${RD_PRUNE_EVERY_S:-600}
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $*"; }
 
@@ -125,6 +131,19 @@ stop_jobs() {
   fi
 }
 
+# ------------------------------------------------------------------------------------------------ prune
+prune_at=0
+prune() {
+  now=$(date +%s)
+  [ $((now - prune_at)) -ge "$PRUNE_EVERY" ] || return 0
+  prune_at=$now
+  [ -f "$TUNE" ] && [ ! -L "$TUNE" ] || return 0
+  # as rd (never root: it only ever touches rd's own ~/rr and Colima); rd-tune holds the lock, so a slow
+  # prune is never doubled; its lines are timestamped like ours
+  ( "$SUDO" -n -u "$RDU" -H /bin/bash "$TUNE" prune </dev/null 2>&1 |
+      while IFS= read -r line; do log "$line"; done ) &
+}
+
 n=0
 log "start (tick ${TICK}s)"
 while :; do
@@ -132,6 +151,7 @@ while :; do
   awake
   status
   sshd_heal
+  prune
   n=$((n + 1))
   [ "$TICKS" -gt 0 ] && [ "$n" -ge "$TICKS" ] && break
   sleep "$TICK" & wait $!

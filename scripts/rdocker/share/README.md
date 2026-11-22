@@ -100,7 +100,8 @@ Without `--docker` the Mac has no Docker for jobs: its fleet.json entry leaves o
 check) installs `rdocker-share` in `/usr/local/bin` (for you and the menu) and a root-owned copy in
 `/usr/local/libexec` that the root daemon runs (never through PATH: `/usr/local/bin` is yours on an Intel
 Homebrew Mac), the doctor and power daemons (below), refreshes your reporter (LaunchAgent
-`com.rdocker.reporter`) when it is installed, and adds `com.rdocker.worker` (`rd-worker-mac.sh`, a root
+`com.rdocker.reporter`) when it is installed, installs `server/rd-tune.sh` as `/usr/local/libexec/rd-tune`
+(root-owned; the daemon runs it as `rd`), and adds `com.rdocker.worker` (`rd-worker-mac.sh`, a root
 LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
 
 - **Awake while lent out:** sharing on (any level but off) -> it holds `caffeinate -s`, an assertion that is
@@ -114,6 +115,20 @@ LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
   "Stop the jobs running here now") sends USR1 to `rd`'s runners only (never your own local `rrun`): a job that had not
   started is refused like share off (the pool moves it elsewhere), a running one is stopped (runs.log
   `interrupted`, not a pool failure).
+- **~/rr prune (disk):** at start and every 10 min (`RD_PRUNE_EVERY_S`) it runs `rd-tune prune` as `rd`
+  in the background: the Linux workers' own prune (`server/rd-tune.sh`, installed as
+  `/usr/local/libexec/rd-tune`), single instance (`~/rr/state/prune.lock`), at nice 19 + `taskpolicy -b`.
+  Mirrors (`~/rr/w`, `~/rr/w2`) and store entries (`~/rr/deps`) unused 2 days go every 30 min; below
+  **25 % free** on the `~/rr` volume (an 80 GB APFS quota on the Air) the least recently used go, one at a
+  time, until 30 % is free - anything not used in the last 10 min, never a mirror a running job uses
+  (its slot is held, or its `.who` pid is alive). Under that pressure, and only when no job holds a slot (it
+  then holds them all, so none starts meanwhile), it also prunes the worker's own Colima (its VM disk lives on `~/rr` too: `~/.colima` ->
+  `~/rr/home/colima`) through `rd`'s socket, only when Colima already runs (never started for it): stopped
+  containers > 24 h, images no container uses, anonymous volumes no container uses, never anything labelled
+  `rdocker.keep`, then `fstrim` in the VM so the sparse disk gives the space back. What it removes is
+  logged in `/var/log/rd-worker-mac.log`. Without the root daemon (a Mac not yet re-installed), `rd` can run
+  the same as its own detached loop: `rd-tune prune-loop [600]` (one per Mac:
+  `~/rr/state/prune-loop.lock`; log `~/rr/log/prune.log`).
 
 It never touches the share level, the `rd` user, the sshd config or Tailscale.
 

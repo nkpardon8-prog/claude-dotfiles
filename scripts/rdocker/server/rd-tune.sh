@@ -13,16 +13,33 @@
 #    Every 30 min and only while no rrun slot is held: npm cache over 1 GB, and - on non-home workers
 #    only - stopped containers (> 24 h) and images (unused > 72 h), never anything labelled
 #    rdocker.keep (the home host's janitor owns those);
+#  * `rd-tune prune` (as the rd user, e.g. a Mac worker): just the ~/rr prune below, single instance
+#    (~/rr/state/prune.lock), at low priority (nice 19; macOS taskpolicy -b, Linux ionice -c3). A Mac worker
+#    has no systemd: its root daemon rd-worker-mac runs this as rd every 10 min (install-worker-mac.sh copies
+#    this file to /usr/local/libexec/rd-tune); `rd-tune prune-loop [interval s]` is the same as a loop rd can
+#    start detached by itself (one per worker: ~/rr/state/prune-loop.lock; log ~/rr/log/prune.log).
+#    On macOS ~/rr is its own small volume (an 80 GB APFS quota) that fills in an evening, so pressure starts
+#    below 25 % free (target 30 %) and the recent-use guard is 10 min (defaults below; env / tune.conf win),
+#    and under pressure the worker's Colima (its VM disk is on ~/rr too: ~/.colima -> ~/rr/home/colima) is
+#    pruned as well - only while Colima already runs, never started for it (see docker_prune);
 #  * `rd-tune bench` (any user, e.g. over ssh): fixed CPU fixture -> ~/rr/speed (float, i7-6700 = 1.0).
-#    A Mac worker has no rd-tune installed: `rdocker bench-worker <name>` pipes this file over ssh
+#    A Mac worker may have no rd-tune installed: `rdocker bench-worker <name>` pipes this file over ssh
 #    (`bash -s bench`), so bench must never read stdin and must find mise's node without shims.
 # Test hooks (env): RD_MEMINFO, RD_TEMP_FILES, RD_CAP_FILE, RD_CONF, RD_RR_ROOT, RD_STATE_DIR,
-# RD_NO_SERVICES=1, RD_DRAIN_FILE, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF, RD_DF_CMD (prints what `df -Pk <path>` does). `rd-tune --source` only defines the functions.
+# RD_NO_SERVICES=1, RD_DRAIN_FILE, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF, RD_DF_CMD (prints what `df -Pk <path>` does),
+# RD_OS (default uname -s), RD_DOCKER_SOCK (a Mac's Colima socket), RR_COLIMA. `rd-tune --source` only defines the functions.
 set -u
 CONF="${RD_CONF:-/etc/rdocker/tune.conf}"
 # shellcheck disable=SC2034  # HEAVY_SLOTS: read by the runner's probe via tune.conf
 RD_USER=rd MAX_SLOTS=2 HEAVY_SLOTS=1 IS_HOME=0
+OS=${RD_OS:-$(uname -s)}
+is_mac() { [ "$OS" = Darwin ]; }
 # ~/rr disk-pressure thresholds and the recent-use guard (env, or tune.conf, which wins): see prune()
+if is_mac; then   # a Mac's ~/rr: its own small volume (see the header)
+  PRUNE_MIN_FREE_PCT=${PRUNE_MIN_FREE_PCT:-25} PRUNE_TARGET_FREE_PCT=${PRUNE_TARGET_FREE_PCT:-30}
+  PRUNE_MIN_FREE_GB=${PRUNE_MIN_FREE_GB:-10} PRUNE_TARGET_FREE_GB=${PRUNE_TARGET_FREE_GB:-15}
+  PRUNE_RECENT_S=${PRUNE_RECENT_S:-600}
+fi
 PRUNE_MIN_FREE_PCT=${PRUNE_MIN_FREE_PCT:-20} PRUNE_TARGET_FREE_PCT=${PRUNE_TARGET_FREE_PCT:-25}
 PRUNE_MIN_FREE_GB=${PRUNE_MIN_FREE_GB:-25} PRUNE_TARGET_FREE_GB=${PRUNE_TARGET_FREE_GB:-30}
 PRUNE_RECENT_S=${PRUNE_RECENT_S:-1800}
@@ -86,16 +103,41 @@ write_cap() {   # only when the value changed; atomic; owned by RD_USER
   return 0
 }
 
-rr_root() { echo "${RD_RR_ROOT:-$(getent passwd "$RD_USER" | cut -d: -f6)/rr}"; }
+user_home() {   # getent (Linux), else dscl (macOS)
+  local h; h=$(getent passwd "$RD_USER" 2>/dev/null | cut -d: -f6)
+  [ -n "$h" ] || h=$(dscl . -read "/Users/$RD_USER" NFSHomeDirectory 2>/dev/null | awk '{ print $2 }')
+  echo "$h"
+}
+rr_root() { echo "${RD_RR_ROOT:-$(user_home)/rr}"; }
 
-slots_idle() {   # true when no rrun slot is flocked (a run in progress could be using any mirror)
-  local d s; d="$(rr_root)/slots"
-  [ -d "$d" ] || return 0
-  for s in "$d"/[0-9]*; do
-    [ -f "$s" ] || continue
-    case "$s" in *.who) continue ;; esac
-    flock -n "$s" true 2>/dev/null || return 1
-  done
+idle_run() {   # $1 = what: `rd-tune __idle $1` once no rrun slot is held (a run in progress could be using
+  # anything). Any slot held, or one it cannot open, or a symlink = nothing done, status 0 (fail closed).
+  # "pressure" (a Mac's Colima under disk pressure) keeps every slot held through the cleanup, so no run
+  # starts meanwhile; "normal" releases them first, as Linux always did (a slow docker pass never makes
+  # the worker refuse jobs). perl flock(2): macOS has no util-linux flock.
+  perl -MFcntl=:flock,O_RDWR,O_NOFOLLOW -e '
+    $^F = 1023;                                   # the slot fds stay open across the exec
+    my ($d, @cmd) = @ARGV; my @held;
+    if (-e $d || -l $d) {
+      exit 0 if -l $d || !opendir(my $dh, $d);
+      for (grep { /^\d+$/ } readdir $dh) {
+        my $p = "$d/$_"; exit 0 if -l $p; next unless -f $p;
+        sysopen(my $f, $p, O_RDWR | O_NOFOLLOW) or exit 0;
+        flock($f, LOCK_EX | LOCK_NB) or exit 0;
+        push @held, $f;
+      }
+    }
+    @held = () unless $cmd[-1] eq "pressure";     # closed = released
+    exec @cmd or exit 127' "$(rr_root)/slots" /bin/bash "$SELF" __idle "$1"
+}
+
+tmo() {   # $1 = seconds, then the command; over that its process group gets TERM, then KILL (exit 124).
+  # (alarm + exec alone would not stop a Go CLI like docker or colima: it ignores SIGALRM)
+  perl -e 'my $t = shift; my $p = fork; exit 1 unless defined $p;
+    if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    my $fired = 0;
+    $SIG{ALRM} = sub { $fired = 1; kill "TERM", -$p; sleep 3; kill "KILL", -$p };
+    alarm $t; waitpid($p, 0); exit($fired || $? & 127 ? 124 : $? >> 8)' "$@"
 }
 
 # ~/rr pruning. A busy pool always holds some slot, so pruning no longer waits for an idle worker
@@ -161,6 +203,7 @@ sub last_use {                                    # newest of the dir and (mirro
     $last;
 }
 my $dir = "$R/$kind";
+exit 0 if -l $dir;                                # never through a symlink out of ~/rr
 opendir(my $dh, $dir) or exit 0;
 my @cand;
 for my $e (readdir $dh) {
@@ -291,15 +334,57 @@ prune_rcache() {   # $1 = rr
     }' "$1" "$RCACHE_MAX_MB" 2>/dev/null
 }
 
+# Docker on a non-home worker, only while holding every rrun slot (idle_run: a run may have pulled an image
+# it has not started yet) and never anything labelled rdocker.keep. Normal (every 30 min): stopped containers > 24 h,
+# images unused > 72 h. "pressure" (a Mac whose ~/rr is low: its Colima VM disk lives there; at most every
+# 10 min): also every image no container uses (created > 10 min ago) and every anonymous volume none uses
+# (API 1.42+, client and server: older ones prune named volumes too), then fstrim in the VM so its sparse
+# disk gives the space back. Linux: the system docker while systemd runs
+# it. macOS: the worker's own Colima socket, only while Colima already runs (`docker info` answers within
+# 20 s); never started here.
+docker_up() {
+  if is_mac; then
+    local s=${RD_DOCKER_SOCK:-$(dirname "$(rr_root)")/.colima/default/docker.sock}
+    PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+    [ -S "$s" ] && command -v docker >/dev/null 2>&1 || return 1
+    unset DOCKER_CONTEXT DOCKER_API_VERSION          # they would override this socket / the API version
+    export DOCKER_HOST="unix://$s"
+    tmo 20 docker info >/dev/null 2>&1
+  else
+    [ -z "${RD_NO_SERVICES:-}" ] && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker
+  fi
+}
+docker_prune() {   # $1 = pressure | (empty)
+  [ "$IS_HOME" != 1 ] && docker_up || return 0
+  local t="tmo 600" api   # a hung daemon never wedges the prune (and its locks)
+  $t docker container prune -f --filter until=24h --filter "label!=rdocker.keep" >/dev/null 2>&1
+  if [ "${1:-}" = pressure ]; then
+    $t docker image prune -a -f --filter until=10m --filter "label!=rdocker.keep" >/dev/null 2>&1
+    # anonymous volumes only (as the mini's janitor): a named one may be kept alive by rdocker.ttl
+    api=$(tmo 20 docker version --format '{{.Client.APIVersion}} {{.Server.APIVersion}}' 2>/dev/null)
+    if awk -v v="$api" 'BEGIN { n = split(v, w, " "); if (n != 2) exit 1
+         for (i = 1; i <= 2; i++) { split(w[i], a, "."); if (a[1] + 0 < 1 || (a[1] == 1 && a[2] + 0 < 42)) exit 1 } }'; then
+      $t docker volume prune -f --filter "label!=rdocker.keep" >/dev/null 2>&1
+    fi
+    local colima=${RR_COLIMA:-/opt/homebrew/bin/colima}   # rr_runner.pl's
+    is_mac && [ -x "$colima" ] && tmo 120 "$colima" ssh -- sudo fstrim -a >/dev/null 2>&1
+    echo "rd-tune: prune docker (disk low: unused images and volumes)"
+  else
+    $t docker image prune -a -f --filter until=72h --filter "label!=rdocker.keep" >/dev/null 2>&1
+  fi
+}
+
 prune() {
-  local rr home_dir g kind; rr=$(rr_root); home_dir=$(dirname "$rr")
+  local rr home_dir g kind low=0; rr=$(rr_root); home_dir=$(dirname "$rr")
   [ -d "$rr" ] || return 0
   empty_trash "$rr"                                   # leftovers of a prune that was killed
   if disk_low "$rr"; then                             # LRU first, one entry per df; mirrors, then the store
+    low=1
     for kind in w w2 deps; do
       while ! disk_ok "$rr" && evict "$rr" "$kind" 0 1 "disk low: $(disk_free "$rr" | awk '{ print $1 "% / " $2 " GB free" }')"; do :; done
     done
   fi
+  if [ "$low" = 1 ] && is_mac; then idle_run pressure; fi
   cooldown_ok prune 1800 || return 0
   prune_rcache "$rr"
   evict "$rr" w $(( 2 * 86400 )) 0 "unused 2d"
@@ -307,13 +392,41 @@ prune() {
   for g in "$rr"/git/*.git; do [ -d "$g" ] && git --git-dir="$g" worktree prune 2>/dev/null; done
   evict "$rr" deps $(( 2 * 86400 )) 0 "unused 2d"
   sweep_spool "$rr"
-  slots_idle || return 0                              # npm cache / docker: no per-run owner to check
-  if [ "$(du -sm "$home_dir/.npm/_cacache" 2>/dev/null | cut -f1)" -gt 1024 ] 2>/dev/null; then rm -rf "$home_dir/.npm/_cacache"; fi
-  if [ "$IS_HOME" != 1 ] && [ -z "${RD_NO_SERVICES:-}" ] && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
-    docker container prune -f --filter until=24h --filter "label!=rdocker.keep" >/dev/null 2>&1
-    docker image prune -a -f --filter until=72h --filter "label!=rdocker.keep" >/dev/null 2>&1
-  fi
+  idle_run normal                                     # npm cache / docker: no per-run owner to check
 }
+
+idle_cleanup() {   # $1 = normal | pressure; run by idle_run, every slot held
+  local home_dir; home_dir=$(dirname "$(rr_root)")
+  if [ "$1" = pressure ]; then cooldown_ok docker-pressure 540 && docker_prune pressure; return; fi
+  if [ ! -L "$home_dir/.npm" ] && [ ! -L "$home_dir/.npm/_cacache" ] &&
+     [ "$(du -sm "$home_dir/.npm/_cacache" 2>/dev/null | cut -f1)" -gt 1024 ] 2>/dev/null; then rm -rf "$home_dir/.npm/_cacache"; fi
+  docker_prune
+}
+
+# `rd-tune prune` / `prune-loop`: as the worker user (rd), one at a time (a flock held across the exec).
+# Exit 75 = another one holds the lock (nothing done); 1 = the lock file cannot be made.
+locked() {   # $1 = lock file, then the command
+  mkdir -p "$(dirname "$1")" 2>/dev/null
+  perl -MFcntl=:flock,O_WRONLY,O_CREAT,O_NOFOLLOW,O_NONBLOCK -e '
+    $^F = 255;                                    # keep the lock fd open across the exec
+    my $l = shift; my $f;
+    sysopen($f, $l, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600) && -f $f or exit 1;
+    flock($f, LOCK_EX | LOCK_NB) or exit 75;
+    exec @ARGV or exit 127' "$@"
+}
+prune_loop() {   # $1 = interval s; logs what it did (timestamped, kept under 1 MB)
+  local every=${1:-600} log out; log="$(rr_root)/log/prune.log"
+  case $every in ''|*[!0-9]*|0) every=600 ;; esac
+  mkdir -p "$(dirname "$log")" 2>/dev/null
+  echo "$(date +%Y-%m-%dT%H:%M:%S%z) rd-tune: prune-loop start (pid $$, every ${every}s)" >> "$log"
+  while :; do
+    out=$(/bin/bash "$SELF" prune 2>&1)             # re-read each time: an updated rd-tune takes effect
+    [ -n "$out" ] && printf '%s\n' "$out" | sed "s/^/$(date +%Y-%m-%dT%H:%M:%S%z) /" >> "$log"
+    [ "$(wc -c < "$log" 2>/dev/null || echo 0)" -gt 1048576 ] && mv -f "$log" "$log.1"
+    sleep "$every"
+  done
+}
+SELF=$0
 
 bench() {   # prints the speed (1.0 = i7-6700) and stores it in ~/rr/speed
   local js out speed
@@ -360,4 +473,23 @@ main() {
   prune
 }
 
-case "${1:-}" in --source) ;; bench) bench ;; *) main ;; esac
+case "${1:-}" in
+  --source) ;;
+  bench) bench ;;
+  prune)   # low priority: nice 19 plus background I/O (macOS taskpolicy -b, Linux ionice -c3)
+    set -- /bin/bash "$SELF" __prune
+    if command -v taskpolicy >/dev/null 2>&1; then set -- taskpolicy -b "$@"
+    elif command -v ionice >/dev/null 2>&1; then set -- ionice -c3 "$@"; fi
+    locked "$(rr_root)/state/prune.lock" nice -n 19 "$@" ;;
+  prune-loop)   # detaches itself (own session, no terminal) once it holds the lock; prints its pid
+    # shellcheck disable=SC2016  # Perl
+    locked "$(rr_root)/state/prune-loop.lock" perl -MPOSIX -e '
+      my $p = fork; exit 1 unless defined $p;
+      if ($p) { print "rd-tune: prune-loop started (pid $p)\n"; exit 0 }
+      POSIX::setsid(); open(STDIN, "<", "/dev/null"); open(STDOUT, ">", "/dev/null"); open(STDERR, ">&", \*STDOUT);
+      exec @ARGV or exit 127' /bin/bash "$SELF" __prune-loop "${2:-600}" ;;
+  __prune) RD_STATE_DIR=${RD_STATE_DIR:-$(rr_root)/state/tune}; export RD_STATE_DIR; STATE=$RD_STATE_DIR; prune ;;
+  __idle) idle_cleanup "${2:-normal}" ;;
+  __prune-loop) prune_loop "${2:-}" ;;
+  *) main ;;
+esac

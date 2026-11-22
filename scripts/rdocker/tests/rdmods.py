@@ -104,7 +104,8 @@ def child_env(home, *bins, **extra):
              RR_USED_MB="0")
     # rd-worker-mac's menu status file, the owner's stop request and its pkill: never the real ones
     e.update(RD_STATUS_FILE=os.path.join(TEST_HOME, "no-status-file"), RD_STOP_REQ=os.path.join(TEST_HOME, "no-stop-req"),
-             RD_SLOTS_DIR=os.path.join(TEST_HOME, "no-slots"), RD_PKILL=os.path.join(STUB_BIN, "pkill"))
+             RD_SLOTS_DIR=os.path.join(TEST_HOME, "no-slots"), RD_PKILL=os.path.join(STUB_BIN, "pkill"),
+             RD_TUNE=os.path.join(TEST_HOME, "no-rd-tune"))   # and its ~/rr prune: never the installed one
     e.update(extra)
     return e
 
