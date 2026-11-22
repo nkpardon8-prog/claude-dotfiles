@@ -8,7 +8,8 @@
 #      old. Hand-authored project-instruction files (no handoff fingerprint) are NEVER touched.
 #   2. GCs SID-tagged handoffs (CLAUDE.local.<sid>.md) older than 30 days — EXCEPT the current
 #      session's (sid from the SessionStart stdin JSON).
-#   3. Warns when the project's MEMORY.md approaches the injection cliff (>90 entries or >150 lines).
+#   3. Warns when the project's MEMORY.md approaches the injection cliff. Claude Code injects only the
+#      first 200 lines / 25 KB of MEMORY.md; warn at >= 180 lines OR >= 22 KB (entry count is irrelevant).
 #
 # Posture: fail-open everywhere (any missing dependency/parse failure => exit 0, silent).
 # Quarantine = move (a warning already failed once); archive names are collision-proof.
@@ -77,8 +78,10 @@ if [ -f "$mem" ]; then
   # breaks the numeric test below. Take grep's stdout as-is and default only a truly empty capture.
   n=$(grep -c '^- \[' "$mem" 2>/dev/null); n=${n:-0}
   l=$(wc -l < "$mem" 2>/dev/null | tr -d ' '); l=${l:-0}
-  if [ "$n" -gt 90 ] || [ "$l" -gt 150 ]; then
-    echo "stale-handoff-guard: MEMORY.md at $n entries/$l lines — approaching the 200-line injection cliff (archive DONE entries to MEMORY-archive.md)"
+  b=$(wc -c < "$mem" 2>/dev/null | tr -d ' '); b=${b:-0}
+  # Real cut: 200 lines or 25 KB (25600 bytes), whichever comes first. Warn with headroom.
+  if [ "$l" -ge 180 ] || [ "$b" -ge 22528 ]; then
+    echo "stale-handoff-guard: MEMORY.md at $n entries/$l lines/$((b / 1024)) KB — approaching the injection cliff (Claude Code loads only the first 200 lines / 25 KB; archive DONE entries to MEMORY-archive.md)"
   fi
 fi
 exit 0

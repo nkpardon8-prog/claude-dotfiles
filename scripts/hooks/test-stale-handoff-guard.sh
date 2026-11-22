@@ -108,10 +108,23 @@ R="$T/memwarn"; mkrepo "$R"
 CANON=$(cd "$R" && . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-locate.sh" 2>/dev/null && handoff_canonical_root)
 memdir="$HOME/.claude/projects/$(printf '%s' "$CANON" | tr '/.' '--')/memory"
 mkdir -p "$memdir"
-{ for i in $(seq 1 95); do echo "- [entry $i](f$i.md) — hook"; done; } > "$memdir/MEMORY.md"
+# 8a. over the line threshold (185 short lines, ~5 KB) -> warns
+{ for i in $(seq 1 185); do echo "- [entry $i](f$i.md) - hook"; done; } > "$memdir/MEMORY.md"
 out=$(run_guard "$R")
-printf '%s' "$out" | grep -q "injection cliff" && ok "memory-cliff warning fires at 95 entries" \
-  || bad "memory-cliff warning fires at 95 entries (out=$out)"
+printf '%s' "$out" | grep -q "injection cliff" && ok "memory-cliff warning fires at 185 lines" \
+  || bad "memory-cliff warning fires at 185 lines (out=$out)"
+# 8b. under the line threshold but over 22 KB (120 lines x ~200 bytes) -> warns
+pad=$(printf '%0180d' 0)
+{ for i in $(seq 1 120); do echo "- [entry $i](f$i.md) - $pad"; done; } > "$memdir/MEMORY.md"
+out=$(run_guard "$R")
+printf '%s' "$out" | grep -q "injection cliff" && ok "memory-cliff warning fires at 120 lines / >22 KB" \
+  || bad "memory-cliff warning fires at 120 lines / >22 KB (out=$out)"
+# 8c. many entries but under both limits (160 lines, ~20 KB) -> silent
+pad=$(printf '%0100d' 0)
+{ for i in $(seq 1 160); do echo "- [entry $i](f$i.md) - $pad"; done; } > "$memdir/MEMORY.md"
+out=$(run_guard "$R")
+[ -z "$out" ] && ok "memory-cliff silent at 160 entries/lines under 22 KB" \
+  || bad "memory-cliff silent at 160 entries/lines under 22 KB (out=$out)"
 rm -rf "$memdir" 2>/dev/null; rmdir "$(dirname "$memdir")" 2>/dev/null
 
 echo
