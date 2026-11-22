@@ -90,6 +90,9 @@ gen>=2 idtags are auto-prefixed `g<G>-` (pass the bare form). `at=` is writer-st
 - `[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12> needs=<none|N[,N...]>` (`m<N>-part-start`).
 - `[mission] RECIPE part=<N> v=<1|2> tier=<low|normal|high> floor=<none|money|phi|auth|odwrite|migration>[,...] plan=<cap> review=<budget> budget=<min> live=<yes|no> overlap=<none|plan-next> needs=<none|N[,N...]>` (`m<N>-recipe-v<V>`).
 - `[mission] SWEEP part=<N> round=<K> types=<KEY,...> sha=<sha12> instances=<n> report=<path>` (`m<N>-sweep-r<K>-s<S>`).
+  A long type list may be split across several SWEEP lines (same round, next `-s<S>`): PART-DONE checks the union of
+  clean sweeps logged after the last fix. bank-review stores a long repeat-key list in `RKEYS` chunk lines it alone
+  writes (`rkeys=+<n>` on the evidence); PART-DONE refuses if any chunk is missing (owner pd:19, 2026-11-22).
 - `[mission] FULL-SUITE part=<N> sha=<sha12> attempt=<a> base=<sha12> env=<key-hash> completed=yes new-reds=<n> report=<path>` (`m<N>-suite-<sha12>-a<a>`).
 - `[mission] live-verify part=<N> sha=<sha12> attempt=<a> status=<sent|ok|fail|n/a> [evidence=<token>|reason=<slug>]` (`m<N>-live-<sha12>-a<a>-sent` / `-result`).
 - `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>` (`m<N>-fail-<reason>-<A>`).

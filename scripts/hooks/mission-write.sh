@@ -987,14 +987,15 @@ _p2_partdone() {
   _pd_miss=$(_p2_legs "$1" "$_pd_fz"); [ -z "$_pd_miss" ] || _mw_emit_refuse log 4 "REFUSED: close leg $_pd_miss not passing at freeze $_pd_fz"
   # sweep coverage: every repeat key raised in the part, by a clean sweep logged after the last fix line.
   # rkeys= is read from the fields BEFORE report= (a report path may contain " rkeys="). rkeys=+<n> means the keys are in
-  # n RKEYS chunk lines for that part/round/scope; fewer than n distinct chunks = REFUSED (fail closed).
+  # n RKEYS chunk lines for that part/round/scope; fewer than n distinct chunks = REFUSED (fail closed). Keys from EVERY
+  # chunk line count (a conflicting duplicate chunk can only add keys to sweep, never hide one).
   _pd_keys=""
   _pd_ev=$(_p2_evid "$1" '(delta|close)' | awk '{i=index($0," report="); if(i) $0=substr($0,1,i-1); print}')
   while IFS= read -r _pe; do [ -n "$_pe" ] || continue
     _pk=$(printf '%s' "$_pe" | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p')
     case "$_pk" in
       (+*) _pr=$(_mw_efield "$_pe" round); _psc=$(_mw_efield "$_pe" scope)
-           _pch=$(_p2_lines "m$1-rkeys-$_psc-r$_pr-c[0-9]+\$" "RKEYS part=$1 round=$_pr scope=$_psc " | awk '{ for(i=1;i<=NF;i++){ if ($i ~ /^chunk=/) c=$i; if ($i ~ /^keys=/) k=substr($i,6) } if (!(c in seen)) { seen[c]=1; n++; print k } } END { print "#" n }')
+           _pch=$(_p2_lines "m$1-rkeys-$_psc-r$_pr-c[0-9]+\$" "RKEYS part=$1 round=$_pr scope=$_psc " | awk '{ for(i=1;i<=NF;i++){ if ($i ~ /^chunk=/) c=$i; if ($i ~ /^keys=/) k=substr($i,6) } print k; if (!(c in seen)) { seen[c]=1; n++ } } END { print "#" n }')
            [ "$(printf '%s\n' "$_pch" | tail -1)" = "#${_pk#+}" ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE: review round $_pr ($_psc) names ${_pk#+} repeat-key chunks but the log holds $(printf '%s\n' "$_pch" | tail -1 | tr -d '#')"
            _pd_keys="$_pd_keys
 $(printf '%s\n' "$_pch" | sed '$d' | tr ',' '\n')" ;;
@@ -1015,7 +1016,7 @@ EOF
       END { for(s=1;s<=ns;s++) if (snr[s]>lf) cov=cov "," sty[s] ","
             n=split(keys,k,","); ok=1; for(i=1;i<=n;i++) if (k[i]!="" && index(cov, "," k[i] ",")==0) ok=0
             print ok ? "yes" : "no" }')
-    [ "$_pd_ok" = yes ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE needs clean SWEEPs (after the last fix) covering repeat types [$(printf '%s' "$_pd_keys" | tr '\n' ' ')] logged after the last fix"
+    [ "$_pd_ok" = yes ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE needs a clean SWEEP covering repeat types (several sweeps may share them) [$(printf '%s' "$_pd_keys" | tr '\n' ' ')] logged after the last fix"
   fi
   _pd_cur=$(_mission_tree_fingerprint_v2 "$(mission_part_worktree "$P2S" "$1" "$2")")
   [ "$_pd_cur" = "$(_p2_fv "$_pd_snap" tree)" ] \
@@ -1143,6 +1144,9 @@ _p2_bank_review() {
   if [ "$_brk" != - ] && [ "$(printf '%s\tg99-m%s-review-evidence-%s-r%s at=0000000000\n' "$_bline" "$_bn" "$_bsc" "$_bk" | LC_ALL=C wc -c | tr -d ' ')" -ge 470 ]; then
     _bchunks=$(printf '%s\n' "$_brk" | tr ',' '\n' | awk 'BEGIN{c=""} { if (length(c)+length($0)+1 > 200 && c!="") { print c; c=$0 } else { c=(c=="" ? $0 : c "," $0) } } END { if (c!="") print c }')
     _bnc=$(printf '%s\n' "$_bchunks" | grep -c .); _bi=0
+    # size the FINAL evidence (rkeys=+n) before any chunk is written: an over-budget line must refuse with nothing written
+    [ "$(printf '%s\tg99-m%s-review-evidence-%s-r%s at=0000000000\n' "${_bline%% rkeys=*} rkeys=+$_bnc result=$_bres report=$_brep" "$_bn" "$_bsc" "$_bk" | LC_ALL=C wc -c | tr -d ' ')" -lt 480 ] \
+      || _mw_emit_refuse bank-review 1 "REFUSED: evidence line over the 480B budget even with chunked keys (report path too long: $_brep)"
     printf '%s\n' "$_bchunks" | while IFS= read -r _bc; do _bi=$((_bi+1))
       _p2_append "$_bs" "$_br" "[mission] RKEYS part=$_bn round=$_bk scope=$_bsc chunk=$_bi/$_bnc keys=$_bc" "m$_bn-rkeys-$_bsc-r$_bk-c$_bi"
       case "$_MLA_OUTCOME" in appended|dedup-idempotent) : ;; *) exit 1 ;; esac
