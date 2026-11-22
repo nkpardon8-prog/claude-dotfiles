@@ -59,64 +59,76 @@ test('allowlist: exactly the dashboard vectors', () => {
   }
 });
 
-test('config: shareControl must be a boolean, shareCmd an absolute path', () => {
+test('config: shareControl must be a boolean', () => {
   const ok = { name: 'air', url: 'wss://x.example/ingest', key: 'k'.repeat(40) };
-  assert.deepEqual(r.validateConfig({ ...ok, shareControl: true, shareCmd: '/usr/local/bin/rdocker-share' }), []);
+  assert.deepEqual(r.validateConfig({ ...ok, shareControl: true }), []);
   assert.equal(r.validateConfig({ ...ok, shareControl: 'yes' }).length, 1);
-  assert.equal(r.validateConfig({ ...ok, shareCmd: 'rdocker-share' }).length, 1);
 });
 
 // ---- who may run the switch
 const UID = 501;
 const st = (o) => ({ isFile: () => o.kind === 'file', isDirectory: () => o.kind === 'dir', uid: o.uid ?? UID, mode: o.mode ?? 0o100755 });
-const fsOf = (over = {}) => {
-  const tree = {
-    '/Users/Shared/rdocker/share': st({ kind: 'file', mode: 0o100644 }),
-    '/Users/Shared/rdocker': st({ kind: 'dir', mode: 0o40755 }),
-    '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 0 }),
-    ...over,
-  };
-  const get = (p) => {
+const TREE = {
+  '/Users/Shared/rdocker/share': st({ kind: 'file', mode: 0o100644 }),
+  '/Users/Shared/rdocker': st({ kind: 'dir', mode: 0o40755 }),
+  '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 0 }),
+  '/usr/local/bin': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
+};
+const lstatOf = (over = {}) => {
+  const tree = { ...TREE, ...over };
+  return (p) => {
     if (!tree[p]) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     return tree[p];
   };
-  return { lstat: get, stat: get };
 };
-const check = (cfg, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, ...fsOf(), ...deps });
+const CFG = { shareControl: true, url: 'wss://spine.example/ingest' };
+const check = (cfg = CFG, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, euid: UID, lstat: lstatOf(), ...deps });
+const why = (over, deps = {}) => check(CFG, { lstat: lstatOf(over), ...deps }).why ?? 'ok';
 
-test('check: only with shareControl:true, on macOS, not root, as the owner of the share file and folder', () => {
-  assert.deepEqual(check({ shareControl: true }), { ok: true, cmd: '/usr/local/bin/rdocker-share' });
-  assert.equal(check({}).ok, false);
-  assert.equal(check({ shareControl: 'true' }).ok, false);
-  assert.equal(check({ shareControl: false }).ok, false);
-  assert.match(check({ shareControl: true }, { platform: 'linux' }).why, /not a Mac/);
-  assert.match(check({ shareControl: true }, { uid: 0 }).why, /root/);
+test('check: only with shareControl:true over wss, on macOS, not root, as the owner of the share file and folder', () => {
+  assert.deepEqual(check(), { ok: true, cmd: '/usr/local/bin/rdocker-share' });
+  assert.equal(check({ url: CFG.url }).ok, false);
+  assert.equal(check({ ...CFG, shareControl: 'true' }).ok, false);
+  assert.equal(check({ ...CFG, shareControl: false }).ok, false);
+  assert.match(check({ ...CFG, url: 'ws://localhost:8787/ingest' }).why, /wss/);
+  assert.match(check(CFG, { platform: 'linux' }).why, /not a Mac/);
+  assert.match(check(CFG, { uid: 0, euid: 0 }).why, /root/);
+  assert.match(check(CFG, { euid: 0 }).why, /root/);
+  assert.match(check(CFG, { euid: 502 }).why, /mixed/);
   // ethanair: the reporter runs as rd (uid 502), the share file belongs to its owner (501)
-  assert.match(check({ shareControl: true }, { uid: 502 }).why, /not owned by this user/);
-  assert.match(check({ shareControl: true }, fsOf({ '/Users/Shared/rdocker': st({ kind: 'dir', uid: 0 }) })).why, /\/Users\/Shared\/rdocker is not owned/);
-  assert.match(check({ shareControl: true }, fsOf({ '/Users/Shared/rdocker/share': undefined })).why, /missing/);
-  // a symlinked share file (lstat sees the link) is refused
-  assert.match(check({ shareControl: true }, fsOf({ '/Users/Shared/rdocker/share': st({ kind: 'link' }) })).why, /not a regular file/);
+  assert.match(check(CFG, { uid: 502, euid: 502 }).why, /not owned by this user/);
+  assert.match(why({ '/Users/Shared/rdocker': st({ kind: 'dir', uid: 0 }) }), /not owned by this user/);
+  assert.match(why({ '/Users/Shared/rdocker/share': undefined }), /missing/);
+  assert.match(why({ '/Users/Shared/rdocker/share': st({ kind: 'link' }) }), /not a regular file/); // lstat: a symlink is refused
+  assert.match(why({ '/Users/Shared/rdocker': st({ kind: 'dir', mode: 0o40775 }) }), /writable by group/);
+  assert.match(why({ '/Users/Shared/rdocker/share': st({ kind: 'file', mode: 0o100666 }) }), /writable by group/);
+  // the config cannot move the checked file or the program
+  assert.equal(check({ ...CFG, shareFile: '/tmp/mine', shareCmd: '/tmp/x' }).ok, true);
+  assert.equal(check({ ...CFG, shareFile: '/tmp/mine', shareCmd: '/tmp/x' }).cmd, '/usr/local/bin/rdocker-share');
 });
 
-test('check: rdocker-share must be an executable owned by root or this user, not group/other writable', () => {
-  assert.match(check({ shareControl: true }, fsOf({ '/usr/local/bin/rdocker-share': undefined })).why, /missing/);
-  assert.match(check({ shareControl: true }, fsOf({ '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 0, mode: 0o100777 }) })).why, /writable/);
-  assert.match(check({ shareControl: true }, fsOf({ '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 0, mode: 0o100644 }) })).why, /not an executable/);
-  assert.match(check({ shareControl: true }, fsOf({ '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 502 }) })).why, /not owned by root or this user/);
-  assert.equal(check({ shareControl: true }, fsOf({ '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: UID, mode: 0o100700 }) })).ok, true);
-  const custom = check({ shareControl: true, shareCmd: '/opt/x/rs' }, fsOf({ '/opt/x/rs': st({ kind: 'file', uid: 0 }) }));
-  assert.deepEqual(custom, { ok: true, cmd: '/opt/x/rs' });
+test('check: rdocker-share must be a root/own, non-set-id, non-symlink executable in a root-owned folder, none writable by others', () => {
+  const C = '/usr/local/bin/rdocker-share';
+  assert.match(why({ [C]: undefined }), /missing/);
+  assert.match(why({ [C]: st({ kind: 'link', uid: 0 }) }), /not an executable/);
+  assert.match(why({ [C]: st({ kind: 'file', uid: 0, mode: 0o100777 }) }), /writable/);
+  assert.match(why({ [C]: st({ kind: 'file', uid: 0, mode: 0o100644 }) }), /not an executable/);
+  assert.match(why({ [C]: st({ kind: 'file', uid: 0, mode: 0o104755 }) }), /set-id/);
+  assert.match(why({ [C]: st({ kind: 'file', uid: 502 }) }), /not owned by root or this user/);
+  assert.match(why({ '/usr/local/bin': st({ kind: 'dir', uid: 502 }) }), /folder owned by root/);
+  assert.match(why({ '/usr/local/bin': st({ kind: 'dir', uid: 0, mode: 0o40777 }) }), /writable/);
+  assert.equal(why({ [C]: st({ kind: 'file', uid: UID, mode: 0o100700 }) }), 'ok');
 });
 
 // ---- orders
 const T = 1_800_000_000_000;
 const N = (i) => i.toString(16).padStart(32, '0');
+const CONN = 'c'.repeat(32);
 function ctl({ enabled = true, result = { ok: true, out: 'Sharing is LOW' }, clock = { t: T } } = {}) {
   const calls = [];
   let gate = null;
   const c = r.createShareControl(
-    { shareControl: enabled },
+    CFG,
     {
       check: () => (enabled ? { ok: true, cmd: '/usr/local/bin/rdocker-share' } : { ok: false, why: 'shareControl is not enabled in reporter.json' }),
       run: async (cmd, args) => {
@@ -128,26 +140,35 @@ function ctl({ enabled = true, result = { ok: true, out: 'Sharing is LOW' }, clo
       log: () => {},
     },
   );
-  return { c, calls, clock, hold: () => { let open; gate = new Promise((res) => (open = res)); return () => { gate = null; open(); }; } };
+  const handle = (o, conn = CONN) => c.handle(o, conn);
+  return { c, handle, calls, clock, hold: () => { let open; gate = new Promise((res) => (open = res)); return () => { gate = null; open(); }; } };
 }
-const order = (i, cmd, exp = T + 60_000) => ({ t: 'share', nonce: N(i), exp, cmd });
+const order = (i, cmd, exp = T + 60_000, conn = CONN) => ({ t: 'share', nonce: N(i), exp, conn, cmd });
 
 test('order: runs the allowlisted argv and acks with the nonce', async () => {
-  const { c, calls } = ctl();
-  assert.deepEqual(await c.handle(order(1, { op: 'low' })), { t: 'share-ack', nonce: N(1), ok: true, code: 'ok', out: 'Sharing is LOW' });
-  assert.deepEqual(await c.handle(order(2, { op: 'cpu', n: 75 })), { t: 'share-ack', nonce: N(2), ok: true, code: 'ok', out: 'Sharing is LOW' });
+  const { c, handle, calls } = ctl();
+  assert.deepEqual(await handle(order(1, { op: 'low' })), { t: 'share-ack', nonce: N(1), ok: true, code: 'ok', out: 'Sharing is LOW' });
+  assert.deepEqual(await handle(order(2, { op: 'cpu', n: 75 })), { t: 'share-ack', nonce: N(2), ok: true, code: 'ok', out: 'Sharing is LOW' });
   assert.deepEqual(calls, [['/usr/local/bin/rdocker-share', 'low'], ['/usr/local/bin/rdocker-share', 'cpu', '75']]);
   assert.equal(c.enabled(), true);
 });
 
+test('order: only on the connection it was sent to, after the hello was accepted', async () => {
+  const { handle, calls } = ctl();
+  assert.equal((await handle(order(1, { op: 'low' }), null)).code, 'replay'); // hello not accepted yet
+  assert.equal((await handle(order(2, { op: 'low' }, T + 60_000, 'd'.repeat(32)))).code, 'replay'); // another connection's order
+  assert.equal((await handle({ ...order(3, { op: 'low' }), conn: undefined })).code, 'replay');
+  assert.deepEqual(calls, []);
+});
+
 test('order: a failing switch is acked as failed', async () => {
-  const { c } = ctl({ result: { ok: false, out: 'rdocker share: could not write' } });
-  assert.deepEqual(await c.handle(order(1, { op: 'off' })), { t: 'share-ack', nonce: N(1), ok: false, code: 'failed', out: 'rdocker share: could not write' });
+  const { handle } = ctl({ result: { ok: false, out: 'rdocker share: could not write' } });
+  assert.deepEqual(await handle(order(1, { op: 'off' })), { t: 'share-ack', nonce: N(1), ok: false, code: 'failed', out: 'rdocker share: could not write' });
 });
 
 test('order: refused when the owner did not opt in; nothing runs', async () => {
-  const { c, calls } = ctl({ enabled: false });
-  const a = await c.handle(order(1, { op: 'low' }));
+  const { c, handle, calls } = ctl({ enabled: false });
+  const a = await handle(order(1, { op: 'low' }));
   assert.equal(a.code, 'disabled');
   assert.equal(a.ok, false);
   assert.equal(c.enabled(), false);
@@ -155,38 +176,38 @@ test('order: refused when the owner did not opt in; nothing runs', async () => {
 });
 
 test('order: replays, expired orders, far-future expiry and bad nonces are refused', async () => {
-  const { c, calls, clock } = ctl();
-  await c.handle(order(1, { op: 'low' }));
-  assert.equal((await c.handle(order(1, { op: 'low' }))).code, 'replay');
-  assert.equal((await c.handle(order(2, { op: 'low' }, T - 10_000))).code, 'expired');
-  assert.equal((await c.handle(order(3, { op: 'low' }, T + 10 * 60_000))).code, 'expired');
-  assert.equal((await c.handle(order(4, { op: 'low' }, 'soon'))).code, 'expired');
-  assert.equal((await c.handle(order(2, { op: 'low' }))).code, 'replay'); // a refused nonce stays used
-  assert.equal(await c.handle({ t: 'share', nonce: 'nope', exp: T + 1000, cmd: { op: 'low' } }), null);
-  assert.equal(await c.handle({ t: 'share', exp: T + 1000, cmd: { op: 'low' } }), null);
-  // within the skew allowance an order just past exp still runs; the nonce is still remembered after
-  clock.t = T + 60_000 + 4_000;
-  assert.equal((await c.handle(order(5, { op: 'high' }))).code, 'ok');
-  clock.t = T + 60_000 + 6_000;
-  assert.equal((await c.handle(order(6, { op: 'high' }))).code, 'expired');
-  assert.equal((await c.handle(order(1, { op: 'low' }))).code, 'replay');
+  const { handle, calls, clock } = ctl();
+  await handle(order(1, { op: 'low' }));
+  assert.equal((await handle(order(1, { op: 'low' }))).code, 'replay');
+  assert.equal((await handle(order(2, { op: 'low' }, T - 1))).code, 'expired');
+  assert.equal((await handle(order(3, { op: 'low' }, T + 66_000))).code, 'expired');
+  assert.equal((await handle(order(4, { op: 'low' }, 'soon'))).code, 'expired');
+  assert.equal((await handle(order(2, { op: 'low' }))).code, 'replay'); // a refused nonce stays used
+  assert.equal(await handle({ t: 'share', nonce: 'nope', exp: T + 1000, conn: CONN, cmd: { op: 'low' } }), null);
+  assert.equal(await handle({ t: 'share', exp: T + 1000, conn: CONN, cmd: { op: 'low' } }), null);
+  // at its expiry it still runs; a moment after it does not; the nonce is remembered after
+  clock.t = T + 60_000;
+  assert.equal((await handle(order(5, { op: 'high' }))).code, 'ok');
+  clock.t = T + 60_001;
+  assert.equal((await handle(order(6, { op: 'high' }))).code, 'expired');
+  assert.equal((await handle(order(1, { op: 'low' }))).code, 'replay');
   assert.deepEqual(calls.length, 2);
 });
 
 test('order: off the allowlist is refused without running anything', async () => {
-  const { c, calls } = ctl();
+  const { handle, calls } = ctl();
   for (const [i, cmd] of [[1, { op: 'status' }], [2, { op: 'cpu', n: '50' }], [3, { op: 'low; reboot' }], [4, 'low'], [5, null]]) {
-    assert.equal((await c.handle(order(i, cmd))).code, 'invalid', JSON.stringify(cmd));
+    assert.equal((await handle(order(i, cmd))).code, 'invalid', JSON.stringify(cmd));
   }
   assert.deepEqual(calls, []);
 });
 
 test('order: one at a time', async () => {
-  const { c, calls, hold } = ctl();
+  const { handle, calls, hold } = ctl();
   const release = hold();
-  const first = c.handle(order(1, { op: 'low' }));
+  const first = handle(order(1, { op: 'low' }));
   await new Promise((res) => setImmediate(res));
-  assert.equal((await c.handle(order(2, { op: 'high' }))).code, 'busy');
+  assert.equal((await handle(order(2, { op: 'high' }))).code, 'busy');
   release();
   assert.equal((await first).code, 'ok');
   assert.equal(calls.length, 1);
@@ -212,8 +233,17 @@ test('runShare: killed at its timeout, exit codes become failures', async () => 
   const fail = path.join(tmp, 'fail.sh');
   fs.writeFileSync(fail, '#!/bin/sh\necho "rdocker share: cpu must be 10-100" >&2\nexit 2\n', { mode: 0o755 });
   const t0 = Date.now();
-  assert.deepEqual(await r.runShare(slow, [], 300), { ok: false, out: 'timed out after 0.3s' });
+  assert.deepEqual(await r.runShare(slow, [], 300), { ok: false, out: 'timed out after 0.3s; the result is unknown' });
   assert.ok(Date.now() - t0 < 3000);
+  // the switch's own children die with it (its process group is killed whole)
+  const pidFile = path.join(tmp, 'child.pid');
+  const parent = path.join(tmp, 'parent.sh');
+  fs.writeFileSync(parent, `#!/bin/sh\n/bin/sleep 30 &\necho $! > '${pidFile}'\nwait\n`, { mode: 0o755 });
+  assert.equal((await r.runShare(parent, [], 300)).ok, false);
+  const child = Number(fs.readFileSync(pidFile, 'utf8'));
+  await new Promise((res) => setTimeout(res, 100));
+  assert.throws(() => process.kill(child, 0), /ESRCH/);
+  assert.deepEqual(await r.runShare(path.join(tmp, 'nope'), []), { ok: false, out: 'could not start: ENOENT' });
   assert.deepEqual(await r.runShare(fail, ['cpu', '5']), { ok: false, out: 'rdocker share: cpu must be 10-100' });
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -250,17 +280,18 @@ test('real switch: a low order rewrites the share file, stop asks for the stop',
   fs.writeFileSync(wrap, `#!/bin/sh\nRR_SHARE_FILE='${file}' RR_SLOTS_DIR='${tmp}/slots' exec /bin/sh '${SHARE_SH}' "$@"\n`, { mode: 0o755 });
   fs.chmodSync(wrap, 0o755);
   fs.chmodSync(tmp, 0o755);
-  const c = r.createShareControl({ shareControl: true, shareFile: file, shareCmd: wrap }, { log: () => {} });
+  const cfg = { shareControl: true, url: 'wss://spine.example/ingest' };
+  const c = r.createShareControl(cfg, { check: () => r.shareControlCheck(cfg, { shareFile: file, shareCmd: wrap }), log: () => {} });
   assert.equal(c.enabled(), true);
   const now = Date.now();
-  const a = await c.handle({ t: 'share', nonce: N(1), exp: now + 60_000, cmd: { op: 'low' } });
+  const a = await c.handle({ t: 'share', nonce: N(1), exp: now + 60_000, conn: CONN, cmd: { op: 'low' } }, CONN);
   assert.equal(a.code, 'ok', a.out);
   assert.match(a.out, /Sharing is LOW/);
   assert.equal(fs.readFileSync(file, 'utf8'), 'low\n');
-  const b = await c.handle({ t: 'share', nonce: N(2), exp: now + 60_000, cmd: { op: 'cpu', n: 50 } });
+  const b = await c.handle({ t: 'share', nonce: N(2), exp: now + 60_000, conn: CONN, cmd: { op: 'cpu', n: 50 } }, CONN);
   assert.equal(b.code, 'ok', b.out);
   assert.match(fs.readFileSync(file, 'utf8'), /^cpu=50 ram=\d+\n$/);
-  const s = await c.handle({ t: 'share', nonce: N(3), exp: now + 60_000, cmd: { op: 'stop' } });
+  const s = await c.handle({ t: 'share', nonce: N(3), exp: now + 60_000, conn: CONN, cmd: { op: 'stop' } }, CONN);
   assert.equal(s.code, 'ok', s.out);
   assert.equal(fs.readFileSync(file, 'utf8'), 'off\n');
   assert.ok(fs.existsSync(path.join(tmp, 'stop-jobs')));
