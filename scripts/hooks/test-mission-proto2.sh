@@ -416,15 +416,13 @@ start_part 1
 _h=$(commit "$W" "rk-work")
 set -- ; _rkall=""; for k in GATE-ORDER-INVARIANT GRANT-CLASS-SCOPE-WIDENING EGRESS-RECHECK-AFTER-WAIT AUDIT-TWIN-SAME-TX CARD-COPY-OVERCLAIM LOCK-REASON-STALE DIRECTOR-SEAT-AUTHORITY SWEEP-SCANNER-COVERAGE RACE-WINDOW-REVISION CACHE-ARBITRATION-ORDER; do _rkall="$_rkall $k"; set -- "$@" "$(tag "$k" repeat)"; done
 has "bank-review ok" "$(mw bank-review "$S" "$R" 1 3 delta "$(code_report "$B" "$_h" full 4 3 ok 10 "$@")" "$(IMPLOUT)")" "rk1 a delta round naming 10 repeat types is banked, not rerouted"
-_rkv=$(grep -a 'REVIEW-EVIDENCE part=1 round=3' "$R/MISSION.$S.log" | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p')
-has "@" "$_rkv" "rk2 the long key list is stored as a sidecar reference"
-eq "$(printf '%s\n' $_rkall | sort -u | paste -sd, -)" "$(cat "$R/.mission-backups/rkeys/${_rkv#@}" 2>/dev/null)" "rk3 the sidecar holds every repeat key"
-_kl=$(mw keylist "$S" "$R" "$(printf '%s\n' $_rkall | paste -sd, -)")
-has "$_rkv" "$_kl" "rk4 keylist verb stores the same sorted list under the same @ref"
-has "log ok" "$(lg "[mission] SWEEP part=1 round=3 types=$_kl sha=$_h instances=0 report=$(IMPLOUT)" m1-sweep-r3-s1)" "rk5 a SWEEP line may name its types by @ref"
-has "FAILED" "$(mw keylist "$S" "$R" "bad key")" "rk6 keylist refuses a malformed key"
-printf 'X\n' >> "$R/.mission-backups/rkeys/${_rkv#@}"
-has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk7 PART-DONE refused (sidecar altered; join also missing)"
+_rkv=$(grep -a 'REVIEW-EVIDENCE part=1 round=3' "$R/MISSION.$S.log" | sed -n 's/.* rkeys=\([^ ]*\) result=.*/\1/p')
+has "+" "$_rkv" "rk2 the long key list is referenced as chunk lines (rkeys=+n)"
+eq "$(printf '%s\n' $_rkall | sort -u | paste -sd, -)" "$(grep -a 'RKEYS part=1 round=3 scope=delta' "$R/MISSION.$S.log" | sed -n 's/.* keys=\([^ ]*\).*/\1/p' | tr ',' '\n' | sed 's/[[:space:]].*//' | grep . | sort -u | paste -sd, -)" "rk3 the chunks hold every repeat key"
+eq "${_rkv#+}" "$(grep -ac 'RKEYS part=1 round=3 scope=delta' "$R/MISSION.$S.log")" "rk4 chunk count matches rkeys=+n"
+has "FAILED" "$(lg "[mission] RKEYS part=1 round=9 scope=delta chunk=1/1 keys=X" m1-rkeys-delta-r9-c1)" "rk5 an agent cannot write RKEYS lines through log"
+has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=4 dry=0" m1-fix-r4-d0)" "rk6 fix line"
+has "rc=4" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "rk7 (sanity) PART-DONE still refused before join/sweeps"
 
 echo "== wake origin =="
 PY="$HERE/lib/mission-liveness-parse.py"
