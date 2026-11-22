@@ -829,9 +829,13 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   daemon `rd-worker-mac` turns into USR1 for the `rd` user's runners only: a job before GO is refused like
   share off (it moves on, nothing ran), a started command is stopped like a client KILL (runs.log
   `interrupted`, never a pool failure).
-- **A Mac that is worker and agent (the Air):** `rd_pool.is_self` leaves a fleet worker whose ip is one of
-  this machine's own addresses out of its plan, so agents on the Air never send their own jobs to the Air
-  through the pool (they go to the other workers, or run locally, as on any agent Mac).
+- **A Mac that is worker and agent (the Air, Nick's MacBook Pro):** heavy work never runs on the agent's
+  Mac, unless that Mac is a worker with its share switch on. `rd_pool.is_self` finds the fleet worker whose
+  ip is one of this machine's own addresses; while its share level here is on (low / medium / high /
+  custom, `rd_pool.self_share`) its own agents' jobs go to its own capped `rd` worker FIRST (over ssh, like
+  any worker, under the share caps; no optional margin, wins a tie), overflowing to the pool when its slots
+  are full or its classes do not take the job (db jobs from the Air still go to the pool). Share off, no
+  share file, or unreadable: it is left out of its own plan (`rrun --where` shows it as `self` with why).
 - **Docker on a Mac worker = Colima as `rd`, on purpose.** This is the scoped exception to "never start
   Colima" (that rule is for CLIENT Macs). Before a db job, or on a job's first docker call through the
   rrun shim, the runner checks `docker info`; if the engine is not answering it runs `colima start
