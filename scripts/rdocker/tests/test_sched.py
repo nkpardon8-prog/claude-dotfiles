@@ -233,6 +233,7 @@ class Eta(unittest.TestCase):
         p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)], {"laptop": lap(), "hp": hp}, job=TSC)
         self.assertEqual(self.names(p), ["laptop", "hp"])
         self.assertEqual(p.hosts[0].setup_base, 60.0)
+        self.assertIsNone(p.hosts[1].setup_base)        # a warm placement logs no spred_s: never a cold ratio
         p, _ = self.plan([worker("laptop", 0.45), worker("hp", 1.5)], {"laptop": lap(sover=[5.0]), "hp": hp}, job=TSC)
         self.assertEqual(self.names(p), ["hp", "laptop"])
         self.assertEqual((p.hosts[1].setup_s, p.hosts[1].setup_base), (240.0, 60.0))

@@ -1041,8 +1041,9 @@ def cold_p75(host):
 def setup_base(host):
     """The prepare estimate before any overrun correction: the p75 of this worker's warm or cold
     prepares (>= OWN_MIN of that kind), else WARM_SETUP_S / COLD_DEPS_S. rd_run sends the chosen
-    worker's as the runner header spred_s (runs.log), the reference setup_over measures against - so
-    the factor is measured against the uncorrected estimate and cannot feed on itself."""
+    worker's as the runner header spred_s (runs.log) when it expected a cold setup, the reference
+    setup_over measures against - so the factor is measured against the uncorrected estimate and cannot
+    feed on itself."""
     p = host.probe or {}
     xs = setup_samples(host, not p.get("warm_deps"))
     if len(xs) >= OWN_MIN:
@@ -1334,7 +1335,10 @@ def score(host, job, cfg=None, model=None):
     host.run_s = host.pred_s / host.eff
     host.run_hi = model.predict_hi(host, host.pred_s, host.src) / host.eff
     host.setup_s = setup_s(host)
-    host.setup_base = setup_base(host)   # rd_run sends it as spred_s (runs.log): setup_over's reference
+    # rd_run sends it as spred_s (runs.log), setup_over's reference - only for a placement that expected a
+    # cold setup: a warm estimate whose run then installed (a lockfile the probe did not see) is a warm
+    # misprediction, and would inflate the worker's cold factor
+    host.setup_base = setup_base(host) if not p.get("warm_deps") else None
     per_cpu = load / ncpu
     over = _num(cfg.get("rr_overload_ratio"), OVERLOAD_RATIO)
     if free > 0 and over > 0 and per_cpu >= over:

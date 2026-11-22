@@ -321,7 +321,8 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   lock_s=<s> slot_s=<s> spred_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
   `lock_s` = the client's wait for a worktree lane on its Mac (`-` from an older client), `slot_s` = the
   worker's own slot wait. `spred_s` (2026-11-21) = the client's setup estimate for that worker before
-  its overrun correction (`-` from an older client); the probe compares a cold `prepare_s` with it.
+  its overrun correction, sent only when it expected a cold setup (`-` otherwise and from an older
+  client); the probe compares a cold `prepare_s` with it.
   **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
   `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
   elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`

@@ -3129,8 +3129,9 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     pred = round(h.run_s, 1) if isinstance(h.run_s, (int, float)) else None
     if pred is not None:
         ROUTE_EXTRA["pred_s"] = pred
-    # the setup estimate before its overrun correction (rd_pool.setup_base): runs.log spred_s, so the
-    # next placement can measure how far this worker's cold setups overran (rd_pool.setup_over)
+    # the setup estimate before its overrun correction (rd_pool.setup_base; None unless the placement
+    # expected a cold setup): runs.log spred_s, so the next placement can measure how far this worker's
+    # cold setups overran (rd_pool.setup_over)
     sbase = getattr(h, "setup_base", None)
     spred = round(sbase, 1) if isinstance(sbase, (int, float)) else None
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs,
