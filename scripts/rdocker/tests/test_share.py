@@ -294,10 +294,11 @@ class ShareScript(unittest.TestCase):
         bindir = os.path.join(self.d, "lonely")
         os.makedirs(bindir)
         shutil.copy(PLUGIN, os.path.join(bindir, "rdocker-share.1m.sh"))
-        out = self.share(cmd=os.path.join(bindir, "rdocker-share.1m.sh"), RDOCKER_SHARE_CMD="").stdout
+        out = self.share(cmd=os.path.join(bindir, "rdocker-share.1m.sh"), RDOCKER_SHARE_CMD="",
+                         RDOCKER_SHARE_PATHS=os.path.join(bindir, "none")).stdout
         self.assertIn("rdocker-share not installed", out)
 
-    def test_menu_title_presets_custom_submenu_and_stop(self):
+    def test_menu_title_presets_limits_and_stop(self):
         self.share("cpu", "75")
         self.share("ram", "4")
         out = self.plugin()
@@ -306,26 +307,37 @@ class ShareScript(unittest.TestCase):
         cmd = r'bash="[^"]+rdocker-share\.sh"'
         presets = [l for l in out if l.startswith(("Off - ", "Low - ", "Medium - ", "High - "))]
         self.assertEqual([p.split(" |")[0] for p in presets],
-                         ["Off - no new jobs (running ones finish)", "Low - 25 % CPU, up to 4 GB",
-                          "Medium - 50 % CPU, up to 8 GB", "High - all CPU, up to 12 GB"])
+                         ["Off - no new jobs (running ones finish)", "Low - 2 cores, up to 4 GB",
+                          "Medium - 5 cores, up to 8 GB", "High - all 10 cores, up to 12 GB"])
         for p, word in zip(presets, ("off", "low", "medium", "high")):
             self.assertRegex(p, r" \| %s param1=%s terminal=false refresh=true$" % (cmd, word))   # one click
-        self.assertIn("Custom (75 % · 4 GB) | checked=true", out)
-        cpu = [l for l in out if l.startswith("--CPU ")]
-        ram = [l for l in out if l.startswith("--RAM cap ")]
-        self.assertEqual([l.split(" |")[0] for l in cpu], ["--CPU 25 %", "--CPU 50 %", "--CPU 75 %", "--CPU 100 %"])
-        self.assertEqual([l.split(" |")[0] for l in ram], ["--RAM cap 2 GB", "--RAM cap 4 GB", "--RAM cap 6 GB",
-                                                           "--RAM cap 8 GB"])
+        self.assertFalse(any("checked=true" in p for p in presets))    # custom: no preset ticked
+        self.assertIn("CPU: 75 % (7 cores)", out)                     # submenu titles show what is in force
+        self.assertIn("RAM: up to 4 GB", out)
+        cpu = [l for l in out if l.startswith("--") and "param1=cpu" in l]
+        ram = [l for l in out if l.startswith("--") and "param1=ram" in l]
+        self.assertEqual([l.split(" |")[0] for l in cpu], ["--25 % (2 cores)", "--50 % (5 cores)",
+                                                           "--75 % (7 cores)", "--100 % (10 cores)"])
+        self.assertEqual([l.split(" |")[0] for l in ram], ["--up to 2 GB", "--up to 4 GB", "--up to 6 GB",
+                                                           "--up to 8 GB", "--up to 12 GB"])   # 16 GB Mac: <= 14
         self.assertRegex(cpu[2], r"param1=cpu param2=75 terminal=false refresh=true checked=true$")
         self.assertRegex(ram[1], r"param1=ram param2=4 terminal=false refresh=true checked=true$")
         self.assertEqual(sum("checked=true" in l for l in cpu + ram), 2)
-        self.assertIn("-----", out)                                    # the submenu separator
-        stop = [l for l in out if l.startswith("Off now (stop jobs) |")]
+        stop = [l for l in out if l.startswith("Stop the jobs running here now |")]
         self.assertEqual(len(stop), 1)
         self.assertRegex(stop[0], r"param1=stop terminal=false refresh=true$")
         # a click on an item = the command it names: the file follows
         self.share("cpu", "50")
         self.assertEqual(self.plugin()[0], "⚙ 50% · 4G | color=#36D399")
+
+    def test_menu_preset_ticks_its_own_values(self):
+        self.share("high")
+        out = self.plugin()
+        self.assertTrue(any(l.startswith("High - ") and l.endswith("checked=true") for l in out))
+        self.assertIn("CPU: 100 % (10 cores)", out)
+        self.assertIn("RAM: up to 12 GB", out)
+        ticked = [l.split(" |")[0] for l in out if l.startswith("--") and "checked=true" in l]
+        self.assertEqual(ticked, ["--100 % (10 cores)", "--up to 12 GB"])   # never a contradiction
 
     def test_menu_shows_jobs_paused_and_off(self):
         self.share("medium")
@@ -344,6 +356,8 @@ class ShareScript(unittest.TestCase):
         self.assertEqual(out[0], "⚙ off · 2▶ | color=#8a8a8a")
         self.assertIn("Sharing is OFF: no new jobs start here | color=gray", out)
         self.assertFalse(any(l.startswith("--") and "checked=true" in l for l in out))   # nothing ticked when off
+        self.assertIn("CPU: -", out)
+        self.assertIn("RAM: -", out)
 
 
 if __name__ == "__main__":
