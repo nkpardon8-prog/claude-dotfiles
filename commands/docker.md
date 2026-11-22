@@ -868,7 +868,7 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   the background, single instance (`~/rr/state/prune.lock`), nice 19 + `taskpolicy -b`: mirrors / store
   entries unused 2 days; below 25 % free on the `~/rr` volume (Mac default; Linux 20 %) the least recently
   used go until 30 % is free, anything not used in the last 10 min (Linux 30), never a mirror a running job
-  uses. Under that pressure, with no slot held and only while Colima already runs (never started for it),
+  uses. Under that pressure, with no slot held (it holds them all meanwhile) and only while Colima already runs (never started for it),
   also the Colima VM (its disk is on `~/rr`): stopped containers > 24 h, images and anonymous volumes no
   container uses, never `rdocker.keep`, then `fstrim`. Log: `/var/log/rd-worker-mac.log`. A Mac not yet
   re-installed can run `rd-tune prune-loop` as `rd` (detached; `~/rr/state/prune-loop.lock`,
