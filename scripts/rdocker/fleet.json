@@ -97,6 +97,29 @@
       ]
     },
     {
+      "name": "ethanair",
+      "alias": "rd-ethanair",
+      "ip": "100.108.237.100",
+      "port": 2222,
+      "user": "rd",
+      "os": "mac",
+      "roles": [
+        "worker"
+      ],
+      "speed": 4.0,
+      "max_slots": 5,
+      "heavy_slots": 3,
+      "mem_gb": 32,
+      "enabled": false,
+      "optional": true,
+      "classes": [
+        "light",
+        "normal",
+        "heavy",
+        "build"
+      ]
+    },
+    {
       "name": "mini-a",
       "alias": "rd-mini-a",
       "ip": "100.78.43.6",
