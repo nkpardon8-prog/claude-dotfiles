@@ -110,7 +110,7 @@
       "max_slots": 5,
       "heavy_slots": 3,
       "mem_gb": 32,
-      "enabled": false,
+      "enabled": true,
       "optional": true,
       "classes": [
         "light",
