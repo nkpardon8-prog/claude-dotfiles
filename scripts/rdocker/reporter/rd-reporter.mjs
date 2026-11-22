@@ -9,13 +9,17 @@
 //     "speed": 1.0,                        // optional: else fleet.json `speed` for this name, else 1
 //     "rrRoot": "~/rr",                    // optional: rrun server root (slots, wait, runs.log)
 //     "routeLog": "~/.local/state/rdocker/route.log", // optional (agent hosts): the rrun client's route.log
-//     "notify": true }                     // optional: show fleet alerts on this machine (agent Macs)
+//     "notify": true,                      // optional: show fleet alerts on this machine (agent Macs)
+//     "shareControl": true }               // optional (lent Macs, OWNER's reporter only): let dashboard admins
+//                                          //   change this Mac's share switch (see share control below)
 // Protocol (dashboard/shared/protocol.ts is the typed source of truth):
 //   -> {t:'hello', v:1, name, ts, nonce, sig[, notify:true]}  sig = hex HMAC-SHA256(key, "rd-ingest-v1|name|ts|nonce")
 //   <- {t:'mode', ms}                           60000 when nobody watches, 5000 while a browser is open
 //   -> {t:'f', ...frame}                        on wall-clock-aligned ticks of `ms`
 //   <- {t:'alert', events:[{kind, alert}]}      notify:true only; once per fire / resolve (see notify below)
 //   -> "ping"  <- "pong"                       after every frame; the DO's auto-response, feeds the watchdog
+//   <- {t:'share', nonce, exp, cmd}             control:true only; -> {t:'share-ack', nonce, ok, code, out}
+//   (hello carries control:true when shareControl is on AND this user may run the switch, see below)
 // CPU is sampled every 5 s locally; each frame carries the samples since the previous one (hist).
 //
 // Linux: /proc, /sys/class/hwmon, statfs; WSL: + Windows host RAM via powershell.exe (optional).
@@ -45,7 +49,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.3.0'; // 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.4.0'; // 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -293,6 +297,26 @@ export function parseShareLevel(text) {
     v[m[1]] = n;
   }
   return Object.keys(v).length ? { level: 'custom', cpu: v.cpu ?? 100 } : off;
+}
+
+/**
+ * The RAM cap (GB) the share text gives a machine with `memBytes` of memory, as rdocker-share shows it
+ * (share_caps ram_mb, then int GB): custom ram= as is; a preset its share of the memory; null = no cap
+ * (no file, a custom pick without ram=) or off.
+ */
+const SHARE_RAM_PCT = { low: 25, medium: 50, high: 75 };
+export function shareRamGb(text, memBytes) {
+  if (text == null) return null;
+  let s = String(text).trim();
+  s = SHARE_ALIAS[s] ?? s;
+  const { level } = parseShareLevel(text);
+  if (level === 'off') return null;
+  if (SHARE_RAM_PCT[s]) {
+    const totMb = Math.floor(memBytes / 1048576);
+    return totMb > 0 ? Math.floor(Math.floor((totMb * SHARE_RAM_PCT[s]) / 100) / 1024) : null;
+  }
+  const m = /(?:^|\s)ram=(\d{1,3})(?:\s|$)/.exec(s);
+  return m ? Number(m[1]) : null;
 }
 
 /** rd-worker-mac's status file ("jobs=N" / "ts=EPOCH", rewritten at least every 45 s) -> N, null when missing, malformed or older than maxAgeS. */
@@ -860,6 +884,8 @@ export function validateConfig(c) {
   else if (c.url.startsWith('ws://') && !/^ws:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(c.url)) errs.push('url: ws:// only for localhost');
   if (typeof c.key !== 'string' || c.key.length < 32) errs.push('key: at least 32 chars (npm run machine-key)');
   if (c.notify !== undefined && typeof c.notify !== 'boolean') errs.push('notify: true or false');
+  if (c.shareControl !== undefined && typeof c.shareControl !== 'boolean') errs.push('shareControl: true or false');
+  if (c.shareCmd !== undefined && (typeof c.shareCmd !== 'string' || !path.isAbsolute(c.shareCmd))) errs.push('shareCmd: an absolute path');
   return errs;
 }
 
@@ -965,6 +991,144 @@ export function createNotifier(deps = {}) {
     seen = plan.seen;
     for (const n of plan.notes) chain = chain.then(() => deliverNotification(n, deps)).catch(() => 'log');
     return chain;
+  };
+}
+
+// ---------------------------------------------------------------------------- share control
+// A dashboard admin may change this Mac's share switch (rdocker-share), the same choices as the SwiftBar
+// menu. Fail-closed at every step; the DO validates too, this side trusts nothing it is sent:
+//  - only when the OWNER set "shareControl": true in this reporter.json (absent/false: every order refused);
+//  - only on macOS, never as root, and only when this process's user owns the share file AND its folder
+//    (a reporter running as the pool user rd, e.g. ethanair, must never change its owner's switch);
+//  - rdocker-share must be a regular file owned by root or this user and not writable by group/others;
+//  - each order carries a 32-hex nonce (single use: remembered until its expiry) and an expiry on the
+//    server clock (refused after it, or when it claims to be valid for more than SHARE_MAX_AHEAD_MS);
+//  - the command must match the allowlist exactly (parseShareCmd, MIRROR of dashboard shared/protocol.ts;
+//    both test suites check the same vectors) and becomes argv for execFile (no shell), with a timeout,
+//    an env of PATH + LC_ALL only, one at a time.
+// Every order is answered with {t:'share-ack', nonce, ok, code, out} (refusals too).
+
+export const SHARE_RUN_TIMEOUT_MS = 15_000;
+export const SHARE_MAX_AHEAD_MS = 120_000;
+/** The clock difference tolerated on expiry (both ends run NTP; the hello allows +-60 s). */
+export const SHARE_SKEW_MS = 5_000;
+const SHARE_ENV = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' };
+const SHARE_WORDS = ['off', 'low', 'medium', 'high', 'stop'];
+const SHARE_RANGE = { cpu: [10, 100], ram: [1, 256] };
+const NONCE_RE = /^[0-9a-f]{32}$/;
+
+/** Strict allowlist: exactly {op:<word>} or {op:'cpu'|'ram', n:<integer in range>}; anything else = null. */
+export function parseShareCmd(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const keys = Object.keys(raw).sort().join(',');
+  if (typeof raw.op !== 'string') return null;
+  if (SHARE_WORDS.includes(raw.op)) return keys === 'op' ? { op: raw.op } : null;
+  if (raw.op !== 'cpu' && raw.op !== 'ram') return null;
+  if (keys !== 'n,op' || typeof raw.n !== 'number' || !Number.isInteger(raw.n)) return null;
+  const [lo, hi] = SHARE_RANGE[raw.op];
+  return raw.n >= lo && raw.n <= hi ? { op: raw.op, n: raw.n } : null;
+}
+
+export const shareArgv = (c) => ('n' in c ? [c.op, String(c.n)] : [c.op]);
+
+/**
+ * May this process run the share switch? -> {ok: true, cmd} or {ok: false, why}. Re-checked on every order.
+ * deps (tests): platform, uid, lstat, stat.
+ */
+export function shareControlCheck(cfg, { platform = process.platform, uid = process.getuid?.() ?? -1, lstat = fs.lstatSync, stat = fs.statSync } = {}) {
+  if (cfg?.shareControl !== true) return { ok: false, why: 'shareControl is not enabled in reporter.json' };
+  if (platform !== 'darwin') return { ok: false, why: 'not a Mac' };
+  if (uid === 0) return { ok: false, why: 'the reporter runs as root' };
+  if (!(uid > 0)) return { ok: false, why: 'unknown user' };
+  const file = expandHome(cfg.shareFile ?? '/Users/Shared/rdocker/share');
+  for (const [p, kind] of [[file, 'file'], [path.dirname(file), 'dir']]) {
+    let st;
+    try {
+      st = lstat(p);
+    } catch {
+      return { ok: false, why: `${p} is missing` };
+    }
+    if (kind === 'file' ? !st.isFile() : !st.isDirectory()) return { ok: false, why: `${p} is not a regular ${kind === 'file' ? 'file' : 'folder'}` };
+    if (st.uid !== uid) return { ok: false, why: `${p} is not owned by this user` };
+  }
+  const cmd = cfg.shareCmd ?? '/usr/local/bin/rdocker-share';
+  let cs;
+  try {
+    cs = stat(cmd);
+  } catch {
+    return { ok: false, why: `${cmd} is missing` };
+  }
+  if (!cs.isFile() || (cs.mode & 0o111) === 0) return { ok: false, why: `${cmd} is not an executable file` };
+  if (cs.mode & 0o022) return { ok: false, why: `${cmd} is writable by group or others` };
+  if (cs.uid !== 0 && cs.uid !== uid) return { ok: false, why: `${cmd} is not owned by root or this user` };
+  return { ok: true, cmd };
+}
+
+/** First line of a process's output: printable, bounded. */
+const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(Boolean)?.replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200) ?? '';
+
+/** execFile with argv (never a shell), a timeout (SIGKILL), a minimal env. -> {ok, out}. */
+export const runShare = (cmd, args, timeoutMs = SHARE_RUN_TIMEOUT_MS) =>
+  new Promise((resolve) => {
+    execFile(cmd, args, { timeout: timeoutMs, killSignal: 'SIGKILL', env: SHARE_ENV, maxBuffer: 64 << 10, shell: false }, (err, stdout, stderr) => {
+      const out = firstLine(stdout) || firstLine(stderr);
+      if (!err) return resolve({ ok: true, out });
+      resolve({ ok: false, out: err.killed ? `timed out after ${timeoutMs / 1000}s` : out || `exit ${err.code ?? '?'}` });
+    });
+  });
+
+/**
+ * The order handler for one reporter process: order -> ack (or null for an order without a usable nonce,
+ * which cannot be answered). deps (tests): check, run, now, log.
+ */
+export function createShareControl(cfg, { check = () => shareControlCheck(cfg), run: exec = runShare, now = Date.now, log: say = log } = {}) {
+  const seen = new Map(); // nonce -> forget after (ms)
+  let running = false;
+  const ack = (nonce, code, out = '') => ({ t: 'share-ack', nonce, ok: code === 'ok', code, out: String(out).slice(0, 200) });
+  return {
+    /** Advertised in the hello: whether orders would be accepted right now. */
+    enabled: () => check().ok === true,
+    async handle(order) {
+      const nonce = order?.nonce;
+      if (typeof nonce !== 'string' || !NONCE_RE.test(nonce)) {
+        say('share: dropped an order without a valid nonce');
+        return null;
+      }
+      const t = now();
+      for (const [n, until] of seen) if (until < t) seen.delete(n);
+      if (seen.has(nonce)) {
+        say('share: refused a replayed order');
+        return ack(nonce, 'replay');
+      }
+      const exp = order.exp;
+      const okExp = Number.isFinite(exp) && t <= exp + SHARE_SKEW_MS && exp - t <= SHARE_MAX_AHEAD_MS;
+      seen.set(nonce, (okExp ? exp : t) + SHARE_MAX_AHEAD_MS); // remembered past any expiry it could pass
+      if (seen.size > 1000) seen.delete(seen.keys().next().value); // the DO sends at most 10 a minute
+      if (!okExp) {
+        say('share: refused an expired order');
+        return ack(nonce, 'expired');
+      }
+      const c = check();
+      if (!c.ok) {
+        say(`share: refused (${c.why})`);
+        return ack(nonce, 'disabled', c.why);
+      }
+      const cmd = parseShareCmd(order.cmd);
+      if (!cmd) {
+        say('share: refused an order off the allowlist');
+        return ack(nonce, 'invalid');
+      }
+      if (running) return ack(nonce, 'busy');
+      running = true;
+      try {
+        const args = shareArgv(cmd);
+        const r = await exec(c.cmd, args);
+        say(`share: rdocker-share ${args.join(' ')} -> ${r.ok ? 'ok' : 'failed'}${r.out ? ` (${r.out})` : ''}`);
+        return ack(nonce, r.ok ? 'ok' : 'failed', r.out);
+      } finally {
+        running = false;
+      }
+    },
   };
 }
 
@@ -1226,10 +1390,11 @@ export class Collector {
   /** shared/protocol.ts Lend, or null where there is no rd-worker-mac status file (not a lent Mac). */
   async lend(now) {
     if (!this.statusFile || !fs.existsSync(this.statusFile)) return null;
-    const { level, cpu } = parseShareLevel(this.shareText());
+    const text = this.shareText();
+    const { level, cpu } = parseShareLevel(text);
     const ps = await sh('ps', ['-axo', 'user=,pcpu='], 3000);
     const jobs = parseWorkerStatus(readBounded(this.statusFile, 256), now);
-    return { at: now, level, cpu, jobs, busy: psUserCpu(ps, this.poolUser, os.cpus().length), lastJob: this.lendLastJob(jobs ?? 0, now) };
+    return { at: now, level, cpu, ram: shareRamGb(text, os.totalmem()), jobs, busy: psUserCpu(ps, this.poolUser, os.cpus().length), lastJob: this.lendLastJob(jobs ?? 0, now) };
   }
 
   slots() {
@@ -1403,6 +1568,7 @@ function run(cfg) {
   if (typeof WebSocket === 'undefined') throw new Error('this node has no global WebSocket; need node 22+');
   const col = new Collector(cfg);
   const notify = cfg.notify === true ? createNotifier() : null;
+  const share = createShareControl(cfg);
   let ws = null;
   let interval = SLOW_MS;
   let frameTimer = null;
@@ -1494,7 +1660,9 @@ function run(cfg) {
     let helloOk = false;
     sock.addEventListener('open', () => {
       try {
-        sock.send(JSON.stringify({ ...signHello(cfg.name, cfg.key), ...(notify ? { notify: true } : {}) }));
+        const control = share.enabled();
+        if (cfg.shareControl === true && !control) log(`share control is on in the config but refused: ${shareControlCheck(cfg).why}`);
+        sock.send(JSON.stringify({ ...signHello(cfg.name, cfg.key), ...(notify ? { notify: true } : {}), ...(control ? { control: true } : {}) }));
       } catch (e) {
         drop(sock, `hello send failed: ${e?.message ?? e}`);
       }
@@ -1510,6 +1678,18 @@ function run(cfg) {
       }
       if (m?.t === 'alert' && notify) {
         void notify(m.events);
+        return;
+      }
+      if (m?.t === 'share') {
+        void share.handle(m).then((a) => {
+          if (!a || sock.rdDropped || sock.readyState !== WebSocket.OPEN) return;
+          try {
+            sock.send(JSON.stringify(a));
+          } catch {
+            /* the DO times the order out */
+          }
+          if (a.ok) void send(); // show the new level at once
+        });
         return;
       }
       if (m?.t === 'mode' && Number.isFinite(m.ms) && m.ms >= 1000) {
