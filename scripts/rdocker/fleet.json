@@ -139,7 +139,8 @@
       "shards": false,
       "classes": [
         "light",
-        "normal"
+        "normal",
+        "db"
       ],
       "max_cost_s": 120
     },

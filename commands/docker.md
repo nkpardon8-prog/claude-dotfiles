@@ -747,8 +747,9 @@ fleet.json) is used once it answers.
     just waiting it wouldn't hurt to use the Mac Mini ... I don't want to be constraining this in a way
     where we'll accidentally take even longer because we're predicting the wrong times." The margin
     applies only over `max_cost_s`: a worker under it (a cold laptop with a short run) pays only its
-    cold setup in the eta, no margin. mini-a takes `db` jobs too since 2026-11-21: a pinned dentall `test:db` trial passed there
-    (Docker up, `postgres:17` pulled in 40 s, peak 3.2 GB of 8 GB, 1,573 s vs 1,577 s on a loaded hp).
+    cold setup in the eta, no margin. The minis take `db` jobs too since 2026-11-21: a pinned dentall `test:db` trial passed on each
+    (Docker up; `postgres:17` pulled in 40 s / 46 s; the job at ~3.2 GB of 8 GB; 1,573 s on mini-a and
+    1,697 s on mini-b vs 1,577 s on a loaded hp, of which 340 s was hp's slot wait).
   Each job logs its prediction (`pred_s=` in `runs.log` and `route.log`) next to the real `cmd_s`.
   Order tried: every worker that can take the job now (free or busy with an eta) by eta, slow ones that
   did not win after them, then the ones with no eta (low memory, no slot of the kind), down, off. The
