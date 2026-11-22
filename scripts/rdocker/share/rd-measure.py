@@ -21,7 +21,8 @@ not answer is listed and skipped. Per job class (runs.log cls: light / normal / 
 Wasted capacity (owner, 2026-11-21): a per-minute timeline rebuilt from runs.log. Busy = a slot held
 by a started run or a warm ([end - cmd_s - prepare_s, end]); waiting = a job's slot_s + lock_s before
 that (incl. runs that then moved or were abandoned). A worker counts at a minute only when it is
-enabled in fleet.json and online (a runs.log row within ONLINE_S of it). Weighted utilization =
+enabled in fleet.json and online (busy then, or a runs.log row in the ONLINE_S before it, up to 5 min
+after - never judged on later rows). Weighted utilization =
 sum(busy slots x speed) / sum(max_slots x speed), speed = fleet.json `speed` (the bench speed rd_pool's
 Model falls back to and calibrates its learned per-kind ratios on; the live ~/rr/speed is not
 logged), busy capped at max_slots. Backlog = jobs waiting at that minute. Headline: idle-while-waiting
@@ -231,6 +232,14 @@ ONLINE_S = 3600.0
 UTIL_IDLE = 0.8
 
 
+def online(ends, t):
+    """A worker counts as online at t when it logged a row in the hour before (or within 5 min after):
+    never on rows from later (a worker that came online at 21:50 was no idle capacity at 21:00)."""
+    import bisect
+    i = bisect.bisect_left(ends, t - ONLINE_S)
+    return i < len(ends) and ends[i] <= t + 300
+
+
 def timeline(runs, fleet, lo, hi):
     ms = {m["name"]: m for m in fleet["machines"] if "worker" in (m.get("roles") or []) and m.get("enabled", True)}
     byw = {}
@@ -246,19 +255,16 @@ def timeline(runs, fleet, lo, hi):
             q = r["slot"] + r["lock"]
             if q > 0 and r["out"] != "warm":
                 wait_iv.append((b0 - q, b0))
-    import bisect
     mins = []
     t = lo + 30.0
     while t < hi:
         cap = used = 0.0
         slots_idle = 0
         for w, m in ms.items():
-            e = seen.get(w) or []
-            i = bisect.bisect_left(e, t - ONLINE_S)
-            if i >= len(e) or e[i] > t + ONLINE_S:
-                continue                                        # offline (or no log) at this minute
             n, sp = m.get("max_slots", 1), float(m.get("speed", 1.0))
             b = min(n, sum(1 for a, z in busy_iv[w] if a <= t < z))
+            if not b and not online(seen.get(w) or [], t):
+                continue                                        # offline (or no log) at this minute
             cap += n * sp
             used += b * sp
             slots_idle += n - b
@@ -310,8 +316,8 @@ def replay(runs, fleet, lo, hi, spike_s, mini_db, strict=False):
             if j["cls"] not in classes or (j["cls"] == "heavy" and m.get("heavy_slots") == 0):
                 continue
             rows = byw[w]
-            if not any(abs(r["end"] - arrive) < 6 * 3600 for r in rows):     # not up then (no rows near)
-                continue
+            if not busy_at(rows, arrive) and not online(sorted(r["end"] for r in rows), arrive):
+                continue                                                 # not up then
             used = busy_at(rows, arrive) + sum(1 for a, b in held[w] if a <= arrive < b)
             if used >= m.get("max_slots", 1):
                 continue
