@@ -65,6 +65,11 @@ the memory guard holds new jobs back, `⚙ off` when off. The menu:
   what is in force, a preset's own values included; nothing is ticked while off.
 - Stop the jobs running here now
 
+The fleet dashboard offers the same choices on the Mac's page, but only when you opt in on this Mac:
+`"shareControl": true` in `~/.config/rdocker/reporter.json` (your own reporter, not one running as `rd`),
+then `launchctl kickstart -k gui/$(id -u)/com.rdocker.reporter`. Every change made there is logged on that
+page with who made it (dashboard README, "Share control").
+
 The jobs count comes from `rd-worker-mac` (root), which writes `/Users/Shared/rdocker/status` every 15-45 s:
 you cannot read the `rd` user's files yourself.
 
