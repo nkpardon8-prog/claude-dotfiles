@@ -42,7 +42,7 @@
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -885,7 +885,6 @@ export function validateConfig(c) {
   if (typeof c.key !== 'string' || c.key.length < 32) errs.push('key: at least 32 chars (npm run machine-key)');
   if (c.notify !== undefined && typeof c.notify !== 'boolean') errs.push('notify: true or false');
   if (c.shareControl !== undefined && typeof c.shareControl !== 'boolean') errs.push('shareControl: true or false');
-  if (c.shareCmd !== undefined && (typeof c.shareCmd !== 'string' || !path.isAbsolute(c.shareCmd))) errs.push('shareCmd: an absolute path');
   return errs;
 }
 
@@ -997,24 +996,34 @@ export function createNotifier(deps = {}) {
 // ---------------------------------------------------------------------------- share control
 // A dashboard admin may change this Mac's share switch (rdocker-share), the same choices as the SwiftBar
 // menu. Fail-closed at every step; the DO validates too, this side trusts nothing it is sent:
-//  - only when the OWNER set "shareControl": true in this reporter.json (absent/false: every order refused);
-//  - only on macOS, never as root, and only when this process's user owns the share file AND its folder
-//    (a reporter running as the pool user rd, e.g. ethanair, must never change its owner's switch);
-//  - rdocker-share must be a regular file owned by root or this user and not writable by group/others;
-//  - each order carries a 32-hex nonce (single use: remembered until its expiry) and an expiry on the
-//    server clock (refused after it, or when it claims to be valid for more than SHARE_MAX_AHEAD_MS);
+//  - only when the OWNER set "shareControl": true in this reporter.json (absent/false: every order refused),
+//    and only over wss:// (certificate-checked TLS: the hello HMAC authenticates us to the dashboard, TLS
+//    authenticates the dashboard to us);
+//  - only on macOS, with real uid = effective uid, never root, and only when this user owns the share file
+//    /Users/Shared/rdocker/share AND its folder, neither writable by group/others (a reporter running as
+//    the pool user rd, e.g. ethanair, must never change its owner's switch). The paths are fixed: no
+//    config setting can point the check at another file or the order at another program;
+//  - /usr/local/bin/rdocker-share must be a regular executable (not a symlink, no set-id bit) owned by root
+//    or this user, in a folder owned by root, neither writable by group/others;
+//  - an order is accepted only on the socket it was sent to, after the dashboard accepted our hello: it
+//    carries that connection's hello nonce (`conn`), so an order cannot be replayed on another connection,
+//    even after a restart; on the connection its own 32-hex nonce is single use (remembered past its
+//    expiry); it is refused past its expiry (server clock) or when that expiry is further ahead than an
+//    order's lifetime;
 //  - the command must match the allowlist exactly (parseShareCmd, MIRROR of dashboard shared/protocol.ts;
-//    both test suites check the same vectors) and becomes argv for execFile (no shell), with a timeout,
-//    an env of PATH + LC_ALL only, one at a time.
-// Every order is answered with {t:'share-ack', nonce, ok, code, out} (refusals too).
+//    both test suites check the same vectors) and becomes argv (no shell), run in its own process group
+//    that is killed whole at the timeout, with an env of PATH + LC_ALL only, one at a time.
+// Every accepted-for-checking order is answered with {t:'share-ack', nonce, ok, code, out}.
 
 export const SHARE_RUN_TIMEOUT_MS = 15_000;
-export const SHARE_MAX_AHEAD_MS = 120_000;
-/** The clock difference tolerated on expiry (both ends run NTP; the hello allows +-60 s). */
-export const SHARE_SKEW_MS = 5_000;
+/** An order's lifetime (the DO's SHARE_ORDER_TTL_MS) plus the clock difference tolerated ahead. */
+export const SHARE_MAX_AHEAD_MS = 65_000;
+export const SHARE_FILE = '/Users/Shared/rdocker/share';
+export const SHARE_CMD = '/usr/local/bin/rdocker-share';
 const SHARE_ENV = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' };
 const SHARE_WORDS = ['off', 'low', 'medium', 'high', 'stop'];
 const SHARE_RANGE = { cpu: [10, 100], ram: [1, 256] };
+const SEEN_MAX = 1000;
 const NONCE_RE = /^[0-9a-f]{32}$/;
 
 /** Strict allowlist: exactly {op:<word>} or {op:'cpu'|'ram', n:<integer in range>}; anything else = null. */
@@ -1031,55 +1040,90 @@ export function parseShareCmd(raw) {
 
 export const shareArgv = (c) => ('n' in c ? [c.op, String(c.n)] : [c.op]);
 
+const writableByOthers = (st) => (st.mode & 0o022) !== 0;
+
 /**
  * May this process run the share switch? -> {ok: true, cmd} or {ok: false, why}. Re-checked on every order.
- * deps (tests): platform, uid, lstat, stat.
+ * deps (tests only; never from the config): platform, uid, euid, lstat, shareFile, shareCmd.
  */
-export function shareControlCheck(cfg, { platform = process.platform, uid = process.getuid?.() ?? -1, lstat = fs.lstatSync, stat = fs.statSync } = {}) {
+export function shareControlCheck(cfg, deps = {}) {
+  const { platform = process.platform, uid = process.getuid?.() ?? -1, euid = process.geteuid?.() ?? -1, lstat = fs.lstatSync, shareFile = SHARE_FILE, shareCmd = SHARE_CMD } = deps;
   if (cfg?.shareControl !== true) return { ok: false, why: 'shareControl is not enabled in reporter.json' };
+  if (typeof cfg.url !== 'string' || !cfg.url.startsWith('wss://')) return { ok: false, why: 'share control needs a wss:// dashboard url' };
   if (platform !== 'darwin') return { ok: false, why: 'not a Mac' };
-  if (uid === 0) return { ok: false, why: 'the reporter runs as root' };
-  if (!(uid > 0)) return { ok: false, why: 'unknown user' };
-  const file = expandHome(cfg.shareFile ?? '/Users/Shared/rdocker/share');
-  for (const [p, kind] of [[file, 'file'], [path.dirname(file), 'dir']]) {
-    let st;
+  if (uid === 0 || euid === 0) return { ok: false, why: 'the reporter runs as root' };
+  if (!(uid > 0) || uid !== euid) return { ok: false, why: 'unknown or mixed user ids' };
+  const look = (p) => {
     try {
-      st = lstat(p);
+      return lstat(p); // never follows a symlink
     } catch {
-      return { ok: false, why: `${p} is missing` };
+      return null;
     }
-    if (kind === 'file' ? !st.isFile() : !st.isDirectory()) return { ok: false, why: `${p} is not a regular ${kind === 'file' ? 'file' : 'folder'}` };
-    if (st.uid !== uid) return { ok: false, why: `${p} is not owned by this user` };
-  }
-  const cmd = cfg.shareCmd ?? '/usr/local/bin/rdocker-share';
-  let cs;
-  try {
-    cs = stat(cmd);
-  } catch {
-    return { ok: false, why: `${cmd} is missing` };
-  }
-  if (!cs.isFile() || (cs.mode & 0o111) === 0) return { ok: false, why: `${cmd} is not an executable file` };
-  if (cs.mode & 0o022) return { ok: false, why: `${cmd} is writable by group or others` };
-  if (cs.uid !== 0 && cs.uid !== uid) return { ok: false, why: `${cmd} is not owned by root or this user` };
-  return { ok: true, cmd };
+  };
+  const dir = path.dirname(shareFile);
+  const f = look(shareFile);
+  const d = look(dir);
+  if (!f || !f.isFile()) return { ok: false, why: `${shareFile} is missing or not a regular file` };
+  if (!d || !d.isDirectory()) return { ok: false, why: `${dir} is missing or not a folder` };
+  if (f.uid !== uid || d.uid !== uid) return { ok: false, why: `${shareFile} or its folder is not owned by this user` };
+  if (writableByOthers(f) || writableByOthers(d)) return { ok: false, why: `${shareFile} or its folder is writable by group or others` };
+  const c = look(shareCmd);
+  const cd = look(path.dirname(shareCmd));
+  if (!c || !c.isFile() || (c.mode & 0o111) === 0) return { ok: false, why: `${shareCmd} is missing or not an executable file` };
+  if (c.mode & 0o6000) return { ok: false, why: `${shareCmd} is set-id` };
+  if (c.uid !== 0 && c.uid !== uid) return { ok: false, why: `${shareCmd} is not owned by root or this user` };
+  if (!cd || !cd.isDirectory() || (cd.uid !== 0 && cd.uid !== uid)) return { ok: false, why: `${path.dirname(shareCmd)} is not a folder owned by root or this user` };
+  if (writableByOthers(c) || writableByOthers(cd)) return { ok: false, why: `${shareCmd} or its folder is writable by group or others` };
+  return { ok: true, cmd: shareCmd };
 }
 
 /** First line of a process's output: printable, bounded. */
 const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(Boolean)?.replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200) ?? '';
 
-/** execFile with argv (never a shell), a timeout (SIGKILL), a minimal env. -> {ok, out}. */
+/**
+ * Run the switch: argv (no shell), its own process group (killed whole at the timeout: the switch's
+ * own children, e.g. mv, cannot outlive it), a minimal env. -> {ok, out}. A timeout is a failure whose
+ * effect is unknown (the switch may have written before it was killed); the next frame shows the level.
+ */
 export const runShare = (cmd, args, timeoutMs = SHARE_RUN_TIMEOUT_MS) =>
   new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, killSignal: 'SIGKILL', env: SHARE_ENV, maxBuffer: 64 << 10, shell: false }, (err, stdout, stderr) => {
-      const out = firstLine(stdout) || firstLine(stderr);
-      if (!err) return resolve({ ok: true, out });
-      resolve({ ok: false, out: err.killed ? `timed out after ${timeoutMs / 1000}s` : out || `exit ${err.code ?? '?'}` });
+    let out = '';
+    let err = '';
+    let timedOut = false;
+    let child;
+    try {
+      child = spawn(cmd, args, { env: SHARE_ENV, detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    } catch (e) {
+      resolve({ ok: false, out: `could not start: ${e?.code ?? 'error'}` });
+      return;
+    }
+    const cap = (s, d) => (s.length < 65536 ? s + d : s);
+    child.stdout.on('data', (d) => (out = cap(out, d)));
+    child.stderr.on('data', (d) => (err = cap(err, d)));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, timeoutMs);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, out: `could not start: ${e?.code ?? 'error'}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve({ ok: false, out: `timed out after ${timeoutMs / 1000}s; the result is unknown` });
+      const line = firstLine(out) || firstLine(err);
+      resolve(code === 0 ? { ok: true, out: line } : { ok: false, out: line || `exit ${code}` });
     });
   });
 
 /**
- * The order handler for one reporter process: order -> ack (or null for an order without a usable nonce,
- * which cannot be answered). deps (tests): check, run, now, log.
+ * The order handler for one reporter process: (order, conn) -> ack, or null for an order that cannot be
+ * answered (no usable nonce). `conn` = the hello nonce of the socket the order arrived on (null = that
+ * socket's hello is not accepted yet). deps (tests): check, run, now, log.
  */
 export function createShareControl(cfg, { check = () => shareControlCheck(cfg), run: exec = runShare, now = Date.now, log: say = log } = {}) {
   const seen = new Map(); // nonce -> forget after (ms)
@@ -1088,11 +1132,15 @@ export function createShareControl(cfg, { check = () => shareControlCheck(cfg), 
   return {
     /** Advertised in the hello: whether orders would be accepted right now. */
     enabled: () => check().ok === true,
-    async handle(order) {
+    async handle(order, conn) {
       const nonce = order?.nonce;
       if (typeof nonce !== 'string' || !NONCE_RE.test(nonce)) {
         say('share: dropped an order without a valid nonce');
         return null;
+      }
+      if (!conn || order.conn !== conn) {
+        say('share: refused an order not meant for this connection');
+        return ack(nonce, 'replay');
       }
       const t = now();
       for (const [n, until] of seen) if (until < t) seen.delete(n);
@@ -1100,10 +1148,10 @@ export function createShareControl(cfg, { check = () => shareControlCheck(cfg), 
         say('share: refused a replayed order');
         return ack(nonce, 'replay');
       }
+      if (seen.size >= SEEN_MAX) return ack(nonce, 'busy'); // cannot remember it: refuse (the DO sends at most 10 a minute)
       const exp = order.exp;
-      const okExp = Number.isFinite(exp) && t <= exp + SHARE_SKEW_MS && exp - t <= SHARE_MAX_AHEAD_MS;
+      const okExp = Number.isFinite(exp) && t <= exp && exp - t <= SHARE_MAX_AHEAD_MS;
       seen.set(nonce, (okExp ? exp : t) + SHARE_MAX_AHEAD_MS); // remembered past any expiry it could pass
-      if (seen.size > 1000) seen.delete(seen.keys().next().value); // the DO sends at most 10 a minute
       if (!okExp) {
         say('share: refused an expired order');
         return ack(nonce, 'expired');
@@ -1658,11 +1706,14 @@ function run(cfg) {
     lastInboundAt = lastSendOkAt = Date.now();
     buffered = [];
     let helloOk = false;
+    let conn = null; // this socket's hello nonce: share orders must carry it
     sock.addEventListener('open', () => {
       try {
         const control = share.enabled();
         if (cfg.shareControl === true && !control) log(`share control is on in the config but refused: ${shareControlCheck(cfg).why}`);
-        sock.send(JSON.stringify({ ...signHello(cfg.name, cfg.key), ...(notify ? { notify: true } : {}), ...(control ? { control: true } : {}) }));
+        const hello = signHello(cfg.name, cfg.key);
+        conn = hello.nonce;
+        sock.send(JSON.stringify({ ...hello, ...(notify ? { notify: true } : {}), ...(control ? { control: true } : {}) }));
       } catch (e) {
         drop(sock, `hello send failed: ${e?.message ?? e}`);
       }
@@ -1681,7 +1732,7 @@ function run(cfg) {
         return;
       }
       if (m?.t === 'share') {
-        void share.handle(m).then((a) => {
+        void share.handle(m, helloOk ? conn : null).then((a) => {
           if (!a || sock.rdDropped || sock.readyState !== WebSocket.OPEN) return;
           try {
             sock.send(JSON.stringify(a));
