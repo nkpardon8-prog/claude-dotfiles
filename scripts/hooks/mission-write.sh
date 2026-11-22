@@ -1021,10 +1021,10 @@ $_pkl"
       _pd_exp="$_pd_exp$_sr=$(printf '%s' "$_srl" | paste -sd, -);"
     done
     _pd_ok=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" -v keys="$(printf '%s' "$_pd_keys" | tr '\n' ',')" -v expl="$_pd_exp" '
-      BEGIN { m=split(expl,e,";"); for(j=1;j<=m;j++) if (e[j]!="") { q=index(e[j],"="); exp[substr(e[j],1,q-1)]=substr(e[j],q+1) } }
+      BEGIN { m=split(expl,e,";"); for(j=1;j<=m;j++) if (e[j]!="") { q=index(e[j],"="); xp[substr(e[j],1,q-1)]=substr(e[j],q+1) } }
       index($2,"[mission] part=" pn " name=")==1 && $2 ~ / phase=fix / { lf=NR }
       index($2,"[mission] SWEEP part=" pn " ")==1 && $2 ~ / instances=0 / && $1 ~ ("^(g[0-9]+-)?m" pn "-sweep-r") {
-        t=$2; sub(/.* types=/,"",t); sub(/ .*/,"",t); if (t in exp) t=exp[t]; n=split(keys,k,","); c=1
+        t=$2; sub(/.* types=/,"",t); sub(/ .*/,"",t); if (t in xp) t=xp[t]; n=split(keys,k,","); c=1
         for(i=1;i<=n;i++) if (k[i]!="" && index("," t ",", "," k[i] ",")==0) c=0
         if (c) ls=NR }
       END { print (ls>lf) ? "yes" : "no" }')
