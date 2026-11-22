@@ -107,8 +107,8 @@
         "worker"
       ],
       "speed": 4.0,
-      "max_slots": 5,
-      "heavy_slots": 3,
+      "max_slots": 7,
+      "heavy_slots": 4,
       "mem_gb": 32,
       "enabled": true,
       "optional": true,

@@ -38,7 +38,24 @@ else
   diskutil mount -mountPoint "$RR" "$DEV"
   diskutil enableOwnership "$RR"
   chown rd:staff "$RR"; chmod 755 "$RR"
-  grep -q "$UUID" /etc/fstab 2>/dev/null || echo "UUID=$UUID $RR apfs rw,nobrowse" >> /etc/fstab   # mounted here at every boot
+fi
+
+# mounted at /Users/rd/rr at every boot: a LaunchDaemon (macOS refuses writes to /etc/fstab here)
+MP=/Library/LaunchDaemons/com.rdocker.rrmount.plist
+cat > "$MP" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.rdocker.rrmount</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string>
+    <string>mount | grep -q " on $RR (apfs" || /usr/sbin/diskutil mount -mountPoint $RR rdocker-rr</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+chown root:wheel "$MP"; chmod 644 "$MP"
+launchctl bootout system/com.rdocker.rrmount 2>/dev/null || true
+launchctl bootstrap system "$MP" 2>/dev/null || true
+mount | grep -q " on $RR (apfs" || { say "the capped volume is not mounted at $RR; refusing"; exit 1; }
   mdutil -i off "$RR" >/dev/null 2>&1 || true
   # the Docker VM and the package caches live under the cap too
   for d in colima npm cache; do sudo -u rd mkdir -p "$RR/home/$d"; done
@@ -49,7 +66,6 @@ else
   [ -e "$RD/.cache" ] || sudo -u rd ln -s "$RR/home/cache" "$RD/.cache"
   rm -rf "$RD/rr.old"
   say "done: $(df -h "$RR" | tail -1)"
-fi
 
 # the dashboard reporter, as rd (only rd can read its ~/rr): a LaunchDaemon with UserName rd; its key is minted
 # here and never printed (the owner pipes it into the dashboard's secret store over ssh)
@@ -78,6 +94,7 @@ t=p+'.tmp'; fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.write(fd,j
 PLIST
   chown root:wheel "$PL"; chmod 644 "$PL"
   launchctl bootout system/com.rdocker.reporter-rd 2>/dev/null || true
+  pkill -u rd -f rd-reporter.mjs 2>/dev/null || true   # a hand-started one: never two for one name
   launchctl bootstrap system "$PL" && say "dashboard reporter running (as rd)"
 fi
 
