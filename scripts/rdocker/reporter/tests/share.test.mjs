@@ -73,6 +73,11 @@ const TREE = {
   '/Users/Shared/rdocker': st({ kind: 'dir', mode: 0o40755 }),
   '/usr/local/bin/rdocker-share': st({ kind: 'file', uid: 0 }),
   '/usr/local/bin': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
+  '/usr/local': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
+  '/usr': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
+  '/Users/Shared': st({ kind: 'dir', uid: 0, mode: 0o41777 }),
+  '/Users': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
+  '/': st({ kind: 'dir', uid: 0, mode: 0o40755 }),
 };
 const lstatOf = (over = {}) => {
   const tree = { ...TREE, ...over };
@@ -82,7 +87,7 @@ const lstatOf = (over = {}) => {
   };
 };
 const CFG = { shareControl: true, url: 'wss://spine.example/ingest' };
-const check = (cfg = CFG, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, euid: UID, lstat: lstatOf(), ...deps });
+const check = (cfg = CFG, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, euid: UID, lstat: lstatOf(), acl: () => false, ...deps });
 const why = (over, deps = {}) => check(CFG, { lstat: lstatOf(over), ...deps }).why ?? 'ok';
 
 test('check: only with shareControl:true over wss, on macOS, not root, as the owner of the share file and folder', () => {
@@ -118,6 +123,21 @@ test('check: rdocker-share must be a root/own, non-set-id, non-symlink executabl
   assert.match(why({ '/usr/local/bin': st({ kind: 'dir', uid: 502 }) }), /folder owned by root/);
   assert.match(why({ '/usr/local/bin': st({ kind: 'dir', uid: 0, mode: 0o40777 }) }), /writable/);
   assert.equal(why({ [C]: st({ kind: 'file', uid: UID, mode: 0o100700 }) }), 'ok');
+});
+
+test('check: every folder above both paths is root/own and not open to others unless sticky; no ACLs', () => {
+  assert.equal(why({}), 'ok'); // /Users/Shared 1777 (sticky) is fine
+  assert.match(why({ '/Users/Shared': st({ kind: 'dir', uid: 0, mode: 0o40777 }) }), /\/Users\/Shared is writable/);
+  assert.match(why({ '/usr/local': st({ kind: 'dir', uid: 502 }) }), /\/usr\/local is not owned/);
+  assert.match(why({ '/usr/local': st({ kind: 'link', uid: 0 }) }), /\/usr\/local is not a folder/);
+  assert.match(why({ '/Users': st({ kind: 'dir', uid: 0, mode: 0o40775 }) }), /\/Users is writable/);
+  assert.match(check(CFG, { acl: () => true }).why, /ACL/);
+  // the ls -lde parser
+  const ls = (stdout, status = 0) => () => ({ status, stdout });
+  assert.equal(r.hasAcl(['/x'], ls('drwxr-xr-x  5 me  staff  160 Nov 22 10:27 /x\n')), false);
+  assert.equal(r.hasAcl(['/x'], ls('drwxr-xr-x+ 5 me  staff  160 Nov 22 10:27 /x\n 0: group:everyone deny delete\n')), true);
+  assert.equal(r.hasAcl(['/x'], ls('-rw-r--r--@ 1 me  staff  4 Nov 22 10:24 /x\n')), false);
+  assert.equal(r.hasAcl(['/x'], ls('', 1)), true);
 });
 
 // ---- orders
@@ -243,7 +263,11 @@ test('runShare: killed at its timeout, exit codes become failures', async () => 
   const child = Number(fs.readFileSync(pidFile, 'utf8'));
   await new Promise((res) => setTimeout(res, 100));
   assert.throws(() => process.kill(child, 0), /ESRCH/);
-  assert.deepEqual(await r.runShare(path.join(tmp, 'nope'), []), { ok: false, out: 'could not start: ENOENT' });
+  assert.deepEqual(await r.runShare(path.join(tmp, 'nope'), []), { ok: false, out: 'could not start' });
+  // the switch's own alarm (1 s here) ends it even when nobody kills it: a 60 s timer stands in for a dead reporter
+  const t1 = Date.now();
+  assert.deepEqual(await r.runShare(slow, [], 60_000, 1), { ok: false, out: 'killed' });
+  assert.ok(Date.now() - t1 < 4000);
   assert.deepEqual(await r.runShare(fail, ['cpu', '5']), { ok: false, out: 'rdocker share: cpu must be 10-100' });
   fs.rmSync(tmp, { recursive: true, force: true });
 });

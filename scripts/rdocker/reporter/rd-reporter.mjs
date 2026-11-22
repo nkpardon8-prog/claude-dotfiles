@@ -42,7 +42,7 @@
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1010,9 +1010,12 @@ export function createNotifier(deps = {}) {
 //    even after a restart; on the connection its own 32-hex nonce is single use (remembered past its
 //    expiry); it is refused past its expiry (server clock) or when that expiry is further ahead than an
 //    order's lifetime;
+//  - every folder above both is root's or this user's and not writable by others (unless sticky), and
+//    none of the four carries a macOS ACL;
 //  - the command must match the allowlist exactly (parseShareCmd, MIRROR of dashboard shared/protocol.ts;
 //    both test suites check the same vectors) and becomes argv (no shell), run in its own process group
-//    that is killed whole at the timeout, with an env of PATH + LC_ALL only, one at a time.
+//    that is killed whole at the timeout, with its own alarm as a backstop that outlives this process,
+//    with an env of PATH + LC_ALL only, one at a time.
 // Every accepted-for-checking order is answered with {t:'share-ack', nonce, ok, code, out}.
 
 export const SHARE_RUN_TIMEOUT_MS = 15_000;
@@ -1043,11 +1046,38 @@ export const shareArgv = (c) => ('n' in c ? [c.op, String(c.n)] : [c.op]);
 const writableByOthers = (st) => (st.mode & 0o022) !== 0;
 
 /**
+ * Every folder above `dir` (up to /) must be a real folder (no symlink) owned by root or `uid`, and not
+ * writable by group/others unless sticky (/Users/Shared is 1777: nobody else can rename what we own in it),
+ * so nothing on the way can be swapped out from under the checked paths. -> null or the reason.
+ */
+function ancestorsWhy(dir, uid, lstat) {
+  for (let p = path.dirname(dir); ; p = path.dirname(p)) {
+    let st;
+    try {
+      st = lstat(p);
+    } catch {
+      return `${p} is missing`;
+    }
+    if (!st.isDirectory()) return `${p} is not a folder`;
+    if (st.uid !== 0 && st.uid !== uid) return `${p} is not owned by root or this user`;
+    if (writableByOthers(st) && (st.mode & 0o1000) === 0) return `${p} is writable by group or others`;
+    if (p === path.dirname(p)) return null;
+  }
+}
+
+/** macOS ACLs (`ls -lde`: a "+" after the mode, or numbered entries) on any of the paths: can grant write past the mode bits. */
+export function hasAcl(paths, run = (args) => spawnSync('/bin/ls', args, { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, timeout: 5000 })) {
+  const r = run(['-lde', ...paths]);
+  if (r.status !== 0 || typeof r.stdout !== 'string') return true; // cannot tell: refuse
+  return r.stdout.split('\n').some((l) => /^\S{10}\+/.test(l) || /^\s*\d+:\s/.test(l));
+}
+
+/**
  * May this process run the share switch? -> {ok: true, cmd} or {ok: false, why}. Re-checked on every order.
- * deps (tests only; never from the config): platform, uid, euid, lstat, shareFile, shareCmd.
+ * deps (tests only; never from the config): platform, uid, euid, lstat, acl, shareFile, shareCmd.
  */
 export function shareControlCheck(cfg, deps = {}) {
-  const { platform = process.platform, uid = process.getuid?.() ?? -1, euid = process.geteuid?.() ?? -1, lstat = fs.lstatSync, shareFile = SHARE_FILE, shareCmd = SHARE_CMD } = deps;
+  const { platform = process.platform, uid = process.getuid?.() ?? -1, euid = process.geteuid?.() ?? -1, lstat = fs.lstatSync, acl = hasAcl, shareFile = SHARE_FILE, shareCmd = SHARE_CMD } = deps;
   if (cfg?.shareControl !== true) return { ok: false, why: 'shareControl is not enabled in reporter.json' };
   if (typeof cfg.url !== 'string' || !cfg.url.startsWith('wss://')) return { ok: false, why: 'share control needs a wss:// dashboard url' };
   if (platform !== 'darwin') return { ok: false, why: 'not a Mac' };
@@ -1074,6 +1104,9 @@ export function shareControlCheck(cfg, deps = {}) {
   if (c.uid !== 0 && c.uid !== uid) return { ok: false, why: `${shareCmd} is not owned by root or this user` };
   if (!cd || !cd.isDirectory() || (cd.uid !== 0 && cd.uid !== uid)) return { ok: false, why: `${path.dirname(shareCmd)} is not a folder owned by root or this user` };
   if (writableByOthers(c) || writableByOthers(cd)) return { ok: false, why: `${shareCmd} or its folder is writable by group or others` };
+  const up = ancestorsWhy(dir, uid, lstat) ?? ancestorsWhy(path.dirname(shareCmd), uid, lstat);
+  if (up) return { ok: false, why: up };
+  if (acl([shareFile, dir, shareCmd, path.dirname(shareCmd)])) return { ok: false, why: 'an ACL on the share file, the switch or their folders' };
   return { ok: true, cmd: shareCmd };
 }
 
@@ -1085,14 +1118,22 @@ const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(B
  * own children, e.g. mv, cannot outlive it), a minimal env. -> {ok, out}. A timeout is a failure whose
  * effect is unknown (the switch may have written before it was killed); the next frame shows the level.
  */
-export const runShare = (cmd, args, timeoutMs = SHARE_RUN_TIMEOUT_MS) =>
+export const runShare = (cmd, args, timeoutMs = SHARE_RUN_TIMEOUT_MS, deadlineS = Math.ceil(timeoutMs / 1000) + 1) =>
   new Promise((resolve) => {
     let out = '';
     let err = '';
     let timedOut = false;
     let child;
     try {
-      child = spawn(cmd, args, { env: SHARE_ENV, detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+      // perl arms an alarm and execs the switch (argv, no shell): the deadline lives in the switch's own
+      // process, so it holds even if this reporter dies mid-run (one more order cannot follow: the DO holds
+      // the machine for the order's whole lease).
+      child = spawn('/usr/bin/perl', ['-e', 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV or exit 127', String(deadlineS), cmd, ...args], {
+        env: SHARE_ENV,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+      });
     } catch (e) {
       resolve({ ok: false, out: `could not start: ${e?.code ?? 'error'}` });
       return;
@@ -1116,7 +1157,7 @@ export const runShare = (cmd, args, timeoutMs = SHARE_RUN_TIMEOUT_MS) =>
       clearTimeout(timer);
       if (timedOut) return resolve({ ok: false, out: `timed out after ${timeoutMs / 1000}s; the result is unknown` });
       const line = firstLine(out) || firstLine(err);
-      resolve(code === 0 ? { ok: true, out: line } : { ok: false, out: line || `exit ${code}` });
+      resolve(code === 0 ? { ok: true, out: line } : { ok: false, out: line || (code === null ? 'killed' : code === 127 ? 'could not start' : `exit ${code}`) });
     });
   });
 
