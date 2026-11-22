@@ -41,6 +41,16 @@ block of `rr_runner.pl`, copied verbatim into `rdocker-share.sh`):
 What can lower capacity on its own, temporarily: the memory guard above, the pool's overload hold-off (a
 busy Mac gets fewer jobs) and the doctor's health pause (below), which reopens by itself.
 
+## Disk cap (every Mac worker)
+
+`sudo sh share/rd-disk-cap-mac.sh <CAP e.g. 40g> [--docker] [--reporter <fleet name>]` puts everything the
+pool keeps on a Mac (`/Users/rd/rr`: checkouts, package caches, logs, and the Colima VM + npm cache via
+symlinks) on its own APFS volume `rdocker-rr` with a hard quota, mounted at `/Users/rd/rr` at every boot
+(`/etc/fstab`). The pool can never use more than CAP of the SSD (Linux workers: rd-rrfs's fixed-size image).
+It pauses the share while it moves the files (running jobs finish first) and restores the level. The Colima
+VM disk is 20 GB (rr_runner.pl `$VM_DISK_GB`). A worker whose disk is under 5 % free drains itself
+(rd-doctor), so a full Mac is routed around, never a blocker.
+
 ## The menu bar (SwiftBar)
 
 `rdocker-share.1m.sh` is a [SwiftBar](https://swiftbar.app) (or xbar) plugin, refreshed every minute and
