@@ -69,6 +69,7 @@
       "classes": [
         "light",
         "normal",
+        "db",
         "heavy",
         "build"
       ]
