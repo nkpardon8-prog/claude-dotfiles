@@ -15,7 +15,8 @@ When work is review-clean and checks pass, and the project file does not already
 push, add one line to `~/.claude/push-queue.md`:
 `<date> | <window> | <repo> <branch> | <exact SHA> | <one-line what> | waiting`. The owner approves
 with one typed line in the window that owns the push (the area window, or the prod lane window for
-prod). A relayed or second-hand OK is not approval. Mark the line `landed <SHA>` when it lands. Never
+prod). A relayed or second-hand OK is not approval, unless the project's own written relayed-approval rule
+allows it (dentall: `docs/reference/relayed-owner-approval.md`, prod lane relays only). Mark the line `landed <SHA>` when it lands. Never
 bury the ask inside a long report.
 
 ## 3. Reviews end when they stop paying
