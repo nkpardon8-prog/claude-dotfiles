@@ -380,7 +380,7 @@ class Version(unittest.TestCase):
         route = os.path.join(t.home, ".local", "state", "rdocker", "route.log")
         with open(route) as f:
             last = f.read().strip().splitlines()[-1]
-        self.assertRegex(last, r"\tlock_s=[\d.]+ cache_s=[\d.]+ plan_s=[\d.]+ push_s=[\d.]+ overlay_s=[\d.]+ slot_s=[\d.]+ remote_s=[\d.]+ "
+        self.assertRegex(last, r"\tlock_s=[\d.]+ cache_s=[\d.]+ plan_s=[\d.]+ push_s=[\d.]+ overlay_s=[\d.]+ slot_s=[\d.]+ (qpred_s=[\d.]+ )?remote_s=[\d.]+ "
                                r"start_s=[\d.]+ client=")
         import rd_warm
         self.assertEqual(os.path.realpath(rd_warm.parse_route([last.replace(last[:19], time.strftime(
