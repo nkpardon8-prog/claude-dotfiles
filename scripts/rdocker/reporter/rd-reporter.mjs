@@ -1404,6 +1404,7 @@ export class Collector {
     this.selfIps = [];
     this.fleetFile = expandHome(cfg.fleetFile ?? '~/.claude-dotfiles/scripts/rdocker/fleet.json');
     // agent hosts: latest TCP connect times to the pool workers (background, never delays a frame)
+    this.reachOn = !/worker/i.test(String(cfg.role ?? '')) && cfg.reach !== false; // agent hosts (not tied to `leaks`)
     this.reach = null; // [{to, ip, rttMs, at}]
     this.reachAt = 0;
     this.reachBusy = false;
@@ -1502,17 +1503,15 @@ export class Collector {
 
   /** Start a reach probe when one is due (agent hosts); the result lands in this.reach for later frames. */
   kickReach(now = Date.now()) {
-    if (!this.agentHost || this.cfg.reach === false || this.reachBusy || now - this.reachAt < REACH_EVERY_MS - 1000) return;
-    const targets = reachTargets(read(this.fleetFile), this.cfg.name, this.selfIps);
+    if (!this.reachOn || this.reachBusy || now - this.reachAt < REACH_EVERY_MS - 1000) return;
     this.reachAt = now;
-    if (!targets.length) {
-      this.reach = null;
-      return;
-    }
     this.reachBusy = true;
-    Promise.all(targets.map(async (t) => ({ to: t.name, ip: t.ip, rttMs: await probeRtt(t.ip, t.port), at: Date.now() })))
+    fs.promises
+      .readFile(this.fleetFile, 'utf8')
+      .catch(() => null)
+      .then((text) => Promise.all(reachTargets(text, this.cfg.name, this.selfIps).map(async (t) => ({ to: t.name, ip: t.ip, rttMs: await probeRtt(t.ip, t.port), at: Date.now() }))))
       .then((r) => {
-        this.reach = r;
+        this.reach = r.length ? r : null;
       })
       .catch(() => {})
       .finally(() => {
