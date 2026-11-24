@@ -44,7 +44,7 @@ OUR_LABELS="rdocker.rrun rdocker.keep rdocker.ttl rdocker.placed"
 
 die() { echo "unprovision: $*" >&2; exit 1; }
 say() { echo "RDUNPROV $*"; }
-REMOVED=() KEPT=() FAILED=()
+REMOVED=() KEPT=() FAILED=() RERUN=0   # RERUN=1: something of ours stays until a later re-run (keep the record)
 gone() { REMOVED+=("$*"); }
 kept() { KEPT+=("$*"); }
 # act CMD...: run it (or print it under --dry-run); a failure is recorded, never fatal - finish the rest
@@ -193,11 +193,11 @@ mounted_from() { local dev; dev=$(losetup -j "$2" -nO NAME 2>/dev/null | head -1
   [ -n "$dev" ] && mountpoint -q "$1" 2>/dev/null && [ "$(findmnt -no SOURCE "$1" | head -1)" = "$dev" ]; }
 if [ -f "$DOCKER_IMG" ]; then
   if ! mounted_from /var/lib/docker "$DOCKER_IMG"; then
-    kept "docker data image $DOCKER_IMG: not mounted, so its contents cannot be checked for data that is not ours (mount it and re-run, or delete it by hand)"
+    RERUN=1; kept "docker data image $DOCKER_IMG: not mounted, so its contents cannot be checked for data that is not ours (mount it and re-run, or delete it by hand)"
   elif [ "$DOCKER_OK" != 1 ]; then
-    kept "docker data image $DOCKER_IMG: docker is not running, so its containers cannot be checked for ones that are not ours"
+    RERUN=1; kept "docker data image $DOCKER_IMG: docker is not running, so its containers cannot be checked for ones that are not ours"
   elif [ $((FOREIGN_CT + FOREIGN_VOL)) -gt 0 ]; then
-    kept "docker data image $DOCKER_IMG at /var/lib/docker (+ its /etc/fstab line): it holds containers/volumes that are not ours; move them, then re-run"
+    RERUN=1; kept "docker data image $DOCKER_IMG at /var/lib/docker (+ its /etc/fstab line): it holds containers/volumes that are not ours; move them, then re-run"
   else
     act systemctl stop docker.socket docker.service >/dev/null 2>&1
     act umount /var/lib/docker || act umount -l /var/lib/docker
@@ -397,7 +397,7 @@ if [ -n "$RD_UID" ]; then
   if [ "$USER_OURS" = 1 ]; then
     case "$RD_HOME" in /|/root|/home|/usr*|/etc*|/var|/bin*|/sbin*|"") die "refusing: $RD_USER's home is $RD_HOME" ;; esac
     if [ -n "$RR" ] && mountpoint -q "$RR" 2>/dev/null; then
-      kept "user $RD_USER: $RR is still a mount point (unmount it, then re-run)"
+      RERUN=1; kept "user $RD_USER: $RR is still a mount point (unmount it, then re-run)"
     else
       act userdel -r "$RD_USER" && gone "user $RD_USER and its home $RD_HOME (~/rr, mise node/pnpm, reporter, configs)"
       getent group "$RD_USER" >/dev/null 2>&1 && [ -z "$(getent group "$RD_USER" | cut -d: -f4)" ] && act groupdel "$RD_USER"
@@ -496,8 +496,8 @@ for p in /run/rdocker /run/rdocker-tune /run/rdocker-doctor /run/rdocker-netchec
   [ -e "$p" ] && act rm -rf "$p"
 done
 if [ -d "$STATE_DIR" ]; then
-  if [ "${#FAILED[@]}" -gt 0 ] && [ "$DRY" != 1 ]; then
-    kept "$STATE_DIR (the prior-state record): kept because a step failed, so a re-run can still put things back"
+  if [ "$DRY" != 1 ] && { [ "${#FAILED[@]}" -gt 0 ] || [ "$RERUN" = 1 ]; }; then
+    kept "$STATE_DIR (the prior-state record): kept so a re-run can still put things back"
   else
     act rm -rf "$STATE_DIR" && gone "$STATE_DIR (tune.conf, doctor.conf, the prior-state record)"
   fi

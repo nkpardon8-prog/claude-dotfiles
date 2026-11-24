@@ -1,6 +1,7 @@
 """server/provision-linux.sh + rd-tune.sh: syntax, shellcheck (when installed), recipe static checks, and
 rd-tune's slot cap / prune / bench run for real against fake /proc, hwmon and node (never provisions anything)."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -417,6 +418,79 @@ class Harden(unittest.TestCase):
         self.assertIn("$SSHD -T", s)
         self.assertIn('"ip": "127.0.0.1"', s)
         self.assertNotIn("tcp://", s)
+
+
+UNPROV = os.path.join(SERVER, "unprovision-linux.sh")
+RRFS = os.path.join(SERVER, "rd-rrfs.sh")
+
+
+class Unprovision(unittest.TestCase):
+    """server/unprovision-linux.sh: syntax, shellcheck, the safety rules, and parity with what provision writes
+    (a file provision starts writing that unprovision does not name would be left on a friend's box, silently)."""
+
+    def test_bash_syntax_and_shellcheck(self):
+        r = subprocess.run(["/bin/bash", "-n", UNPROV], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sc = shutil.which("shellcheck", path="/opt/homebrew/bin:/usr/local/bin:/usr/bin")
+        if sc:
+            r = subprocess.run([sc, "-S", "warning", UNPROV], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_bad_args_and_dry_run_without_root_fail_or_change_nothing(self):
+        for args in (["--bogus"], ["--user", "Bad User"], ["--keys", "/nonexistent"]):
+            r = subprocess.run(["/bin/bash", UNPROV, "--dry-run"] + args, capture_output=True, text=True,
+                               env=rdmods.child_env(rdmods.TEST_HOME))
+            self.assertEqual(r.returncode, 1, args)
+            self.assertIn("unprovision:", r.stderr)
+
+    def test_every_file_provision_writes_is_taken_back(self):
+        u = read(UNPROV)
+        units, tools = u[u.index('UNITS="'):u.index('"', u.index('UNITS="') + 7)], u[u.index('TOOLS="'):u.index('"', u.index('TOOLS="') + 7)]
+        written = set()
+        for p in (PROV, RESIL, HARDEN):
+            written |= set(re.findall(r"^\s*(?:put_file|put) (/[^ ]+)", read(p), re.M))
+        self.assertGreater(len(written), 25)
+        for path in sorted(written):
+            if "$1" in path or path.startswith("/etc/rdocker/"):     # restart drop-ins below; /etc/rdocker goes whole
+                continue
+            base = os.path.basename(path)
+            if path.startswith("/etc/systemd/system/") and path.count("/") == 4:
+                self.assertIn(base, units, path)
+            elif path.startswith("/usr/local/bin/"):
+                self.assertIn(base, tools, path)
+            elif path.startswith("/etc/systemd/system/"):
+                self.assertIn(path[len("/etc/systemd/system/"):], u, path)
+            else:
+                self.assertIn(path, u, path)
+        for svc in re.search(r"for u in ([a-z ]+); do restart_dropin", read(RESIL)).group(1).split():
+            self.assertIn("%s.service.d/10-rdocker-restart.conf" % svc, u)
+        for need in ("/etc/sudoers.d/rd-docker", "05-rdocker-hardening.conf", "/var/lib/rdocker-docker.img",
+                     "/var/lib/rdocker-rr.xfs", "/var/lib/rdocker-rr.stage", "rd-rrfs.service", "/var/lib/docker.pre-rdocker",
+                     "disable-linger", "userdel -r", "DOCKER-USER", "/etc/wsl.conf", "/etc/apt/keyrings/docker.asc"):
+            self.assertIn(need, u)
+        self.assertIn('IMG="${RD_RRFS_IMG:-/var/lib/rdocker-rr.xfs}"', read(RRFS))
+        # every shared file provision backs up is one unprovision restores
+        for f in re.search(r"for p in (/etc/docker/daemon.json[^;]+);", read(PROV)).group(1).replace("\\\n", " ").split():
+            self.assertIn(f, u)
+
+    def test_only_ours_and_never_tailscale(self):
+        u = read(UNPROV)
+        self.assertIn('OUR_LABELS="rdocker.rrun rdocker.keep rdocker.ttl rdocker.placed"', u)
+        self.assertNotRegex(u, r"docker (system|container|image|volume) prune")
+        run_lines = [ln for ln in u.splitlines() if not ln.lstrip().startswith(("#", "echo "))]
+        self.assertFalse([ln for ln in run_lines if re.search(r"\btailscale (logout|down|set)", ln)])  # printed, never run
+        self.assertIn('echo "     sudo tailscale logout"', u)
+        self.assertNotRegex(u, r"rm -rf /(\s|$)")
+        self.assertIn("never purged", u)                                    # base tools stay
+        self.assertIn('"0 600"', u)                                         # the record must be root-only to be sourced
+
+    def test_provision_records_prior_state_once_before_any_change(self):
+        s = read(PROV)
+        i = s.index("record_prior_state; fi")
+        self.assertLess(i, s.index("# 0. WSL isolation"))
+        self.assertLess(i, s.index("# 1. packages"))
+        self.assertIn('elif [ ! -f "$PRIOR" ]', s)                          # never rewritten by a re-run
+        self.assertIn("/etc/rdocker/added-keys", s)
 
 
 class VerifyLockdown(unittest.TestCase):
