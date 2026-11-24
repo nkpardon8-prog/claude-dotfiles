@@ -220,6 +220,19 @@ fi
 # --- 3. the capped docker data disk (ext4 loop image at /var/lib/docker) ---------------------------------------
 say "step docker-disk"
 DISK_REMOVED=0
+unmount_all() {   # every mount stacked on $1 (a lazy umount when one is busy)
+  local i
+  if [ "$DRY" = 1 ]; then echo "+ umount $1 (every layer)" >&3; return 0; fi
+  for i in 1 2 3 4 5 6 7 8; do mountpoint -q "$1" || return 0; umount "$1" 2>/dev/null || umount -l "$1" || return 1; done
+}
+detach_loops() {   # the loop devices of image $1; one a process still maps (a service's private mount view)
+  local dev           # is only marked to detach: its space comes back when that process ends (at the latest, a reboot)
+  for dev in $(losetup -j "$1" -nO NAME 2>/dev/null); do act losetup -d "$dev"; done
+  [ "$DRY" = 1 ] && return 0
+  sleep 1
+  losetup -j "$1" 2>/dev/null | grep -q . && kept "$1: deleted, but a running service still maps it - its disk space returns at the next reboot"
+  return 0
+}
 # is MOUNTPOINT mounted from IMAGE's loop device?
 mounted_from() { local dev; dev=$(losetup -j "$2" -nO NAME 2>/dev/null | head -1)
   [ -n "$dev" ] && mountpoint -q "$1" 2>/dev/null && [ "$(findmnt -no SOURCE "$1" | head -1)" = "$dev" ]; }
@@ -232,9 +245,15 @@ if [ -f "$DOCKER_IMG" ]; then
     RERUN=1; kept "docker data image $DOCKER_IMG at /var/lib/docker (+ its /etc/fstab line): it holds containers/volumes/networks that are not ours; move them, then re-run"
   else
     act systemctl stop docker.socket docker.service >/dev/null 2>&1
-    act umount /var/lib/docker || act umount -l /var/lib/docker
-    for dev in $(losetup -j "$DOCKER_IMG" -nO NAME 2>/dev/null); do act losetup -d "$dev"; done
-    rm_file "$DOCKER_IMG" "docker data image ($N_IMAGES image(s), build cache; the box's pre-provision docker data is restored below)" && DISK_REMOVED=1
+    # dockerd bind-mounts its root onto itself, on top of our image: take off every layer, or one umount
+    # leaves the image mounted underneath (and docker would come back up on a deleted image)
+    unmount_all /var/lib/docker
+    if [ "$DRY" != 1 ] && mounted_from /var/lib/docker "$DOCKER_IMG"; then
+      FAILED+=("could not unmount the docker data image from /var/lib/docker: image kept")
+    else
+      detach_loops "$DOCKER_IMG"
+      rm_file "$DOCKER_IMG" "docker data image ($N_IMAGES image(s), build cache; the box's pre-provision docker data is restored below)" && DISK_REMOVED=1
+    fi
   fi
 fi
 if [ "$DISK_REMOVED" = 1 ] || [ ! -f "$DOCKER_IMG" ]; then
@@ -258,11 +277,13 @@ say "step rr-volume"
 RR=${RD_HOME:+$RD_HOME/rr}
 if unit_is_ours rd-rrfs.service; then act systemctl disable --now rd-rrfs.service >/dev/null 2>&1; fi
 if [ -f "$RR_IMG" ]; then
-  for mp in "$RR_STAGE" ${RR:+"$RR"}; do
-    mounted_from "$mp" "$RR_IMG" && { act umount "$mp" || act umount -l "$mp"; }
-  done
-  for dev in $(losetup -j "$RR_IMG" -nO NAME 2>/dev/null); do act losetup -d "$dev"; done
-  rm_file "$RR_IMG" "~$RD_USER/rr XFS volume image"
+  for mp in "$RR_STAGE" ${RR:+"$RR"}; do mounted_from "$mp" "$RR_IMG" && unmount_all "$mp"; done
+  if [ "$DRY" != 1 ] && { mounted_from "$RR_STAGE" "$RR_IMG" || { [ -n "$RR" ] && mounted_from "$RR" "$RR_IMG"; }; }; then
+    FAILED+=("could not unmount the ~$RD_USER/rr volume: image kept")
+  else
+    detach_loops "$RR_IMG"
+    rm_file "$RR_IMG" "~$RD_USER/rr XFS volume image"
+  fi
 fi
 rmdir_empty "$RR_STAGE"
 # the empty mountpoint rd-rrfs left is immutable (chattr +i): clear the flag so it can go with the home
@@ -569,7 +590,7 @@ if [ "$PURGE" = 1 ]; then
         # step 3 removed that, and kept docker installed while it stayed)
         if mountpoint -q /var/lib/docker && ! mounted_from /var/lib/docker "$DOCKER_IMG" \
            && [ "$(findmnt -no SOURCE /var/lib/docker | head -1 | sed 's/.*\[\(.*\)\]$/\1/')" = /var/lib/docker ]; then
-          act umount /var/lib/docker
+          unmount_all /var/lib/docker || FAILED+=("umount /var/lib/docker (docker's own bind of its root)")
         fi
         act rm -rf /var/lib/docker && gone "/var/lib/docker (docker installed by provision, purged)"
       fi
