@@ -93,6 +93,8 @@ record_prior_state() {
   for u in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
     [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] && masked="$masked $u"
   done
+  # every installed package: --purge-packages removes only what apt pulled in since (never one of these)
+  dpkg-query -W -f='${Status} ${Package}\n' 2>/dev/null | awk '$3 == "installed" {print $4}' | sort > /etc/rdocker/prior/packages
   # shared files provision overwrites in place: a copy under /etc/rdocker/prior/files keeps the original
   for p in /etc/docker/daemon.json /etc/apt/apt.conf.d/20auto-upgrades /etc/wsl.conf \
            /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do

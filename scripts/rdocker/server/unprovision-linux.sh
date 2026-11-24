@@ -477,10 +477,22 @@ if [ "$PURGE" = 1 ]; then
       P=$(printf '%s\n' $P | grep -vE '^(docker-.*|containerd\.io)$' | xargs)
       kept "docker packages: containers/volumes that are not ours still use docker"
     fi
+    # docker-ce's own recommends (apt installed it with docker-ce) leave with it
+    has docker-ce "$P" && pkg_installed docker-ce-rootless-extras && P="$P docker-ce-rootless-extras"
     if [ -n "${P# }" ]; then
       # shellcheck disable=SC2086
       act env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq $P >/dev/null && gone "packages:$P"
       has docker-ce "$P" && DOCKER_PURGED=1
+      # the dependencies apt pulled in for them: only ones the box did not have before (prior/packages)
+      if [ -s "$STATE_DIR/prior/packages" ] && [ "$DRY" != 1 ]; then
+        DEPS=$(apt-get -s autoremove 2>/dev/null | awk '/^Remv / {print $2}' | sed 's/:.*//' | sort -u \
+               | comm -23 - "$STATE_DIR/prior/packages" | xargs)
+        # shellcheck disable=SC2086
+        [ -n "$DEPS" ] && act env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq $DEPS >/dev/null \
+          && gone "$(echo "$DEPS" | wc -w | tr -d ' ') dependency package(s) apt installed for them"
+      elif [ "$DRY" = 1 ]; then echo "+ apt-get purge the dependencies apt installed for them (not ones the box had before)"; fi
+      # a purge also deletes config the box had (unattended-upgrades' postrm removes 20auto-upgrades): put it back
+      restore_shared /etc/apt/apt.conf.d/20auto-upgrades "automatic apt updates"
       # installing chrony replaced the box's own time daemon: put that back
       for p in $PRIOR_PKGS_PRESENT; do
         pkg_installed "$p" || { act env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$p" >/dev/null && gone "chrony's replacement of $p (reinstalled)"; }
@@ -492,9 +504,11 @@ if [ "$PURGE" = 1 ]; then
         [ -d "$d" ] && act rm -rf "$d" && gone "$d (docker installed by provision, purged)"
       done
       rmdir_empty /etc/docker
+      for d in /opt/containerd/bin /opt/containerd/lib /opt/containerd; do rmdir_empty "$d"; done
+      kept "docker's runtime firewall chains and the docker0 bridge: gone at the next reboot"
       if [ "$PRIOR_DOCKER_GROUP" = no ] && getent group docker >/dev/null && [ -z "$(getent group docker | cut -d: -f4)" ]; then act groupdel docker && gone "group docker"; fi
     fi
-    kept "base tools provision may have installed (curl, git, rsync, python3, sudo, openssh-server, libatomic1, ...): never purged; 'sudo apt-get autoremove' clears leftover dependencies"
+    kept "base tools provision may have installed (curl, git, rsync, perl, gnupg, libatomic1, ...): never purged; system users packages made (e.g. _chrony) stay, as Debian does"
   fi
 else
   kept "packages (docker-ce & co, chrony, build-essential, ufw, ...): kept - re-run with --purge-packages to remove the ones provision installed"
@@ -502,7 +516,11 @@ fi
 # a kept docker comes back up on its own config (and, when the image went, a fresh /var/lib/docker)
 if [ "$DOCKER_PURGED" != 1 ] && command -v docker >/dev/null 2>&1 \
    && [ $((DOCKER_CH + DISK_REMOVED + DOCKER_UNITS_CH)) -gt 0 ]; then
-  act systemctl restart docker.socket docker.service >/dev/null 2>&1
+  if [ "$FOREIGN_CT" -gt 0 ]; then   # a restart stops every container without a restart policy: theirs to do
+    kept "docker NOT restarted (it runs containers that are not ours): the restored config applies after: sudo systemctl restart docker"
+  else
+    act systemctl restart docker.socket docker.service >/dev/null 2>&1
+  fi
 fi
 
 # --- 13. our state ----------------------------------------------------------------------------------------------
