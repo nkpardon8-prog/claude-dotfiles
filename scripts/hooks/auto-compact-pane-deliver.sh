@@ -128,7 +128,10 @@ elif box is None:
     state = "unknown"
 else:
     above = rows[max(0, box - 10):box - 1]
-    busy = any(re.search("…\\s*\\(\\d", r) for r in above) or any("esc to interrupt" in r for r in rows)
+    # A status row about BACKGROUND work ("Waiting for 3 background agents to finish") is not
+    # the main turn: background agents, shells and wakeups keep running through a compaction.
+    busy = any(re.search("…\\s*\\(\\d", r) and "background" not in r.lower() for r in above) \
+        or any("esc to interrupt" in r for r in rows)
     state = "busy" if busy else "idle"
 held = ""
 if box is not None:
