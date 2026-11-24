@@ -51,7 +51,8 @@
 //   status. Runs in the background; each frame carries the latest result. No bandwidth test, by design.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
-// Flags: --once (print one frame as JSON, no network), --config <path>, --version.
+// Flags: --once (print one frame as JSON, no network), --config <path>, --version,
+//   --share-check (print whether this config's share control would accept orders here: ok or why).
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -1931,6 +1932,13 @@ async function main(argv) {
   };
   if (argv.includes('--version')) return console.log(VERSION);
   const file = arg('--config') ?? process.env.RD_REPORTER_CONFIG ?? path.join(os.homedir(), '.config/rdocker/reporter.json');
+  if (argv.includes('--share-check')) {
+    // Installers: would this config's share control accept orders here, as this user? (prints ok or why)
+    const c = shareControlCheck(loadConfig(file));
+    console.log(c.ok ? 'ok' : c.why);
+    process.exitCode = c.ok ? 0 : 1;
+    return;
+  }
   if (argv.includes('--once')) {
     const c = new Collector({ name: 'once', role: 'test' });
     c.sample();
