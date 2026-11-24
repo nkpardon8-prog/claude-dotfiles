@@ -77,7 +77,7 @@ PKGS_DOCKER="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-c
 PRIOR=/etc/rdocker/prior-state
 record_prior_state() {
   local p v u ena="" masked="" files="" missing="" present=""
-  install -d -m 755 /etc/rdocker; install -d -m 700 /etc/rdocker/prior
+  install -d -m 755 /etc/rdocker; install -d -m 700 /etc/rdocker/prior /etc/rdocker/prior/files
   # every package provision or its helpers (rd-rrfs xfsprogs, rd-harden ufw, rd-resilience
   # unattended-upgrades/pciutils) may install, and the time daemons installing chrony may replace
   for p in $PKGS_BASE $PKGS_DOCKER xfsprogs ufw unattended-upgrades pciutils; do
@@ -97,7 +97,7 @@ record_prior_state() {
   for p in /etc/docker/daemon.json /etc/apt/apt.conf.d/20auto-upgrades /etc/wsl.conf \
            /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do
     [ -e "$p" ] || continue
-    files="$files $p"; cp -a --parents "$p" /etc/rdocker/prior/files 2>/dev/null || install -d /etc/rdocker/prior/files && cp -a --parents "$p" /etc/rdocker/prior/files
+    files="$files $p"; cp -a --parents "$p" /etc/rdocker/prior/files
   done
   {
     echo "# rdocker: this box before its first provision ($(date -u +%FT%TZ)); read by unprovision-linux.sh"
@@ -151,7 +151,8 @@ fi
 # 1. packages ---------------------------------------------------------------------------------------
 say packages
 run apt-get update -qq
-run apt-get install -y -qq ca-certificates curl gnupg openssh-server chrony git perl python3 rsync tar e2fsprogs util-linux sudo libatomic1 build-essential   # node >= 25 links libatomic; native npm addons need a compiler
+# shellcheck disable=SC2086  # word-split on purpose: a package list
+run apt-get install -y -qq $PKGS_BASE   # node >= 25 links libatomic; native npm addons need a compiler
 
 # 2. user + client keys -----------------------------------------------------------------------------
 say user
@@ -166,7 +167,10 @@ authorize_keys() {   # authorize_keys USER: add every key of --keys to USER's au
   while IFS= read -r key; do
     [[ "$key" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[A-Za-z0-9-]+)\ [A-Za-z0-9+/]+=*(\ .*)?$ ]] || continue
     blob=$(echo "$key" | awk '{print $2}')
-    grep -qF " $blob" "$ak" || { echo "$key" >> "$ak"; n=$((n+1)); }
+    grep -qF " $blob" "$ak" && continue
+    echo "$key" >> "$ak"; n=$((n+1))
+    # unprovision-linux.sh takes back exactly the keys provision added (never one that was there before)
+    install -d -m 755 /etc/rdocker; echo "$u $blob" >> /etc/rdocker/added-keys; chmod 600 /etc/rdocker/added-keys
   done < "$KEYS"
   say "client keys user=$u added=$n"
 }
@@ -237,7 +241,8 @@ if ! command -v docker >/dev/null 2>&1 || ! docker --version 2>/dev/null | grep 
 deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$DOCKER_DISTRO $CODENAME stable
 CONF
   run apt-get update -qq
-  run apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  # shellcheck disable=SC2086  # word-split on purpose: a package list
+  run apt-get install -y -qq $PKGS_DOCKER
 fi
 LIVE_RESTORE=""; [ "$IS_HOME" = 1 ] && LIVE_RESTORE='  "live-restore": true,
 '   # home keeps DBs: dockerd restarts/upgrades must not stop containers
