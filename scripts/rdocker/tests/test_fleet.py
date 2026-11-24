@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 import shutil
 import tempfile
 import types
@@ -411,12 +412,12 @@ class RemoveServer(unittest.TestCase):
         self.assertEqual(un[un.index("-p") + 1], "2222")
         self.assertEqual(un[-2], "admin@100.9.8.7")
         line = un[-1]
-        self.assertTrue(line.startswith("sudo bash /tmp/rdocker-unprovision-box/unprovision-linux.sh "), line)
-        for need in ("--user rd", "--yes", "--keys /tmp/rdocker-unprovision-box/client_keys", "--admin-user admin",
-                     "--purge-packages", "rm -rf /tmp/rdocker-unprovision-box", "exit $rc"):
+        remote = re.match(r"sudo bash (/tmp/rdocker-unprovision-box-[0-9a-f]{8})/unprovision-linux.sh ", line).group(1)
+        for need in ("--user rd", "--yes", "--keys %s/client_keys" % remote, "--admin-user admin",
+                     "--purge-packages", "rm -rf %s" % remote, "exit $rc"):
             self.assertIn(need, line)
         scp = next(c for c in self.cmds if c[0] == "scp")
-        self.assertEqual(scp[-1], "admin@100.9.8.7:/tmp/rdocker-unprovision-box")
+        self.assertEqual(scp[-1], "admin@100.9.8.7:" + remote)      # fresh per run: never a stale copy
         self.assertIn("2222", scp)
         self.assertIsNone(rd_fleet.get(rd_fleet.load(), "box"))
         self.assertIn(["ssh-keygen", "-R", "rd-box"], self.cmds)
@@ -438,6 +439,28 @@ class RemoveServer(unittest.TestCase):
             self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
         self.assertEqual(open(self.fleet).read(), before)
         self.assertFalse(any(c[0] == "git" for c in self.cmds))
+
+    def test_dry_run_stages_nothing(self):
+        with mock.patch.object(rd_fleet, "stage_dir", side_effect=AssertionError("staged in a dry run")):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", dry_run=True)), 0)
+
+    def test_incomplete_unprovision_exit_3_leaves_fleet_unchanged(self):
+        before = open(self.fleet).read()
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/s"), \
+                mock.patch.object(rd_fleet, "interactive", return_value=3):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
+        self.assertEqual(open(self.fleet).read(), before)
+
+    def test_entry_changed_meanwhile_is_not_removed(self):
+        def interactive(cmd):     # another client re-pointed the box while unprovision ran
+            doc = json.load(open(self.fleet))
+            next(m for m in doc["machines"] if m["name"] == "box")["ip"] = "100.9.9.9"
+            rd_fleet.save(doc, self.fleet)
+            return 0
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/s"), \
+                mock.patch.object(rd_fleet, "interactive", interactive):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
+        self.assertEqual(rd_fleet.get(rd_fleet.load(), "box")["ip"], "100.9.9.9")
 
     def test_fleet_only_skips_the_box(self):
         self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", fleet_only=True, admin_user=None)), 0)

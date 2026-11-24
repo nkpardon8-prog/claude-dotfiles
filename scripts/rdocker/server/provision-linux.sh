@@ -104,6 +104,7 @@ record_prior_state() {
   {
     echo "# rdocker: this box before its first provision ($(date -u +%FT%TZ)); read by unprovision-linux.sh"
     printf 'PRIOR_VERSION=1\n'
+    printf 'PRIOR_USER_NAME=%q\n' "$RD_USER"      # the record speaks for this user only
     printf 'PRIOR_USER_EXISTED=%s\n' "$(id "$RD_USER" >/dev/null 2>&1 && echo 1 || echo 0)"
     printf 'PRIOR_LINGER=%s\n' "$([ -e "/var/lib/systemd/linger/$RD_USER" ] && echo 1 || echo 0)"
     printf 'PRIOR_PKGS_MISSING=%q\n' "${missing# }"
@@ -113,6 +114,9 @@ record_prior_state() {
     printf 'PRIOR_FILES=%q\n' "${files# }"
     printf 'PRIOR_DEFAULT_TARGET=%q\n' "$(systemctl get-default 2>/dev/null || true)"
     printf 'PRIOR_UFW_ACTIVE=%s\n' "$(ufw status 2>/dev/null | grep -q '^Status: active' && echo 1 || echo 0)"
+    # rules / default policies ufw already had: rd-harden's identical rules then are not ours to delete
+    printf 'PRIOR_UFW_RULES=%q\n' "$(ufw show added 2>/dev/null | grep '^ufw ' || true)"
+    printf 'PRIOR_UFW_DEFAULTS=%q\n' "$(ufw status verbose 2>/dev/null | sed -n 's/^Default: \([a-z]*\) (incoming), \([a-z]*\) (outgoing).*/\1 \2/p')"
     printf 'PRIOR_DOCKER_GROUP=%q\n' "$(getent group docker >/dev/null && echo "yes:$(getent group docker | cut -d: -f4)" || echo no)"
     printf 'PRIOR_CHRONY_MAKESTEP=%s\n' "$(grep -qs '^makestep 0.05 -1' /etc/chrony/chrony.conf && echo 1 || echo 0)"
     printf 'PRIOR_DOCKER_DATA=%s\n' "$([ -n "$(ls -A /var/lib/docker 2>/dev/null)" ] && echo 1 || echo 0)"

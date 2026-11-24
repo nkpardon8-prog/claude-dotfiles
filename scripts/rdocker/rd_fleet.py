@@ -10,6 +10,7 @@ import json
 import ipaddress
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -628,30 +629,48 @@ def remove_server(cfg, ns):
             return 2
         keys = list(dict.fromkeys(doc.get("client_keys", []) + ([own_pubkey()] if own_pubkey() else [])))
         target = "%s@%s" % (ns.admin_user, m["ip"])
-        remote = "/tmp/rdocker-unprovision-" + ns.name
-        tmp = tempfile.mkdtemp(prefix="rdk-unprov-", dir=rd_common.STATE_DIR if os.path.isdir(rd_common.STATE_DIR) else None)
+        # a fresh path per run: scp into a dir left by an interrupted run would nest the copy, and the old
+        # top-level script would run
+        remote = "/tmp/rdocker-unprovision-%s-%s" % (ns.name, secrets.token_hex(4))
+        tmp = None if dry else tempfile.mkdtemp(
+            prefix="rdk-unprov-", dir=rd_common.STATE_DIR if os.path.isdir(rd_common.STATE_DIR) else None)
         try:
-            src = stage_dir(keys, tmp)
+            src = "<server/ + client_keys>" if dry else stage_dir(keys, tmp)
             if sh(["scp", "-r", "-P", str(m["port"]), "-o", "StrictHostKeyChecking=accept-new", src,
                    "%s:%s" % (target, remote)], "copy unprovision files")[0]:
                 rd_common.say("could not copy to %s (is sshd up on port %d and the key/password right?)" % (target, m["port"]))
                 return 1
         finally:
-            shutil.rmtree(tmp, True)
+            if tmp:
+                shutil.rmtree(tmp, True)
         args = ["--user", m["user"], "--yes", "--keys", remote + "/client_keys", "--admin-user", ns.admin_user] + (
             ["--purge-packages"] if ns.purge_packages else [])
         # one remote shell line: it also deletes the staged copy, because unprovision takes our client keys
         # off the admin login (a second ssh afterwards may no longer get in)
         line = "sudo bash %s/unprovision-linux.sh %s; rc=$?; rm -rf %s; exit $rc" % (
             remote, " ".join(shlex.quote(a) for a in args), remote)
-        if sh(["ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", "-p", str(m["port"]), target, line],
-              "unprovision (asks for the sudo password once)", tty=True)[0]:
-            rd_common.say("unprovision failed (see output above); fleet.json unchanged - fix and re-run "
-                          "(it is idempotent), or --fleet-only to drop the entry anyway")
+        rc = sh(["ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", "-p", str(m["port"]), target, line],
+                "unprovision (asks for the sudo password once)", tty=True)[0]
+        if rc:
+            rd_common.say(("unprovision is incomplete (exit 3: the box still holds things it would not remove, "
+                           "listed under Kept above)" if rc == 3 else "unprovision failed (see output above)")
+                          + "; fleet.json unchanged - re-run once fixed (it is idempotent), or --fleet-only to "
+                          "drop the entry anyway")
             return 1
     print("fleet.json: remove %s" % ns.name)
     if not dry:
-        save(rest)
+        # re-read: the box ran for minutes; drop only this entry from what fleet.json says NOW
+        try:
+            cur = load_doc()
+        except FleetError as e:
+            rd_common.say(str(e))
+            return 1
+        now = get([entry(x) for x in cur["machines"]], ns.name)
+        if now and (now["ip"], now["user"]) != (m["ip"], m["user"]):
+            rd_common.say("fleet.json's %s changed meanwhile (ip/user): not removing it; check and re-run "
+                          "with --fleet-only" % ns.name)
+            return 1
+        save({**cur, "machines": [x for x in cur["machines"] if x["name"] != ns.name]})
         ssh_blocks(load(), cfg)
         if m["alias"]:
             rd_common.run(["ssh-keygen", "-R", m["alias"]], timeout=10)

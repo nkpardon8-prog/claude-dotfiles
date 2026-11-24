@@ -110,19 +110,25 @@ installed; `--fleet-only` just drops the entry (box gone). The home machine is r
 The friend can run the script alone: `sudo bash unprovision-linux.sh [--user rd] [--yes] [--dry-run]
 [--purge-packages]`. What it does:
 - Stops rdocker's timers/services and every `rd` process, removes the pool's containers (labels
-  `rdocker.rrun` / `.keep` / `.ttl` / `.placed`, an rrun compose project) and the volumes only they used;
-  never a container or volume that is not ours.
+  `rdocker.rrun` / `.keep` / `.ttl` / `.placed`, an rrun compose project), their networks, and their volumes
+  (labelled, or made by one of our containers: mounted by it and created no earlier). Never anything else; a
+  docker listing that fails means nothing in docker is removed.
 - Takes away both loop images (`/var/lib/docker` ext4, `~rd/rr` XFS), their fstab line / mount unit, and puts
-  `/var/lib/docker.pre-rdocker` back. A docker disk that holds anything not ours is KEPT (and docker is not
-  restarted under someone's containers); re-run once it is moved.
+  `/var/lib/docker.pre-rdocker` back (images on our disk go with it). A docker disk that holds any container,
+  volume or network that is not ours is KEPT (and docker is never restarted under someone's containers);
+  re-run once it is moved. Such a run exits 3 ("incomplete"), and remove-server then leaves fleet.json alone.
 - Removes every rd-* unit, tool, `*rdocker*` drop-in (sshd, sysctl, journald, logind, watchdog, chrony,
-  apt), the sudoers file, `/etc/rdocker`, the `rd` user with its home (mise node/pnpm, reporter, linger), and
-  the client keys provision added to the admin login (that login's own keys stay).
+  apt), the sudoers file, `/etc/rdocker`, the `rd` user with its home (mise node/pnpm, reporter, linger) when
+  the record says provision created it, and the client keys provision added to the admin login (from the
+  `/etc/rdocker/added-keys` ledger; that login's own keys stay; rewritten as that user, never as root). sshd is
+  only reloaded, never restarted, so the session running it is never cut.
 - Shared settings come back from the record the FIRST provision writes (`/etc/rdocker/prior-state` + copies
   of the files it edits in place): ufw on/off, avahi/cups/rpcbind, masked sleep targets, default target,
   `ssh.socket` (from the next boot), docker group members, sysctl values, `daemon.json`, `20auto-upgrades`,
-  `wsl.conf`; with `--purge-packages`, the packages and the dependencies apt pulled in that the box lacked
-  before (base tools - curl, git, perl, sudo, openssh-server, ... - always stay). A box provisioned before
-  that record existed keeps those shared settings and the summary prints the undo command for each.
+  `wsl.conf`, ufw rules/defaults it did not already have; with `--purge-packages`, the packages and the
+  dependencies our purge orphaned that the box lacked before (base tools - curl, git, perl, sudo,
+  openssh-server, ... - always stay). Without `--purge-packages` the small root-only record stays so a later
+  purge still knows what is ours. A box provisioned before that record existed keeps those shared settings and
+  its `rd` user, and the summary prints the undo command for each.
 - Prints what was removed, what was kept and why. Tailscale is never touched: `sudo tailscale logout` is the
   optional last step it prints.
