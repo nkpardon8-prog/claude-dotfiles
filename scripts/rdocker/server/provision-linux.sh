@@ -68,6 +68,66 @@ DOCKER_DISTRO=$ID; [ "$ID" = linuxmint ] && DOCKER_DISTRO=ubuntu
 IS_WSL=0; grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=1
 say "distro=$ID/$CODENAME wsl=$IS_WSL user=$RD_USER ts-ip=$TS_IP port=$PORT"
 export DEBIAN_FRONTEND=noninteractive
+PKGS_BASE="ca-certificates curl gnupg openssh-server chrony git perl python3 rsync tar e2fsprogs util-linux sudo libatomic1 build-essential"
+PKGS_DOCKER="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+
+# 0a. prior state (FIRST provision only, before anything changes): what unprovision-linux.sh needs to put the
+#     box back - which packages / user / settings were already there, plus copies of the shared files provision
+#     edits in place. Never rewritten by a re-run (a re-run would record our own changes as "before").
+PRIOR=/etc/rdocker/prior-state
+record_prior_state() {
+  local p v u ena="" masked="" files="" missing="" present=""
+  install -d -m 755 /etc/rdocker; install -d -m 700 /etc/rdocker/prior
+  # every package provision or its helpers (rd-rrfs xfsprogs, rd-harden ufw, rd-resilience
+  # unattended-upgrades/pciutils) may install, and the time daemons installing chrony may replace
+  for p in $PKGS_BASE $PKGS_DOCKER xfsprogs ufw unattended-upgrades pciutils; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $p"
+  done
+  for p in systemd-timesyncd ntp ntpsec openntpd; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' && present="$present $p"
+  done
+  for u in ssh.service ssh.socket avahi-daemon.socket avahi-daemon.service cups.socket cups.path cups.service \
+           cups-browsed.service rpcbind.socket rpcbind.service; do
+    [ "$(systemctl is-enabled "$u" 2>/dev/null)" = enabled ] && ena="$ena $u"
+  done
+  for u in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+    [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] && masked="$masked $u"
+  done
+  # shared files provision overwrites in place: a copy under /etc/rdocker/prior/files keeps the original
+  for p in /etc/docker/daemon.json /etc/apt/apt.conf.d/20auto-upgrades /etc/wsl.conf \
+           /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do
+    [ -e "$p" ] || continue
+    files="$files $p"; cp -a --parents "$p" /etc/rdocker/prior/files 2>/dev/null || install -d /etc/rdocker/prior/files && cp -a --parents "$p" /etc/rdocker/prior/files
+  done
+  {
+    echo "# rdocker: this box before its first provision ($(date -u +%FT%TZ)); read by unprovision-linux.sh"
+    printf 'PRIOR_VERSION=1\n'
+    printf 'PRIOR_USER_EXISTED=%s\n' "$(id "$RD_USER" >/dev/null 2>&1 && echo 1 || echo 0)"
+    printf 'PRIOR_LINGER=%s\n' "$([ -e "/var/lib/systemd/linger/$RD_USER" ] && echo 1 || echo 0)"
+    printf 'PRIOR_PKGS_MISSING=%q\n' "${missing# }"
+    printf 'PRIOR_PKGS_PRESENT=%q\n' "${present# }"
+    printf 'PRIOR_ENABLED=%q\n' "${ena# }"
+    printf 'PRIOR_MASKED=%q\n' "${masked# }"
+    printf 'PRIOR_FILES=%q\n' "${files# }"
+    printf 'PRIOR_DEFAULT_TARGET=%q\n' "$(systemctl get-default 2>/dev/null || true)"
+    printf 'PRIOR_UFW_ACTIVE=%s\n' "$(ufw status 2>/dev/null | grep -q '^Status: active' && echo 1 || echo 0)"
+    printf 'PRIOR_DOCKER_GROUP=%q\n' "$(getent group docker >/dev/null && echo "yes:$(getent group docker | cut -d: -f4)" || echo no)"
+    printf 'PRIOR_CHRONY_MAKESTEP=%s\n' "$(grep -qs '^makestep 0.05 -1' /etc/chrony/chrony.conf && echo 1 || echo 0)"
+    printf 'PRIOR_DOCKER_DATA=%s\n' "$([ -n "$(ls -A /var/lib/docker 2>/dev/null)" ] && echo 1 || echo 0)"
+    for v in net.ipv4.ip_nonlocal_bind vm.swappiness kernel.panic kernel.panic_on_oops; do
+      printf 'PRIOR_SYSCTL_%s=%q\n' "$(echo "$v" | tr '.' '_')" "$(sysctl -n "$v" 2>/dev/null || true)"
+    done
+  } > "$PRIOR.tmp"
+  chmod 600 "$PRIOR.tmp"; mv -f "$PRIOR.tmp" "$PRIOR"
+  say "prior state recorded in $PRIOR"
+}
+if [ "$DRY" = 1 ]; then echo "+ record prior state in $PRIOR (first provision only)"
+elif [ ! -f "$PRIOR" ]; then
+  # a box that already has rdocker's files was provisioned before this record existed: "before" is unknown
+  if [ -e /etc/sudoers.d/rd-docker ] || [ -e /etc/rdocker/tune.conf ]; then
+    say "note provisioned before prior-state records existed: unprovision will keep shared settings it cannot attribute"
+  else record_prior_state; fi
+fi
 
 # 0. WSL isolation (B8): pool jobs must never reach the Windows drive or launch Windows programs.
 #    The OpenDental laptop keeps patient data on C:. Interop also lets any WSL user run
