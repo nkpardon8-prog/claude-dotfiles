@@ -144,7 +144,7 @@ fi
 
 # --- 2. pool containers (labelled ours) --------------------------------------------------------------------
 say "step containers"
-DOCKER_OK=0 FOREIGN_CT=0 FOREIGN_VOL=0
+DOCKER_OK=0 FOREIGN_CT=0 FOREIGN_VOL=0 VOLS_OURS=0
 if command -v docker >/dev/null 2>&1; then
   quiet docker info || { [ "$DRY" = 1 ] || quiet systemctl start docker; }
   quiet docker info && DOCKER_OK=1
@@ -164,6 +164,10 @@ if [ "$DOCKER_OK" = 1 ]; then
   }
   CTS=$(ids_by_labels container | sort -u)
   n=$(echo "$CTS" | grep -c . || true)
+  # named volumes our containers mount (`-v name:/path` creates one without a label): ours once no other
+  # container uses them - checked after ours are gone (docker volume rm refuses a volume still in use)
+  # shellcheck disable=SC2086
+  CT_VOLS=$( [ "$n" -gt 0 ] && docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' $CTS 2>/dev/null | grep . | sort -u)
   if [ "$n" -gt 0 ]; then
     say "removing $n pool container(s): $(echo "$CTS" | xargs -r docker inspect -f '{{.Name}}' 2>/dev/null | tr -d / | tr '\n' ' ')"
     # shellcheck disable=SC2086
@@ -171,13 +175,22 @@ if [ "$DOCKER_OK" = 1 ]; then
   fi
   for kind in volume network; do
     OBJS=$(ids_by_labels "$kind" | sort -u)
+    if [ "$kind" = volume ] && [ -n "$CT_VOLS" ]; then
+      for v in $CT_VOLS; do   # still mounted by a container that is not ours: not ours to remove
+        if [ "$DRY" = 1 ]; then used=$(docker ps -aq --filter "volume=$v" | grep -vxF -f <(echo "$CTS" | cut -c1-12) | grep -c . || true)
+        else used=$(docker ps -aq --filter "volume=$v" | grep -c . || true); fi
+        [ "$used" = 0 ] && OBJS=$(printf '%s\n%s\n' "$OBJS" "$v")
+      done
+      OBJS=$(echo "$OBJS" | grep . | sort -u)
+    fi
     n=$(echo "$OBJS" | grep -c . || true)
+    [ "$kind" = volume ] && VOLS_OURS=$n
     # shellcheck disable=SC2086
     [ "$n" -gt 0 ] && act docker "$kind" rm $OBJS >/dev/null && gone "$n pool ${kind}(s)"
   done
   if [ "$DRY" = 1 ]; then   # what is left once ours are gone
     FOREIGN_CT=$(( $(docker ps -aq | grep -c . || true) - $(echo "$CTS" | grep -c . || true) ))
-    FOREIGN_VOL=$(( $(docker volume ls -q | grep -c . || true) - $(ids_by_labels volume | sort -u | grep -c . || true) ))
+    FOREIGN_VOL=$(( $(docker volume ls -q | grep -c . || true) - VOLS_OURS ))
   else
     FOREIGN_CT=$(docker ps -aq | grep -c . || true); FOREIGN_VOL=$(docker volume ls -q | grep -c . || true)
   fi
