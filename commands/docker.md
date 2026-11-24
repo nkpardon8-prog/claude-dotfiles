@@ -1144,6 +1144,7 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | `rdocker sync` | reconcile port mirrors now |
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
 | `rdocker add-server <name> <tailscale-ip> [--role home,worker] [--admin-user U] [--dry-run]` | provision a Linux box over ssh (`server/provision-linux.sh`) and add it to `fleet.json`; see `/dockersetup server` |
+| `rdocker remove-server <name> --admin-user U [--purge-packages] [--fleet-only] [--dry-run]` | the reverse of add-server: run `server/unprovision-linux.sh` on the box over ssh, drop it from `fleet.json`, print the `wrangler secret delete`; see `/dockersetup server` |
 | `rdocker bench-worker <name>` | benchmark one worker (Linux or Mac) over ssh; stores `~/rr/speed` there (the probe prefers it over fleet.json) |
 | `rdocker warm [--once] [--repo PATH]` | pre-warm the pool workers for repos used here lately (the `com.rdocker.warm` agent runs it in a loop) — see "Pre-warmed workers" |
 | `rdocker sync-fleet [--pull]` | validate `fleet.json`, rewrite `~/.ssh/config.d/rdocker` from it (that file is rdocker-owned; old copies in `~/.ssh/rdocker-backups/`) |

@@ -2,6 +2,19 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-11-24 - rdocker: give a lent server back (`unprovision-linux.sh`, `rdocker remove-server`)
+
+- New `scripts/rdocker/server/unprovision-linux.sh`: the exact reverse of `provision-linux.sh` (and its
+  helpers rd-resilience, rd-harden, rd-rrfs). Removes only what is ours (rd-* units/tools, `*rdocker*`
+  drop-ins, both loop images, sudoers, the `rd` user, pool-labelled containers), restores shared settings
+  from a record, never touches other containers or Tailscale; `--dry-run`, `--yes`, `--purge-packages`.
+- `provision-linux.sh` now records the box before its FIRST run (`/etc/rdocker/prior-state`, copies of the
+  shared files it edits, the installed package list) and the client keys it adds (`/etc/rdocker/added-keys`).
+- New `rdocker remove-server <name> --admin-user U`: unprovision over ssh, drop the fleet entry, commit/push,
+  print `wrangler secret delete MACHINE_KEY_<NAME>`.
+- Verified by a real round trip in a privileged systemd container on the home host (provision, pool + friend
+  containers, unprovision default / `--purge-packages` / re-run, legacy box without the record).
+
 ## 2026-11-17 - dotfiles-sync revert guard (the 5e15bea6 incident)
 
 - Auto-sync 5e15bea6 (2026-11-09, macbookair-m4) committed rdocker files built on copies older than

@@ -99,3 +99,30 @@ client keys (key-only ssh would otherwise lock it out); password logins stop wor
 HP ProDesk checklist: BIOS wired boot, Ubuntu Server 24.04, `sudo tailscale up`, then
 `rdocker add-server hp <ip> --role home,worker --admin-user <login>`; later migrate kept containers, then
 `rrun --where`. Failed verify leaves the machine `enabled:false` in fleet.json - fix and re-run (idempotent).
+
+### Giving a box back: `rdocker remove-server <name> --admin-user <login>`
+The exact reverse of add-server (for a friend who lent us a Linux server). Preview with `--dry-run` (prints
+the commands, changes nothing). It copies `server/` to the box, runs `server/unprovision-linux.sh` there as
+the admin login (never as `rd`, the user it deletes; asks the sudo password once), then drops the machine from
+fleet.json, rewrites the ssh blocks, commits + pushes (`--no-push` to skip) and prints
+`wrangler secret delete MACHINE_KEY_<NAME>` for the owner. `--purge-packages` also purges what provision
+installed; `--fleet-only` just drops the entry (box gone). The home machine is refused: move home first.
+The friend can run the script alone: `sudo bash unprovision-linux.sh [--user rd] [--yes] [--dry-run]
+[--purge-packages]`. What it does:
+- Stops rdocker's timers/services and every `rd` process, removes the pool's containers (labels
+  `rdocker.rrun` / `.keep` / `.ttl` / `.placed`, an rrun compose project) and the volumes only they used;
+  never a container or volume that is not ours.
+- Takes away both loop images (`/var/lib/docker` ext4, `~rd/rr` XFS), their fstab line / mount unit, and puts
+  `/var/lib/docker.pre-rdocker` back. A docker disk that holds anything not ours is KEPT (and docker is not
+  restarted under someone's containers); re-run once it is moved.
+- Removes every rd-* unit, tool, `*rdocker*` drop-in (sshd, sysctl, journald, logind, watchdog, chrony,
+  apt), the sudoers file, `/etc/rdocker`, the `rd` user with its home (mise node/pnpm, reporter, linger), and
+  the client keys provision added to the admin login (that login's own keys stay).
+- Shared settings come back from the record the FIRST provision writes (`/etc/rdocker/prior-state` + copies
+  of the files it edits in place): ufw on/off, avahi/cups/rpcbind, masked sleep targets, default target,
+  `ssh.socket` (from the next boot), docker group members, sysctl values, `daemon.json`, `20auto-upgrades`,
+  `wsl.conf`; with `--purge-packages`, the packages and the dependencies apt pulled in that the box lacked
+  before (base tools - curl, git, perl, sudo, openssh-server, ... - always stay). A box provisioned before
+  that record existed keeps those shared settings and the summary prints the undo command for each.
+- Prints what was removed, what was kept and why. Tailscale is never touched: `sudo tailscale logout` is the
+  optional last step it prints.
