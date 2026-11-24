@@ -103,6 +103,10 @@ case "${1:-}" in
 owner)
   NAME=${2:?name}
   [ -f "$CFG" ] || die "no $CFG: this Mac has no owner reporter"
+  # The right Mac before anything changes.
+  "$NODE" -e "$JSON_WRITE"'
+    try { const c = readJson(process.argv[1]); if (c.name !== process.argv[2]) throw new Error("reporter.json is for " + String(c.name).slice(0, 40) + ", not " + process.argv[2] + ": wrong Mac?"); }
+    catch (e) { fail(e); }' "$CFG" "$NAME"
   install_mjs
   # Set shareControl in place: every other field kept, never printed, mode 0600, atomic rename.
   "$NODE" -e "$JSON_WRITE"'
