@@ -16,6 +16,8 @@
 #     both from the transcript; sentinel retained with attempts=1
 #   - regressions from 2026-11-16: Pane's composer flag misreading an empty box; a new turn
 #     starting right after the Stop while the screen looks idle
+#   - regression from 2026-11-24: background agents/shells/wakeups make Pane report "working"; an
+#     idle MAIN turn (transcript) with no main spinner still delivers; a real draft never submits
 #   - a lost Enter: our text is deleted (never anyone else's) and retried once; then a bounded
 #     give-up that retires the sentinel and raises a visible notification
 #   - a compaction that starts and stops unfinished is not retried; one that never finishes times out
@@ -53,6 +55,8 @@ STUB_LOG="$T/stub-calls.log"
 #                     and "esc to interrupt" in the footer. STUB_PANE_UNDELIVERED=1: Pane's flag
 #                     claims undelivered text although the box is empty (the 2026-11-16 misread).
 #                     STUB_GHOST=<text>: Claude's grey suggestion, drawn only while the box is empty.
+#                     STUB_FOOTER=<rows>: extra rows under the footer (background task counter,
+#                     the background agent list with live timers).
 #   panels input --text X   → X is appended to the box
 #   panels input --keys enter → submits the box: "/compact" starts a compaction (STUB_COMPACT=
 #                     ok (default, 2.1.32x: nothing written until the boundary) | legacy (2.1.319:
@@ -109,6 +113,8 @@ import json, os, sys
 compacting = os.path.exists(os.environ["STUB_COMPACTING"])
 above = "✻ Compacting conversation… (1s)" if compacting else os.environ.get("STUB_ABOVE", "")
 footer = "  bypass permissions on" + (" · esc to interrupt" if compacting else "")
+if os.environ.get("STUB_FOOTER"):   # background counters / agent rows drawn under the box
+    footer += "\n" + os.environ["STUB_FOOTER"]
 pane = {"isPresent": True, "hasUndeliveredText": True} if os.environ.get("STUB_PANE_UNDELIVERED") == "1" else {"isPresent": False, "hasUndeliveredText": False}
 box = sys.argv[1] or os.environ.get("STUB_GHOST", "")   # grey suggestion only in an empty box
 text = "output\n" + above + "\n\n───── my-session ─\n❯ " + box + "\n───────\n" + footer
@@ -400,12 +406,66 @@ wait_helper
 expect "no input while the spinner runs" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
 expect "logged none/empty busy" "$(grep -q "screen=busy agent/composer/transcript=none/empty/idle" "$LOG" && echo 1)"
 
-echo "== hook: agent still working → nothing typed =="
+echo "== hook: agent working + MAIN turn running in the transcript → nothing typed =="
 reset; write_pane_sentinel
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"next task"}}' >> "$TRANSCRIPT"
 STUB_AGENT_STATE=working AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
 wait_helper
-expect "no input while working" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
+expect "no input while the main turn works" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
+expect "logged working/empty/busy" "$(grep -q "screen=busy agent/composer/transcript=working/empty/busy" "$LOG" && echo 1)"
 expect "logged never-idle" "$(grep -q "reason=never-idle" "$LOG" && echo 1)"
+
+echo "== hook: agent working + NO transcript → nothing typed (Pane's state still decides) =="
+reset; write_pane_sentinel
+HOOK_TRANSCRIPT="" STUB_AGENT_STATE=working AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "no input without a transcript to prove the main turn ended" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
+
+BG_ABOVE="✻ Waiting for 3 background agents to finish"
+BG_FOOTER="  ⏵⏵ bypass permissions on · 8 background tasks · ↓ to manage
+  ⏺ main
+  ◯ implementer      Waiting for phase-3 test typecheck rerun        1h 36m 28s · ↓ 537.0k tokens
+  ◯ general-purpose  Fix pane auto-compact idle detection                    16s · ↓ 82.9k tokens"
+
+echo "== REGRESSION 2026-11-24: background agents/tasks running, MAIN turn idle → delivered =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=working STUB_ABOVE="$BG_ABOVE" STUB_FOOTER="$BG_FOOTER" hook "test-panel_1"
+wait_helper
+expect "ready despite Pane's working (background)" "$(grep -q "screen=ready agent/composer/transcript=idle(background)/empty/idle" "$LOG" && echo 1)"
+expect "/compact typed once" "$([ "$(compact_types)" = "1" ] && echo 1)"
+expect "exactly two Enters" "$([ "$(enters)" = "2" ] && echo 1)"
+expect "accepted while background work runs" "$(grep -q "pane-compact-accepted sid=$SID .*try=1" "$LOG" && echo 1)"
+expect "resume confirmed" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+expect "no never-idle abort" "$(grep -q "reason=never-idle" "$LOG" && echo 0 || echo 1)"
+
+echo "== REGRESSION 2026-11-24: a background status row with a live timer is not a main spinner =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=working STUB_ABOVE="✽ Waiting for 2 background agents… (3m 12s)" STUB_FOOTER="  · 2 shells · ↓ to manage" hook "test-panel_1"
+wait_helper
+expect "ready (background timer ignored)" "$(grep -q "screen=ready agent/composer/transcript=idle(background)/empty/idle" "$LOG" && echo 1)"
+expect "resume confirmed" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== background work + a MAIN spinner above the box → nothing typed =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=working STUB_ABOVE="✻ Sautéing… (26s · ↓ 2.6k tokens)" STUB_FOOTER="$BG_FOOTER" AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "no input while the main spinner runs" "$(grep -q '^panels input' "$STUB_LOG" && echo 0 || echo 1)"
+
+echo "== background work + grey suggestion in the box → replaced and delivered =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=working STUB_ABOVE="$BG_ABOVE" STUB_FOOTER="$BG_FOOTER" STUB_GHOST="check the test results" hook "test-panel_1"
+wait_helper
+expect "suggestion replaced" "$(grep -q "pane-suggestion-replaced sid=$SID" "$LOG" && echo 1)"
+expect "resume confirmed" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== background work + the user's real draft → never submitted =="
+reset; write_pane_sentinel
+printf '%s' "half-typed thought" > "$STUB_HELD_FILE"
+STUB_AGENT_STATE=working STUB_ABOVE="$BG_ABOVE" STUB_FOOTER="$BG_FOOTER" AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=3 hook "test-panel_1"
+wait_helper
+expect "logged pane-draft-detected" "$(grep -q "pane-draft-detected sid=$SID" "$LOG" && echo 1)"
+expect "draft left exactly as it was" "$([ "$(cat "$STUB_HELD_FILE")" = "half-typed thought" ] && echo 1)"
+expect "Enter never pressed" "$([ "$(enters)" = "0" ] && echo 1)"
 
 echo "== hook: Claude's grey suggestion in the empty box (Claude 2.1.326, live) → replaced and delivered =="
 reset; write_pane_sentinel
