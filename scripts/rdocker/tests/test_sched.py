@@ -103,7 +103,7 @@ class Eta(unittest.TestCase):
         p, _ = self.plan(self.real_fleet(), {"nickmbp": dict(nick, ages=[5] * 8, jobs=long_), "laptop": lap},
                          job=LINT)
         self.assertEqual(self.names(p), ["laptop", "nickmbp", "hp"])     # free, queued, down
-        self.assertAlmostEqual(p.hosts[1].queue_s, 595, delta=3)
+        self.assertAlmostEqual(p.hosts[1].queue_s, 600 * rd_pool.QUEUE_OVERRUN_X - 5, delta=3)   # 775
 
     def test_evidence_sets_run_setup_and_risk(self):
         """2026-11-11 (owner: "true to how it would actually come out"): every number from runs.log."""
@@ -153,7 +153,7 @@ class Eta(unittest.TestCase):
         """A worker probe with its one slot held by a job that ends in ~q seconds (queue_wait)."""
         now = time.time()
         return dict(probe(slots_cap=1, slots_busy=1, heavy_busy=1, ncpu=8, **kw), ages=[5],
-                    jobs=[{"cmd": "npx tsc --noEmit", "start": now - 5, "med": q + 5}])
+                    jobs=[{"cmd": "npx tsc --noEmit", "start": now - 5, "med": (q + 5) / rd_pool.QUEUE_OVERRUN_X}])
 
     def test_a_cold_worker_competes_on_net_time(self):
         """2026-11-21 (plan "use idle workers"): no measured cold budget any more. A cold laptop whose
@@ -283,12 +283,13 @@ class Eta(unittest.TestCase):
                          "env TOK=<redacted> npx -e <redacted> a b")
 
     def test_holder_with_known_command_sets_the_queue(self):
-        """A busy worker's queue = when its holder's own command (slots/<i>.own) should end."""
+        """A busy worker's queue = when its holder's own command (slots/<i>.own) should end: its median
+        x QUEUE_OVERRUN_X (the measured overrun on a full worker), less how long it has held the slot."""
         busy = dict(probe(slots_cap=1, slots_busy=1, ncpu=8), ages=[100], ev=ev(all=[8, 10.0]),
                     jobs=[{"cmd": "npx vitest run", "start": time.time() - 100, "med": 1000}])
         p, _ = self.plan([worker("a", 1.0), worker("b", 1.0)], {"a": busy}, job=LINT)
         a = next(h for h in p.hosts if h.name == "a")
-        self.assertAlmostEqual(a.queue_s, 900, delta=5)
+        self.assertAlmostEqual(a.queue_s, 1000 * rd_pool.QUEUE_OVERRUN_X - 100, delta=5)   # 1200
 
     def test_wait_lines_carry_position_and_eta(self):
         sess = rd_run.Session({"rr_wait_min": 30}, [], "0" * 32, rd_run.Timing(False))
@@ -358,6 +359,130 @@ class Eta(unittest.TestCase):
         self.assertIn("no answer", p.hosts[1].why)
 
 
+class QueueEstimate(unittest.TestCase):
+    """2026-11-23 (routing review, "accurate, tune it with data"): the queue estimate uses the slots the
+    runner really hands out now and the whole line ahead. Tonight ethanair (share medium: 3 of 7 slots)
+    had 18 runs waiting while mini-a sat idle, and the placement read it as free."""
+    setUp = test_pool.PlanUnit.setUp
+    plan = test_pool.PlanUnit.plan
+
+    def names(self, p):
+        return [h.name for h in p.hosts]
+
+    def machines(self):
+        return [dict(worker("ethanair", 4.0, max_slots=7, heavy_slots=4), optional=True),
+                worker("mini-a", 0.42, max_slots=2)]
+
+    def ethanair(self, busy, waiting, **kw):
+        now = time.time()
+        return dict(probe(slots_cap=3, slots_busy=busy, heavy_cap=2, ncpu=8, mem_mb=20000, share="medium", **kw),
+                    ages=[60] * busy, waiting=waiting, ev=ev(sig=[20] * 5, all=[50, 200.0]),
+                    jobs=[{"cmd": "npx tsc --noEmit", "start": now - 60, "med": 300} for _ in range(busy)])
+
+    def test_share_reduced_worker_with_a_long_line_loses_to_an_idle_slower_one(self):
+        mini = dict(probe(slots_cap=2, ncpu=4), ev=ev(sig=[60] * 5))
+        # share medium: 3 slots, all held, 18 runs waiting (each a typical hold): far behind the idle mini
+        p, _ = self.plan(self.machines(), {"ethanair": self.ethanair(3, 18), "mini-a": mini}, job=VITEST)
+        self.assertEqual(self.names(p), ["mini-a", "ethanair"])
+        e = p.hosts[1]
+        self.assertEqual((e.state, e.ahead), ("busy", 18))
+        # 3 holders free at 300 x 1.3 - 60 = 330 s, then 18 waiters x (200 x 1.3) over 3 slots: 6 rounds
+        self.assertAlmostEqual(e.queue_s, 330 + 6 * 260, delta=2)
+        # the old blind spot: a free slot of the 3 with 18 runs waiting is not free (they take it first)
+        p, _ = self.plan(self.machines(), {"ethanair": self.ethanair(2, 18), "mini-a": mini}, job=VITEST)
+        self.assertEqual(self.names(p), ["mini-a", "ethanair"])
+        self.assertEqual(p.hosts[1].state, "busy")
+        self.assertGreater(p.hosts[1].queue_s, 1000)
+
+    def test_an_idle_worker_still_wins_normally(self):
+        mini = dict(probe(slots_cap=2, ncpu=4), ev=ev(sig=[60] * 5))
+        p, _ = self.plan(self.machines(), {"ethanair": self.ethanair(0, 0), "mini-a": mini}, job=VITEST)
+        self.assertEqual(self.names(p), ["ethanair", "mini-a"])
+        self.assertEqual((p.hosts[0].state, p.hosts[0].queue_s), ("free", 0.0))
+        # a free slot with fewer runs waiting than free slots is still free
+        p, _ = self.plan(self.machines(), {"ethanair": self.ethanair(1, 1), "mini-a": mini}, job=VITEST)
+        self.assertEqual(self.names(p)[0], "ethanair")
+        self.assertEqual((p.hosts[0].state, p.hosts[0].queue_s), ("free", 0.0))
+
+    def test_without_spare_room_only_the_base_slots_count(self):
+        """rr_slots_base (2) always, the rest of the cap only while the worker has room (the runner's
+        spare_room: free memory >= 25 %, load per CPU <= 1.5). hp holding 5 of 8 with no room is full."""
+        ms = [worker("hp", 1.5, max_slots=8, heavy_slots=4), worker("laptop", 0.45, max_slots=3)]
+        now = time.time()
+        hp = dict(probe(slots_cap=8, slots_busy=5, heavy_cap=4, ncpu=8, load=14.0), mem_free_pct=40, ages=[30] * 5,
+                  ev=ev(sig=[60] * 5, all=[50, 100.0]),
+                  jobs=[{"cmd": "x", "start": now - 30, "med": 100} for _ in range(5)])
+        lap = dict(probe(slots_cap=3, ncpu=8), ev=ev(sig=[150] * 5))
+        p, _ = self.plan(ms, {"hp": hp, "laptop": lap}, job=VITEST)
+        h = next(x for x in p.hosts if x.name == "hp")
+        self.assertEqual(rd_pool.open_slots(h), 2)
+        self.assertEqual(h.state, "busy")
+        self.assertAlmostEqual(h.queue_s, 100 * rd_pool.QUEUE_OVERRUN_X - 30, delta=2)
+        # room again (load 4 on 8 CPUs, 40 % free): the whole cap is open, 3 slots free
+        p, _ = self.plan(ms, {"hp": dict(hp, load1=4.0), "laptop": lap}, job=VITEST)
+        h = next(x for x in p.hosts if x.name == "hp")
+        self.assertEqual((rd_pool.open_slots(h), h.state, h.queue_s), (8, "free", 0.0))
+        self.assertEqual(self.names(p)[0], "hp")
+        # low memory closes it too, and so does a missing reading (the runner fails safe the same way)
+        h.probe = dict(hp, load1=4.0, mem_free_pct=10)
+        self.assertEqual(rd_pool.open_slots(h), 2)
+        h.probe = {k: v for k, v in hp.items() if k != "mem_free_pct"}
+        self.assertEqual(rd_pool.open_slots(h), 2)
+
+    def test_only_holders_of_open_slots_count(self):
+        """probe `held` = [slot, age]: without spare room the runner tries slots 0-1 only. Free base slots
+        with spare slots 2-4 held: a slot now. Both base slots held: only their ends open one (a spare
+        holder that ends first opens nothing while the room is shut)."""
+        now = time.time()
+        h = rd_pool.Host("hp", {"rr_slots_base": 2}, {"speed": 1.0})
+        nolo = dict(probe(slots_cap=8, slots_busy=3, ncpu=8, load=14.0), ev=ev(all=[50, 100.0]))
+        h.probe = dict(nolo, held=[[2, 10], [3, 10], [4, 10]])
+        self.assertEqual(rd_pool.slot_releases(h, VITEST, now=now)[0], 2)
+        h.probe = dict(nolo, slots_busy=3, held=[[0, 10], [1, 20], [2, 290]],
+                       jobs=[{"slot": 0, "cmd": "x", "start": now - 10, "med": 300}])
+        free, rel = rd_pool.slot_releases(h, VITEST, now=now)
+        self.assertEqual(free, 0)
+        # slot 0: its own 300 x 1.3 - 10; slot 1: the typical 100 x 1.3 - 20; slot 2 (290 s into a spare) left out
+        self.assertEqual([round(r) for r in rel], [110, 380])
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now), 110, delta=1)
+        # a holder whose command has no median here keeps its age (the typical hold from its age)
+        h.probe = dict(nolo, held=[[0, 10], [1, 20]], jobs=[{"slot": 0, "cmd": "new", "start": now - 10}])
+        self.assertEqual([round(r) for r in rd_pool.slot_releases(h, VITEST, now=now)[1]], [110, 120])
+        # the heavy lock held by a spare-slot job (a tsc 300 x 1.3 long): a heavy job waits on that holder,
+        # not on a base one that ends sooner (the heavy holders are taken as the longest, open slot or not)
+        h.probe = dict(nolo, heavy_cap=1, heavy_busy=1, held=[[0, 10], [2, 10]],
+                       jobs=[{"slot": 2, "cmd": "npx tsc", "start": now - 10, "med": 300}])
+        free, rel = rd_pool.slot_releases(h, TSC, now=now)
+        self.assertEqual((free, [round(r) for r in rel]), (0, [380]))
+
+    def test_route_log_pairs_the_predicted_wait_with_the_measured_one(self):
+        """qpred_s is added only beside slot_s (the runner's SLOT), so retries and shards sum alike."""
+        rd_run.STAGES.clear()
+        self.addCleanup(rd_run.STAGES.clear)
+        sess = rd_run.Session({"rr_wait_min": 30}, [], "0" * 32, rd_run.Timing(False))
+        sess.qpred_s = 40.0
+        sess.on_status("SLOT 55.5")
+        self.assertEqual((rd_run.STAGES["slot_s"], rd_run.STAGES["qpred_s"]), (55.5, 40.0))
+        moved = rd_run.Session({"rr_wait_min": 30}, [], "0" * 32, rd_run.Timing(False))
+        moved.qpred_s = 300.0                                   # never got SLOT: neither side counts
+        self.assertEqual(rd_run.STAGES["qpred_s"], 40.0)
+
+    def test_hold_median_and_a_holder_past_its_estimate(self):
+        """A holder is priced on its command's median HOLD (hmed: prepare + command) when the probe has it;
+        one already past its estimate has at least QUEUE_AGE_K x its age left, not a sliver."""
+        now = time.time()
+        h = rd_pool.Host("w", {}, {"speed": 1.0})
+        h.probe = dict(probe(slots_cap=1, slots_busy=1), ages=[400], ev=ev(all=[10, 50.0]),
+                       jobs=[{"cmd": "x", "start": now - 400, "med": 100, "hmed": 200}])
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now), 400 * rd_pool.QUEUE_AGE_K)
+        h.probe["jobs"][0]["start"] = now - 10
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now), 200 * rd_pool.QUEUE_OVERRUN_X - 10)
+        h.probe["ev"]["hold"] = [10, 80.0]                      # typical hold for the waiters: ev.hold over ev.all
+        h.probe["waiting"] = 2
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now),
+                               200 * rd_pool.QUEUE_OVERRUN_X - 10 + 2 * 80 * rd_pool.QUEUE_OVERRUN_X)
+
+
 class FinishPlacement(unittest.TestCase):
     """2026-11-13 (pool-speed study): placement by predicted FINISH; max_cost_s soft with a margin;
     wild misses corrected; evidence keyed on repo + argv."""
@@ -370,7 +495,8 @@ class FinishPlacement(unittest.TestCase):
     def busy(self, secs_left, slots=4, cap=4, **kw):
         now = time.time()
         return dict(probe(slots_cap=cap, slots_busy=slots, ncpu=8, **kw), ages=[10] * slots,
-                    jobs=[{"cmd": "x", "start": now - 10, "med": secs_left + 10} for _ in range(slots)])
+                    jobs=[{"cmd": "x", "start": now - 10, "med": (secs_left + 10) / rd_pool.QUEUE_OVERRUN_X}
+                          for _ in range(slots)])
 
     DB = rd_pool.classify(["npm", "run", "test:db"])
 
@@ -631,6 +757,7 @@ class ProbeExtras(unittest.TestCase):
         self.assertNotIn(rd_pool.sig_key("npm run lint", "a"), e["pk"])   # another kind
         self.assertNotIn("miss", e)                                       # no run over 5x its pred_s
         self.assertEqual(e["all"], [5, 100])
+        self.assertEqual(e["hold"], [5, 100.5])                           # prepare + command: 10 31 100.5 120.7 160
         # history_since cuts the older rows; rows caps the rate window
         e = self.run_probe(self.evreq(since=NOW - 3600))["ev"]
         self.assertEqual(e["sig"], [100, 120, 140])
@@ -642,7 +769,10 @@ class ProbeExtras(unittest.TestCase):
         self.addCleanup(fh.close)
         test_run.wfile(os.path.join(self.root, "slots", "0.who"), "a 100 4242 abcdef012345\n")
         test_run.wfile(os.path.join(self.root, "slots", "0.own"), "id=s\tstart=100\tpid=4242\tcmd=npx tsc --noEmit\n")
-        self.assertEqual(self.run_probe(self.evreq())["jobs"][0]["med"], 120)
+        o = self.run_probe(self.evreq())
+        j = o["jobs"][0]
+        self.assertEqual((j["med"], j["hmed"], j["slot"]), (120, 120.7, 0))   # its slot hold: 100.5 120.7 160
+        self.assertEqual([x[0] for x in o["held"]], [0])                    # [slot, age] per held slot
         test_run.wfile(os.path.join(self.root, "slots", "0.who"), "other.2 100 4242 abcdef012345\n")
         self.assertNotIn("med", self.run_probe(self.evreq())["jobs"][0])  # the same argv in another repo
         # never through a symlink

@@ -1124,6 +1124,7 @@ class Session:
     host_name = None     # the worker's name, for messages
     tag = ""             # shards: "[shard i/n host] "
     wait_eta_s = None    # the scheduler's expected slot wait on this worker (s) when it was planned
+    qpred_s = None       # the placement's predicted slot wait (rd_pool queue_s): route.log qpred_s at SLOT
     timeout_s = 0.0      # the command's wall-clock cap (the runner enforces it; we back it up)
     silent_s = 0.0       # "no output for N min" after this many s of silence (0 = off)
 
@@ -1257,6 +1258,9 @@ class Session:
             self.got_slot = True             # (a BUSY after it ends the session anyway: no move then)
             try:
                 add_stage("slot_s", float(rest.strip()))
+                # this attempt's predicted wait, only beside its measured one (route.log qpred_s: summed
+                # over attempts and shards exactly as slot_s is, so the two compare - queue calibration)
+                add_stage("qpred_s", self.qpred_s or 0.0)
             except ValueError:
                 pass
         elif word == "UNAVAIL":
@@ -1483,7 +1487,8 @@ class Session:
 STAGES = {}      # client-side start timings of this rrun (route.log, always): lock_s cache_s plan_s push_s overlay_s
 #                 slot_s remote_s start_s. lock_s = the wait for a worktree lane (this Mac); slot_s = the wait
 #                 for a worker slot (the runners' SLOT statuses, summed over attempts / shards). Both are
-#                 also inside start_s; route.log readers must not add them to it.
+#                 also inside start_s; route.log readers must not add them to it. qpred_s (2026-11-23) = the
+#                 predicted slot wait of each attempt that reported SLOT, summed like slot_s (a prediction).
 _STAGES_LOCK = threading.Lock()
 
 
@@ -3153,6 +3158,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     sess.may_move = bool(getattr(lane, "may_move", False))
     if h.queue_s is not None and h.state == "busy":
         sess.wait_eta_s = h.queue_s      # the scheduler's estimate of this worker's slot wait
+    sess.qpred_s = h.queue_s if isinstance(h.queue_s, (int, float)) else None   # route.log qpred_s (at SLOT)
     if cache is not None and not cache.sharded:
         sess.on_ready = cache.rec.reset      # keep only the command's own output (+ this attempt's)
     if lane is not None:

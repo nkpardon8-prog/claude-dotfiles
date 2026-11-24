@@ -14,11 +14,14 @@ runs.log (see "evidence" below; 2026-11-11, replacing a bench-speed scalar and c
             estimate x UNCERTAIN_X of its source); a slow worker (over its max_cost_s) always ranks on
             the pessimistic run (p90 of its own runs when it has them)
     setup = measured prepare p75 there, warm or cold (+ COLD_GIT_S without the bare git mirror)
-    queue = 0 with a free slot of the job's kind, else queue_wait: the holders' ends (their own
-            command's median there, minus how long it has run) with the runs already waiting there
-            (probe "waiting") served first
+    queue = 0 with more open slots of the job's kind than runs waiting there, else queue_wait: the
+            holders' ends (their own command's median hold there x QUEUE_OVERRUN_X, minus how long it has
+            held; one past that: QUEUE_AGE_K x its age left) with the runs already waiting there (probe
+            "waiting", each a typical hold) served first. Open slots: the share/slots.cap cap, of which only
+            rr_slots_base while the worker has no spare room (the runner's own rule). Calibrated
+            2026-11-23 against measured slot_s (QUEUE_OVERRUN_X); route.log logs it as qpred_s
     risk  = p_infra there x (setup + run / 2 lost + a rerun on the best other worker)
-    free  = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
+    free  = open slots not held (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
             owner's share switch (rr_runner.pl share-spec: low / medium / high / cpu=% ram=GB scale the
             slots and cap the memory - probe mem_room_mb counts as the memory there; off = state "off",
             no eta, tried last; a Mac under memory pressure = state "paused", the same)
@@ -93,6 +96,16 @@ JOB_CPUS = {"heavy": 2, "normal": 4, "db": 2, "light": 1, "build": 2}   # cores 
 MIN_RUN_S = 1.0              # a finished run's cost is never below this (ssh + spawn alone take that)
 HIST_MIN = 3                 # runs of a class before its median replaces the default cost
 HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker has no history (queue wait)
+# Queue wait calibration (2026-11-23: rd_pool's own queue_wait replayed on probes rebuilt from 48 h of every
+# worker's runs.log, against each job's measured slot_s; commands/docker.md "Queue estimate"). A held slot
+# lasts its command's median HOLD (prepare + command: the prepare holds the slot too) x QUEUE_OVERRUN_X: on a
+# full worker runs took 1.32x their own median (median over 1932 holders). A holder already past that is not
+# about to free: it has at least QUEUE_AGE_K x its age left (long runs have long tails; the old floor, 0.2 x
+# its median, priced it as nearly done). With score() no longer calling a worker with runs waiting "free",
+# actual / predicted wait went from median 30.6 (p90 450) to 1.06 (p90 12); 3+ runs waiting: 75 -> 1.00.
+# Tunable: rr_queue_overrun_x, rr_queue_age_k; route.log qpred_s (predicted) beside slot_s (measured).
+QUEUE_OVERRUN_X = 1.3
+QUEUE_AGE_K = 1.0
 # a worker whose 1-min load per CPU thread is at least this at probe time counts as busy (its free
 # slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
 # 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
@@ -482,6 +495,7 @@ class Host:
         self.eta = self.run_s = self.setup_s = self.queue_s = self.eff = None   # set by score()
         self.run_hi = self.rank_s = None       # pessimistic run; the run the eta ranks on
         self.ahead = 0                         # runs already waiting for a slot there (probe "waiting")
+        self.free = None                       # score(): open slots of the job's kind not held or waited for
         self.slow = None                       # slow_why(): over its max_cost_s (a ranking penalty)
         self.pred_s = self.src = None          # Model.predict: evidence run seconds + where they came from
         self.risk_s, self.p_infra = 0.0, None  # add_risk
@@ -602,15 +616,18 @@ if ($share ne "off") {
 my $n = $caps->{slots};
 my ($cap) = -l "$R/slots.cap" ? () : slurp("$R/slots.cap") =~ /^\s*(\d+)/;
 $n = $cap if defined $cap && $cap < $n;
-$o{slots_cap} = $n; $o{slots_busy} = 0; my @ages;
+$o{slots_cap} = $n; $o{slots_busy} = 0; my (@ages, @held);
 for my $i (0 .. $n - 1) {
     next unless busy("$R/slots/$i");
     $o{slots_busy}++;
     # how long each holder has run (<i>.who = "<slug> <epoch> <pid> <wt12>"): rd_pool's queue wait
     my (undef, $t) = split ' ', slurp("$R/slots/$i.who");
-    push @ages, time - $t if defined $t && $t =~ /^\d+$/ && $t <= time;
+    my $age = defined $t && $t =~ /^\d+$/ && $t <= time ? time - $t : undef;
+    push @ages, $age if defined $age;
+    # held: [slot, age|null] per held slot - the runner tries only slots below its open count (base/spare)
+    push @held, [$i + 0, $age];
 }
-$o{ages} = \@ages;
+$o{ages} = \@ages; $o{held} = \@held;
 # who runs what (<i>.own = tab-separated id= name= client= start= pid= label= timeout_s= cmd=, written by the runner
 # beside <i>.who): only for a held slot whose .who names the same pid (never a leftover's)
 my @jobs;
@@ -693,12 +710,15 @@ $o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 #   kind  [n, median] of completed command seconds of the job's kind in this repo (kinds = q.kinds: first match)
 #   kany  [n, median] of the same kind across every repo (a weaker fallback)
 #   pk    {sha1(repo TAB sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
-#   all   [n, median] of every completed command (a slot holder's typical run, queue estimate)
+#   all   [n, median] of every completed command
+#   hold  [n, median] of every completed run's slot hold (prepare_s + cmd_s): a slot holder's typical hold
+#         (queue estimate; the prepare holds the slot too)
 #   isa   [n, last epoch] of this repo's (q.slug) rc=132 runs (SIGILL) in the last q.isa_days days
 #   scold this repo's (q.slug) cold prepare seconds here (an install ran), newest last (<= 10)
 #   sover cold prepares that logged the setup estimate (spred_s, 2026-11-21): actual / estimate, newest
 #         last (<= 5), any repo - setup_s's overrun factor
-#   jobs[].med  the median of a running job's own command (in its repo) here (queue estimate)
+#   jobs[].med  the median of a running job's own command (in its repo) here
+#   jobs[].hmed the median slot hold (prepare + command) of that command here (queue estimate)
 if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     require Time::Local; require Digest::SHA;
     my $now = ($q->{now} // "") =~ /^\d+(\.\d+)?$/ ? $q->{now} : time;
@@ -717,7 +737,7 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my @l = do { local $/ = "\n"; <$lf> }; shift @l if $sz > $max;
         unshift @text, @l;
     }
-    my (@rows, %by, @kc, @ka, @isa, @miss, @scold, @sover);
+    my (@rows, %by, %byh, @kc, @ka, @isa, @miss, @scold, @sover);
     my $slug = $q->{slug} // "";
     my $js = $q->{sig} // "";
     my $mx = ($q->{miss_x} // "") =~ /^\d+(\.\d+)?$/ ? $q->{miss_x} : 5;
@@ -748,6 +768,7 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
             $isa[0]++; $isa[1] = $t if !defined $isa[1] || $t > $isa[1] }
         if ($out =~ /^rc=[01]$/ && $cs =~ /^\d+(\.\d+)?$/) {
             push @{ $by{"$repo\t$argv"} }, $cs + 0;
+            push @{ $byh{"$repo\t$argv"} }, $cs + ($ps =~ /^\d+(\.\d+)?$/ ? $ps : 0);    # its slot hold
         }
         if ($repo eq $slug && $argv eq $js && $out =~ /^(?:(?:timeout|lost) )?rc=\d+$/ && $cs =~ /^\d+(\.\d+)?$/
                 && ($kv{pred_s} // "") =~ /^\d+(\.\d+)?$/ && $kv{pred_s} > 0
@@ -773,7 +794,13 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     $ev{sover} = [@sover > 5 ? @sover[-5 .. -1] : @sover] if @sover;
     my @all = map { @$_ } values %by;
     $ev{all} = [scalar @all, $med->(@all)];
-    for my $j (@jobs) { my $v = $by{($j->{repo} // "") . "\t" . ($j->{cmd} // "")}; $j->{med} = $med->(@$v) if $v }
+    my @hold = map { @$_ } values %byh;
+    $ev{hold} = [scalar @hold, $med->(@hold)];
+    for my $j (@jobs) {
+        my $k = ($j->{repo} // "") . "\t" . ($j->{cmd} // "");
+        $j->{med} = $med->(@{ $by{$k} }) if $by{$k};
+        $j->{hmed} = $med->(@{ $byh{$k} }) if $byh{$k};
+    }
     $o{ev} = \%ev;
 }
 print JSON::PP->new->canonical->encode(\%o), "\n";
@@ -1312,46 +1339,99 @@ def cpu_share(load, ncpu, cls):
 
 
 def holder_typ(host):
-    """A slot holder's (or waiter's) typical run here: the worker's median completed run, else the default."""
-    allm = ev(host).get("all") or [0, None]
-    return _num(allm[1]) if _num(allm[0], 0) >= OWN_MIN and _num(allm[1]) is not None \
-        else HOLDER_COST_S / max(0.01, host.speed)
+    """A slot holder's (or waiter's) typical slot hold here (not yet x QUEUE_OVERRUN_X): the worker's median
+    completed hold (prepare + command; probe ev.hold), else its median command (ev.all), else the default."""
+    e = ev(host)
+    for key in ("hold", "all"):
+        n, m = (e.get(key) or [0, None])[:2]
+        if _num(n, 0) >= OWN_MIN and _num(m) is not None:
+            return _num(m)
+    return HOLDER_COST_S / max(0.01, host.speed)
+
+
+def spare_room(host):
+    """The runner's spare_room() on the probe's readings: free memory % >= rr_spare_min_free_pct and 1-min
+    load per CPU <= rr_spare_max_load. None without a reading: no room (the runner fails safe the same way)."""
+    p, cfg = host.probe or {}, host.cfg or {}
+    fp, load, ncpu = _num(p.get("mem_free_pct")), _num(p.get("load1")), _num(p.get("ncpu"))
+    if fp is None or load is None or not ncpu:
+        return None
+    return fp >= _num(cfg.get("rr_spare_min_free_pct"), 25) and load / ncpu <= _num(cfg.get("rr_spare_max_load"), 1.5)
+
+
+def open_slots(host):
+    """How many slots the runner hands out now (rr_runner.pl share_gate + take_slot): the probe's slots_cap
+    (fleet slots scaled by the share level, under ~/rr/slots.cap), of which only rr_slots_base (the header's
+    slots_base, 2 by default) while the worker has no spare room. 2026-11-23: the probe counted the whole cap,
+    so a loaded hp holding 5 of 8 with runs waiting read as 3 free slots and queue 0."""
+    cap = max(0, int(_num((host.probe or {}).get("slots_cap"), 1)))
+    base = _num((host.cfg or {}).get("rr_slots_base"))
+    if base is None or base < 1 or base >= cap or spare_room(host):
+        return cap
+    return int(base)
 
 
 def slot_releases(host, job, now=None):
-    """-> (free slots of the kind the job needs, [seconds until each held one should free]). A holder
-    whose command ran here before ends at its own median (slots/<i>.own + the probe's median), else at
-    this worker's typical run counted from its slot age. A heavy job with every heavy slot taken waits
-    for a heavy holder: the longest-running holders are assumed to be the heavy ones (pessimistic)."""
-    p = host.probe or {}
-    now, typ = time.time() if now is None else now, holder_typ(host)
-    busy = max(0, int(_num(p.get("slots_busy"), 0)))
-    free = int(_num(p.get("slots_cap"), 1)) - busy
-    rel = []
-    for j in p.get("jobs") or []:
-        c = _num(j.get("med")) if isinstance(j, dict) else None
-        st = _num(j.get("start")) if isinstance(j, dict) else None
-        if c is not None and st is not None:
-            rel.append(max(0.2 * c, c - max(0.0, now - st)))
-    ages = sorted((a for a in (_num(x) for x in p.get("ages") or []) if a is not None), reverse=True)
-    for a in ages[len(rel):]:
-        if len(rel) >= busy:
-            break
-        rel.append(max(0.2 * typ, typ - a))
-    rel += [typ / 2.0] * max(0, busy - len(rel))
-    rel = sorted(rel[:busy]) if busy else []
+    """-> (free slots of the kind the job needs, [seconds until each held one should free]). Free = the open
+    slots (open_slots) the holders leave. Each holder holds its slot for its command's median hold here
+    (slots/<i>.own + the probe's hmed, else med), else this worker's typical hold, x QUEUE_OVERRUN_X, counted
+    from its slot age; one past that has QUEUE_AGE_K x its age left. A heavy job with every heavy slot taken
+    waits for a heavy holder: the longest-running holders are assumed to be the heavy ones (pessimistic)."""
+    p, cfg = host.probe or {}, host.cfg or {}
+    x = _num(cfg.get("rr_queue_overrun_x"), QUEUE_OVERRUN_X)
+    k = _num(cfg.get("rr_queue_age_k"), QUEUE_AGE_K)
+    now, typ = time.time() if now is None else now, holder_typ(host) * x
+
+    def left(c, age):
+        return max(k * age, c - age)
+    n_open = open_slots(host)
+    jobs = [j for j in p.get("jobs") or [] if isinstance(j, dict)]
+
+    def own_left(j):                     # a holder whose own command has a median here: its end, else None
+        c, st = _num(j.get("hmed")) or _num(j.get("med")), _num(j.get("start"))
+        return left(c * x, max(0.0, now - st)) if c is not None and st is not None else None
+    held = p.get("held")
+    if isinstance(held, list):
+        # [slot, age] per held slot: each holder's end by its own command (jobs[], by slot), else its age
+        # at the typical hold, else half the typical hold
+        by_slot = {int(_num(j.get("slot"))): j for j in jobs if _num(j.get("slot")) is not None}
+        ends = []
+        for h_ in held:
+            if not (isinstance(h_, list) and h_ and _num(h_[0]) is not None):
+                continue
+            i, age = int(_num(h_[0])), _num(h_[1]) if len(h_) > 1 else None
+            e = own_left(by_slot[i]) if i in by_slot else None
+            ends.append((i, e if e is not None else left(typ, age) if age is not None else typ / 2.0))
+        # only the holders of open slots free one for us (the runner tries slots 0 .. open-1): free base
+        # slots with the spare ones held is a free worker; a spare holder's end opens nothing while the
+        # room is shut. The heavy lock is any holder's, open slot or not.
+        rel_all = sorted(e for _, e in ends)
+        rel = sorted(e for i, e in ends if i < n_open)
+        busy = len(rel)
+    else:                                # an older probe: every holder, ages of all of them (oldest first)
+        busy = max(0, int(_num(p.get("slots_busy"), 0)))
+        ages = sorted((a for a in (_num(x_) for x_ in p.get("ages") or []) if a is not None), reverse=True)
+        rel = [e for e in (own_left(j) for j in jobs) if e is not None]
+        for a in ages[len(rel):]:
+            if len(rel) >= busy:
+                break
+            rel.append(left(typ, a))
+        rel += [typ / 2.0] * max(0, busy - len(rel))
+        rel = rel_all = sorted(rel[:busy]) if busy else []
+    free = n_open - busy
     if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
         hfree = int(_num(p.get("heavy_cap"), 0) - _num(p.get("heavy_busy"), 0))
         if hfree <= 0:
             hb = max(0, int(_num(p.get("heavy_busy"), 0)))
-            return 0, (rel[-hb:] if hb and rel else [typ / 2.0] * hb)
+            return 0, (rel_all[-hb:] if hb and rel_all else [typ / 2.0] * hb)
         free = min(free, hfree)
     return max(0, free), rel
 
 
 def queue_wait(host, job, ahead=None, now=None):
     """Seconds until this job gets a slot here, with `ahead` runs (default: the probe's waiters) served
-    first, each holding its slot for this worker's typical run. None: no slot of its kind exists."""
+    first, each holding its slot for this worker's typical hold (x QUEUE_OVERRUN_X): the free open slots
+    now, then the open slots' holders' releases (slot_releases). None: no slot of its kind exists."""
     import heapq
     free, rel = slot_releases(host, job, now)
     ahead = int(_num((host.probe or {}).get("waiting"), 0)) if ahead is None else max(0, int(ahead))
@@ -1359,7 +1439,7 @@ def queue_wait(host, job, ahead=None, now=None):
     if not heap:
         return None
     heapq.heapify(heap)
-    typ = holder_typ(host)
+    typ = holder_typ(host) * _num((host.cfg or {}).get("rr_queue_overrun_x"), QUEUE_OVERRUN_X)
     for _ in range(ahead):
         heapq.heappush(heap, heapq.heappop(heap) + typ)
     return heap[0]
@@ -1373,14 +1453,15 @@ def score(host, job, cfg=None, model=None):
         run = Model.predict / (cpu_share * mem_factor)   (the evidence's run at the load seen now: pred_s)
         rank = run, or the pessimistic run (Model.predict_hi) when the estimate is not this worker's
                own median of the command (uncertain); a slow worker (slow_why) always ranks on it
-        queue = 0 with a free slot of the job's kind, else queue_wait: when a slot frees after the
-                runs already waiting there (probe "waiting") got theirs
+        queue = 0 with more open slots of the job's kind (open_slots: the share/slots.cap cap, only
+                rr_slots_base of it without spare room) than runs already waiting there (probe "waiting"),
+                else queue_wait: when a slot frees after those waiters got theirs
         overloaded (load1 / ncpu >= rr_overload_ratio): busy with queue 0, run x= load1 / ncpu
     """
     cfg = cfg or {}
     p = host.probe
     host.eta = host.run_s = host.setup_s = host.queue_s = host.pred_s = host.run_hi = None
-    host.risk_s, host.src, host.overloaded, host.ahead = 0.0, None, False, 0
+    host.risk_s, host.src, host.overloaded, host.ahead, host.free = 0.0, None, False, 0, 0
     if p is None:
         host.state = "down"
         return None, 0
@@ -1390,7 +1471,12 @@ def score(host, job, cfg=None, model=None):
     if p.get("paused"):                  # a Mac whose own apps need the memory now: its runner refuses
         host.state = "paused"
         return None, 0
+    # the runs already waiting there take the open slots first (2026-11-23: ethanair, share medium = 3 slots,
+    # read as free with 18 runs waiting, so every client kept sending it more)
     free, _ = slot_releases(host, job)
+    waiting = max(0, int(_num(p.get("waiting"), 0)))
+    free = max(0, free - waiting)
+    host.free = free
     mem = _num(p.get("mem_avail_mb"))
     room = _num(p.get("mem_room_mb"))    # share level RAM cap / the Mac's free-memory floor, when it has one
     if room is not None:
@@ -1422,7 +1508,7 @@ def score(host, job, cfg=None, model=None):
         host.state, host.queue_s = "free", 0.0
     else:
         host.state = "busy"
-        host.ahead = int(_num(p.get("waiting"), 0))
+        host.ahead = waiting
         host.queue_s = queue_wait(host, job)
         if host.queue_s is None:         # no slot of its kind here at all (a drained worker): no eta
             return None, free
@@ -1733,8 +1819,8 @@ def shard_assign(cfg, plan, job, n=None):
     elig = [h for h in free if h is free[0] or setup(h) < best]
     fastest = min(run(h) for h in elig)
     elig = [h for h in elig if run(h) <= SHARD_SLOW_X * fastest]
-    slots = lambda h: max(1, int(_num((h.probe or {}).get("slots_cap"), 1)      # noqa: E731
-                                 - _num((h.probe or {}).get("slots_busy"), 0)))
+    slots = lambda h: max(1, int(h.free if h.free is not None else                 # noqa: E731  score()'s count;
+                                 _num((h.probe or {}).get("slots_cap"), 1) - _num((h.probe or {}).get("slots_busy"), 0)))
     if not n:
         if len(elig) < 2:
             return None
@@ -1806,8 +1892,7 @@ def where_report(cfg, job, p, shards=None):
         "infra", "finish", "share"))
     for h in p.hosts:
         pr = h.probe or {}
-        free = "-" if not pr else "%d/%d" % (_num(pr.get("slots_cap"), 0) - _num(pr.get("slots_busy"), 0),
-                                              _num(pr.get("slots_cap"), 0))
+        free = "-" if not pr else "%d/%d" % (h.free or 0, open_slots(h))   # score's free / the open slots
         load = "-" if not pr else "%.2f" % (_num(pr.get("load1"), 0) / (_num(pr.get("ncpu"), 1) or 1))
         mem = "-" if pr.get("mem_avail_mb") is None else "%.1f" % (_num(pr["mem_avail_mb"]) / 1024)
         yn = lambda k: "-" if not pr else ("warm" if pr.get(k) else "cold")  # noqa: E731

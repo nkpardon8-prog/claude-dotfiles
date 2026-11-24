@@ -516,7 +516,8 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   (command start, from rrun's own start: the time-to-start SLO), plus `retry_s` (2026-11-13: the time
   spent in earlier attempts that did not start - a slot wait it moved away from, a lost link - so
   `push_s` is the push alone; before, the next attempt's push_s absorbed it: 120-367 s "pushes"),
-  `pred_s` (the placement's predicted command seconds), `miss_x` (only when the run took over
+  `pred_s` (the placement's predicted command seconds), `qpred_s` (2026-11-23: the placement's predicted
+  slot wait, summed over attempts and shards like `slot_s` - compare the two), `miss_x` (only when the run took over
   `rr_miss_x` x that) and `client` (the dotfiles commit). lock / slot / retry are inside `start_s`. `RRUN_TIMING=1` also prints the stages
   on stderr.
   `rdocker status` has an `rrun` row (last run, runs in flight) and an `rrun job` row per run in flight.
@@ -742,10 +743,30 @@ fleet.json) is used once it answers.
     discounts it), and is never below this repo's slowest recent cold prepare on that worker (its last 10:
     one big install is not outvoted by cheaper ones in the same repo; runs.log keys it by repo, not lockfile). `spred_s` logs
     the estimate before that correction, so the factor never feeds on itself.
-  - **queue**: 0 with a free slot of the job's kind (a heavy job: a heavy slot), else when one frees up
-    after the runs already waiting there (the probe counts the runner's `wait/` queue) got theirs:
-    each holder ends at its own command's median there minus how long it has run (else the worker's
-    typical run from its slot age), each waiter then holds a slot for that typical run.
+  - **queue**: 0 when the worker has more open slots of the job's kind (a heavy job: a heavy slot) than
+    runs already waiting there (the probe counts the runner's `wait/` queue), else when one frees up
+    after those waiters got theirs. **Open slots** are what the runner really hands out now: the
+    probe's `slots_cap` (fleet slots scaled by the share level, under `~/rr/slots.cap`), of which only
+    `rr_slots_base` (2) while the worker has no spare room (the runner's own `spare_room`: free memory
+    under `rr_spare_min_free_pct` 25 % or load per CPU over `rr_spare_max_load` 1.5, or no reading).
+    Only holders of open slots count (probe `held`: slot index + age; the runner tries slots 0 .. open-1),
+    so free base slots with the spare ones held is a free worker. Shards and the `--where` `free`
+    column use the same count (free open slots less the runs waiting). Each holder holds
+    its slot for its command's median **hold** there (prepare + command; probe `jobs[].hmed`, else the
+    command median, else the worker's typical hold `ev.hold`) x `rr_queue_overrun_x` (1.3), minus how
+    long it has held it; a holder already past that has at least `rr_queue_age_k` (1.0) x its age
+    left. Each waiter then holds a slot for the typical hold x 1.3.
+    **Calibrated 2026-11-23** ("accurate, tune it with data"): rd_pool's own queue code replayed on
+    probes rebuilt from 48 h of every worker's runs.log, against each job's measured `slot_s`
+    (actual / predicted wait, median and p90, 2,773 placements on a full or queued worker):
+    before 30.6 / 450 (hp 41, ethanair 36: a worker with runs waiting but one slot "free" read as
+    queue 0 - 2,166 such placements waited a median 65 s; a running job past its median was priced as
+    nearly done; prepare time and the 1.32x overrun under load were missing), after 1.06 / 12
+    (3+ waiting: 75 -> 1.00). Tonight's case: ethanair at share medium (3 of 7 slots), 18 runs
+    waiting, mini-a idle - it read as free. Every rrun's `route.log` line now carries `qpred_s` (the
+    placements' predicted slot wait) beside the measured `slot_s`: re-tune from those
+    (`rd-measure.py --keep` fetches the logs). A holder past its estimate: at age a with a scaled
+    median c it has max(c - a, `rr_queue_age_k` x a) left, so the age floor takes over from a = c / 2.
   - **risk**: p_infra (infra outcomes / fairly started runs, a 3 % prior over 30 runs) x (setup + half
     the run lost + a rerun on the best other worker). An unreliable worker loses only when that costs.
   - **slow workers (`max_cost_s`, soft):** a worker whose prediction for the job is over its

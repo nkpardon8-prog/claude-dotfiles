@@ -39,9 +39,9 @@ def write_fleet(path, machines):
 
 
 def probe(slots_cap=2, slots_busy=0, heavy_cap=1, heavy_busy=0, mem_mb=16000, load=0.0, ncpu=4,
-          warm_git=1, warm_deps=1, speed=None, share="max"):
+          warm_git=1, warm_deps=1, speed=None, share="max", mem_free_pct=60):
     p = {"slots_cap": slots_cap, "slots_busy": slots_busy, "heavy_cap": heavy_cap,
-         "heavy_busy": heavy_busy, "mem_avail_mb": mem_mb, "load1": load, "ncpu": ncpu,
+         "heavy_busy": heavy_busy, "mem_avail_mb": mem_mb, "load1": load, "ncpu": ncpu, "mem_free_pct": mem_free_pct,
          "warm_git": warm_git, "warm_deps": warm_deps, "share": share}
     if speed is not None:
         p["speed"] = speed
@@ -361,7 +361,9 @@ class PlanUnit(unittest.TestCase):
             p, _ = self.plan(same, {"a": dict(one, ages=[1]), "b": dict(one, ages=[55])})
             self.assertEqual(self.names(p), ["b", "a"])
             self.assertEqual([h.state for h in p.hosts], ["busy", "busy"])
-            self.assertAlmostEqual(p.hosts[0].queue_s, 12.0)          # floor: 0.2 x 60 s
+            # b's holder held 55 s of a typical 60 x 1.3 = 78 s: 23 s left by its median, but one that has
+            # run that long has at least QUEUE_AGE_K x its age left (long runs have long tails)
+            self.assertAlmostEqual(p.hosts[0].queue_s, 55.0 * rd_pool.QUEUE_AGE_K)
             self.assertIsNone(p.local_after_s)
             p, _ = self.plan(ms, busy, job=rd_pool.classify(["npm", "run", "lint"]))
             self.assertEqual(p.local_after_s, rd_pool.LOCAL_AFTER_S)
