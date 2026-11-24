@@ -67,7 +67,10 @@ the memory guard holds new jobs back, `⚙ off` when off. The menu:
 
 The fleet dashboard offers the same choices on the Mac's page, but only when you opt in on this Mac:
 `"shareControl": true` in `~/.config/rdocker/reporter.json` (your own reporter, not one running as `rd`),
-then `launchctl kickstart -k gui/$(id -u)/com.rdocker.reporter`. Every change made there is logged on that
+then `launchctl kickstart -k gui/$(id -u)/com.rdocker.reporter`. If this Mac's stats reporter runs as `rd`
+(a LaunchDaemon), a small control-only helper in your own session takes the orders instead
+(`reporter/share-control-remote.sh <workspace> helper <name>`, or on this Mac
+`reporter/share-control-mac.sh helper-prepare|helper-start`). Every change made there is logged on that
 page with who made it (dashboard README, "Share control").
 
 The jobs count comes from `rd-worker-mac` (root), which writes `/Users/Shared/rdocker/status` every 15-45 s:

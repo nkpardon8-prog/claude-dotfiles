@@ -1,7 +1,8 @@
 #!/bin/sh
 # Turn on dashboard share control on another lent Mac over Pane (`runpane workspace <ws> exec` runs there as
-# its owner, no sudo). Stages share-control-mac.sh + rd-reporter.mjs in /tmp/rdocker-share-setup on the Mac,
-# then runs share-control-mac.sh there (see it for what each step does).
+# its owner, no sudo). Stages share-control-mac.sh + rd-reporter.mjs in ~/.local/state/rdocker/share-setup on
+# the Mac (the owner's home, not /tmp: another local user such as rd could plant a link there), then runs
+# share-control-mac.sh there (see it for what each step does).
 #
 #   share-control-remote.sh <workspace> owner          the Mac's own owner-run reporter (nickmbp)
 #   share-control-remote.sh <workspace> helper <name>  a control-only helper beside an rd stats reporter
@@ -16,17 +17,20 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 RUNPANE=${RUNPANE:-$HOME/.pane/bin/runpane}
 DASHBOARD_DIR=${DASHBOARD_DIR:-$HOME/Developer/CODEBASES/random/tools/online docker/dashboard}
-STAGE=/tmp/rdocker-share-setup
 WS=${1:?workspace (runpane workspace list)}
 MODE=${2:?owner | helper <name> | status}
 
 rp() { "$RUNPANE" workspace "$WS" exec --yes -- "$1"; }
+# The Mac's own home (runpane prints its own status lines around the command's output).
+RHOME=$(rp 'printf "HOME:%s\n" "$HOME"' | sed -n 's/^HOME://p')
+case $RHOME in /Users/?*) ;; *) echo "could not read the Mac's home (got '$RHOME')" >&2; exit 1 ;; esac
+STAGE="$RHOME/.local/state/rdocker/share-setup"
 stage() {
-  rp "mkdir -p $STAGE && chmod 700 $STAGE && test -O $STAGE"
+  rp "umask 077 && mkdir -p '$STAGE' && chmod 700 '$STAGE' && test -O '$STAGE' && test ! -L '$STAGE'"
   "$RUNPANE" workspace "$WS" write "$STAGE/rd-reporter.mjs" --yes < "$HERE/rd-reporter.mjs" >/dev/null
   "$RUNPANE" workspace "$WS" write "$STAGE/share-control-mac.sh" --yes < "$HERE/share-control-mac.sh" >/dev/null
 }
-on_mac() { rp "STAGE=$STAGE sh $STAGE/share-control-mac.sh $*"; }
+on_mac() { rp "STAGE='$STAGE' sh '$STAGE/share-control-mac.sh' $*"; }
 
 case $MODE in
 owner)

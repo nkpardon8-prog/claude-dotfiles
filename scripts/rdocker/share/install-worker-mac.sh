@@ -73,6 +73,10 @@ if [ -n "$OWNER" ] && [ "$OWNER" != root ] && [ -f "$MJS" ]; then
     install -o "$OWNER" -m 644 "$MJS" "$OH/.local/share/rdocker/reporter/rd-reporter.mjs"
     if launchctl kickstart -k "gui/$OUID/com.rdocker.reporter" 2>/dev/null; then echo "REPORTER-SET"
     else echo "REPORTER-COPIED (com.rdocker.reporter is not loaded in $OWNER's session; log in, or load its plist)"; fi
+    # The control-only share helper (reporter/share-control-mac.sh helper-*) runs the same file.
+    if launchctl print "gui/$OUID/com.rdocker.reporter-ctl" >/dev/null 2>&1; then
+      launchctl kickstart -k "gui/$OUID/com.rdocker.reporter-ctl" && echo "REPORTER-CTL-SET"
+    fi
   else echo "REPORTER-SKIPPED (no $OH/.local/share/rdocker/reporter)"; fi
 fi
 
@@ -80,6 +84,7 @@ state() { s=$(launchctl print "$1" 2>/dev/null | awk '$1 == "state" { print $3; 
 echo "---- status"
 for l in sshd worker doctor power; do echo "com.rdocker.$l: $(state "system/com.rdocker.$l")"; done
 [ -n "${OUID:-}" ] && echo "com.rdocker.reporter: $(state "gui/$OUID/com.rdocker.reporter")"
+[ -n "${OUID:-}" ] && launchctl print "gui/$OUID/com.rdocker.reporter-ctl" >/dev/null 2>&1 && echo "com.rdocker.reporter-ctl: $(state "gui/$OUID/com.rdocker.reporter-ctl")"
 echo "share level: $(/usr/local/libexec/rdocker-share level) (sticky; only the owner's switch or menu changes it)"
 TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 [ -x "$TS" ] || TS=$(command -v tailscale 2>/dev/null || true)

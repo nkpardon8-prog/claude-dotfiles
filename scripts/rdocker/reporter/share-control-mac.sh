@@ -1,7 +1,8 @@
 #!/bin/sh
 # Turn on dashboard share control on a lent Mac. Runs ON the Mac as its OWNER (the user who owns
 # /Users/Shared/rdocker/share), never root, never rd, no sudo. The driver share-control-remote.sh stages
-# this file and the new rd-reporter.mjs in $STAGE over Pane and runs it; by hand: STAGE=<dir> sh <this>.
+# this file and the new rd-reporter.mjs in $STAGE (default ~/.local/state/rdocker/share-setup: in the
+# owner's home, never /tmp) over Pane and runs it; by hand: STAGE=<dir> sh <this>.
 #
 #   owner                 the owner's own reporter (nickmbp, the Air): new rd-reporter.mjs (old one kept as
 #                         .bak), "shareControl": true in ~/.config/rdocker/reporter.json (every other field
@@ -16,7 +17,7 @@
 #   status                versions, labels, --share-check, the last log lines (never a key)
 set -eu
 umask 077
-STAGE=${STAGE:-/tmp/rdocker-share-setup}
+STAGE=${STAGE:-$HOME/.local/state/rdocker/share-setup}
 UID_=$(id -u)
 [ "$UID_" -ne 0 ] || { echo "refused: run as the Mac's owner, not root" >&2; exit 1; }
 [ "$(id -un)" != rd ] || { echo "refused: run as the Mac's owner, not rd" >&2; exit 1; }
@@ -126,10 +127,14 @@ helper-start)
   launchctl bootstrap "gui/$UID_" "$CTL_PLIST" && echo "started gui/$UID_/$CTL_LABEL"
   ;;
 status)
-  [ -f "$MJS" ] && echo "reporter $("$NODE" "$MJS" --version) at $MJS"
-  for f in "$CFG" "$CTL_CFG"; do [ -f "$f" ] && echo "$(basename "$f"): mode $(stat -f %Lp "$f"), share-check $(share_check "$f")"; done
+  [ ! -f "$MJS" ] || echo "reporter $("$NODE" "$MJS" --version) at $MJS"
+  for f in "$CFG" "$CTL_CFG"; do
+    if [ -f "$f" ]; then echo "$(basename "$f"): mode $(stat -f %Lp "$f"), share-check $(share_check "$f")"; fi
+  done
   launchctl print "gui/$UID_" 2>/dev/null | grep -E 'com\.rdocker\.reporter' || echo "no com.rdocker.reporter* in gui/$UID_"
-  for l in rd-reporter rd-reporter-ctl; do [ -f "$HOME/Library/Logs/$l.log" ] && { echo "--- $l.log"; tail -n 6 "$HOME/Library/Logs/$l.log"; }; done
+  for l in rd-reporter rd-reporter-ctl; do
+    if [ -f "$HOME/Library/Logs/$l.log" ]; then echo "--- $l.log"; tail -n 6 "$HOME/Library/Logs/$l.log"; fi
+  done
   ;;
 *)
   sed -n '2,20p' "$0" >&2; exit 64 ;;
