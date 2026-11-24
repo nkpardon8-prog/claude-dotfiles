@@ -10,6 +10,7 @@
 //     "rrRoot": "~/rr",                    // optional: rrun server root (slots, wait, runs.log)
 //     "routeLog": "~/.local/state/rdocker/route.log", // optional (agent hosts): the rrun client's route.log
 //     "notify": true,                      // optional: show fleet alerts on this machine (agent Macs)
+//     "reach": true,                       // optional (agent hosts): probe each pool worker's sshd (default on)
 //     "shareControl": true }               // optional (lent Macs, OWNER's reporter only): let dashboard admins
 //                                          //   change this Mac's share switch (see share control below)
 // Protocol (dashboard/shared/protocol.ts is the typed source of truth):
@@ -39,22 +40,27 @@
 //   root's rd-worker-mac status file /Users/Shared/rdocker/status ("jobs=N ts=EPOCH": pool jobs running
 //   here) and the pool user's (rd) CPU from ps. All three are readable by the owner, whose reporter
 //   cannot read rd's ~/rr (the Air: reporter `air` runs as the owner). Sent only where the status file exists.
+// Agent hosts (reach, about once a minute): a plain TCP connect to every enabled pool worker's rd sshd
+//   (fleet.json ip:port), closed at once, median of 3, 2 s timeout each, + direct/relay from tailscale
+//   status. Runs in the background; each frame carries the latest result. No bandwidth test, by design.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.4.0'; // 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.5.0'; // 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
 const TS_EVERY_MS = 30_000;
 const PING_EVERY_MS = 60_000;
+const REACH_EVERY_MS = 60_000;
 const SLOW_CACHE_MS = 60_000;
 
 // ---------------------------------------------------------------------------- parsers (pure)
@@ -405,6 +411,57 @@ export function parseTsPing(text) {
   return m ? { via: m[1], rttMs: Number(m[2]) } : null;
 }
 
+/** fleet.json -> enabled pool workers to probe, [{name, ip, port}] (never this machine; at most 16). */
+export function reachTargets(text, selfName, selfIps = []) {
+  if (!text) return [];
+  try {
+    const j = JSON.parse(text);
+    const list = Array.isArray(j) ? j : Array.isArray(j?.machines) ? j.machines : [];
+    return list
+      .filter((m) => m && m.enabled !== false && Array.isArray(m.roles) && m.roles.includes('worker'))
+      .filter((m) => typeof m.name === 'string' && m.name && typeof m.ip === 'string' && m.ip && m.name !== selfName && !selfIps.includes(m.ip))
+      .map((m) => ({ name: m.name.slice(0, 32), ip: m.ip.slice(0, 64), port: Number.isInteger(m.port) && m.port > 0 && m.port < 65536 ? m.port : 22 }))
+      .slice(0, 16);
+  } catch {
+    return [];
+  }
+}
+
+/** ms to complete one TCP handshake with host:port (socket closed at once), or null on error/timeout. */
+export function tcpConnectMs(host, port, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const sock = net.connect({ host, port });
+    let done = false;
+    const end = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(v);
+    };
+    const timer = setTimeout(() => end(null), timeoutMs);
+    sock.once('connect', () => end(performance.now() - t0));
+    sock.once('error', () => end(null));
+  });
+}
+
+/** Median of `tries` sequential connects (successes only), 0.1 ms; null when none connected. */
+export async function probeRtt(host, port, { tries = 3, timeoutMs = 2000, connect = tcpConnectMs } = {}) {
+  const ok = [];
+  for (let i = 0; i < tries; i++) {
+    const v = await connect(host, port, timeoutMs);
+    if (v !== null) ok.push(v);
+  }
+  return ok.length ? Math.round(median(ok) * 10) / 10 : null;
+}
+
+/** Tailscale path to `ip` from the peer list: true direct, false relayed (DERP), null unknown/offline. */
+export function directOf(peers, ip) {
+  const p = peers.find((x) => x.ip === ip);
+  return p && p.online ? !p.relayed : null;
+}
+
 /** "2026-11-09T10:00:00-0800" -> ms epoch */
 export function parseLogTime(s) {
   const iso = s.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
@@ -647,7 +704,8 @@ export function quantile(xs, q) {
   return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
 }
 
-function median(xs) {
+/** Median of a non-empty list. */
+export function median(xs) {
   const s = [...xs].sort((a, b) => a - b);
   const mid = s.length >> 1;
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
@@ -1344,6 +1402,11 @@ export class Collector {
     this.healthSent = null;
     this.peers = [];
     this.selfIps = [];
+    this.fleetFile = expandHome(cfg.fleetFile ?? '~/.claude-dotfiles/scripts/rdocker/fleet.json');
+    // agent hosts: latest TCP connect times to the pool workers (background, never delays a frame)
+    this.reach = null; // [{to, ip, rttMs, at}]
+    this.reachAt = 0;
+    this.reachBusy = false;
     this.wsl = this.linux && /microsoft/i.test(read('/proc/sys/kernel/osrelease') ?? '');
     this.tailscaleBin = this.mac && fs.existsSync('/Applications/Tailscale.app/Contents/MacOS/Tailscale') ? '/Applications/Tailscale.app/Contents/MacOS/Tailscale' : 'tailscale';
     this.ts = cached(() => this.readTailscale(), TS_EVERY_MS - 1000);
@@ -1382,7 +1445,7 @@ export class Collector {
   }
 
   info() {
-    const fleet = fleetEntry(this.cfg.name, read(expandHome(this.cfg.fleetFile ?? '~/.claude-dotfiles/scripts/rdocker/fleet.json')));
+    const fleet = fleetEntry(this.cfg.name, read(this.fleetFile));
     const cpus = os.cpus();
     let cpuModel = cpus[0]?.model?.trim() ?? '';
     let cores = cpus.length;
@@ -1435,6 +1498,26 @@ export class Collector {
       if (r) map.set(p.ip, r.rttMs);
     });
     return map;
+  }
+
+  /** Start a reach probe when one is due (agent hosts); the result lands in this.reach for later frames. */
+  kickReach(now = Date.now()) {
+    if (!this.agentHost || this.cfg.reach === false || this.reachBusy || now - this.reachAt < REACH_EVERY_MS - 1000) return;
+    const targets = reachTargets(read(this.fleetFile), this.cfg.name, this.selfIps);
+    this.reachAt = now;
+    if (!targets.length) {
+      this.reach = null;
+      return;
+    }
+    this.reachBusy = true;
+    Promise.all(targets.map(async (t) => ({ to: t.name, ip: t.ip, rttMs: await probeRtt(t.ip, t.port), at: Date.now() })))
+      .then((r) => {
+        this.reach = r;
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.reachBusy = false;
+      });
   }
 
   async readHostMem() {
@@ -1587,6 +1670,7 @@ export class Collector {
       this.selfIps = ts.self.ips;
       this.peers = ts.peers;
     }
+    this.kickReach(now);
     let links = this.peers;
     if (fast && this.cfg.pingPeers !== false && links.length) {
       const rtt = await this.pings(links);
@@ -1621,6 +1705,7 @@ export class Collector {
       hostMem: await this.hostMem(),
       pressure,
       ...(leaks.length ? { leaks } : {}),
+      ...(this.reach ? { reach: this.reach.map((x) => ({ ...x, direct: directOf(this.peers, x.ip) })) } : {}), // agent hosts, latest probe
       ...(route ? { route } : {}), // agent hosts with a route.log; small, so every frame
       ...(lend ? { lend } : {}), // lent Mac workers (status file present); small, so every frame
       ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)

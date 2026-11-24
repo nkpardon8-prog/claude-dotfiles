@@ -414,3 +414,58 @@ test('lend: only where the status file exists; share file missing = max, unreada
   assert.equal((await c.lend(now)).level, 'off');
   fs.rmSync(d, { recursive: true });
 });
+
+test('reach: fleet.json -> enabled workers, never self, port default 22, bounded', () => {
+  const fleet = JSON.stringify({
+    machines: [
+      { name: 'hp', ip: '100.1.1.1', port: 22, roles: ['home', 'worker'], enabled: true },
+      { name: 'laptop', ip: '100.1.1.2', port: 2222, roles: ['worker'] },
+      { name: 'off', ip: '100.1.1.3', port: 2222, roles: ['worker'], enabled: false },
+      { name: 'agent', ip: '100.1.1.4', roles: ['agent'] },
+      { name: 'me', ip: '100.1.1.5', roles: ['worker'] },
+      { name: 'meByIp', ip: '100.1.1.6', roles: ['worker'], port: 'x' },
+      { name: 'noip', roles: ['worker'] },
+    ],
+  });
+  assert.deepEqual(r.reachTargets(fleet, 'me', ['100.1.1.6']), [
+    { name: 'hp', ip: '100.1.1.1', port: 22 },
+    { name: 'laptop', ip: '100.1.1.2', port: 2222 },
+  ]);
+  assert.deepEqual(r.reachTargets('not json', 'me'), []);
+  assert.deepEqual(r.reachTargets(null, 'me'), []);
+  const many = JSON.stringify({ machines: Array.from({ length: 40 }, (_, i) => ({ name: `w${i}`, ip: `100.0.0.${i}`, roles: ['worker'] })) });
+  assert.equal(r.reachTargets(many, 'me').length, 16);
+});
+
+test('reach: probeRtt = median of the successful connects, null when none', async () => {
+  const seq = (vals) => {
+    let i = 0;
+    return async () => vals[i++];
+  };
+  assert.equal(await r.probeRtt('h', 1, { connect: seq([30, 10, 20]) }), 20);
+  assert.equal(await r.probeRtt('h', 1, { connect: seq([null, 12.34, 14]) }), 13.2);
+  assert.equal(await r.probeRtt('h', 1, { connect: seq([null, null, null]) }), null);
+});
+
+test('reach: directOf reads the tailscale peer list (unknown/offline = null)', () => {
+  const peers = [
+    { ip: '100.1.1.1', online: true, relayed: false },
+    { ip: '100.1.1.2', online: true, relayed: true },
+    { ip: '100.1.1.3', online: false, relayed: false },
+  ];
+  assert.equal(r.directOf(peers, '100.1.1.1'), true);
+  assert.equal(r.directOf(peers, '100.1.1.2'), false);
+  assert.equal(r.directOf(peers, '100.1.1.3'), null);
+  assert.equal(r.directOf(peers, '100.9.9.9'), null);
+});
+
+test('reach: tcpConnectMs connects to a listening port and fails on a closed one', async () => {
+  const net = await import('node:net');
+  const srv = net.createServer((s) => s.destroy());
+  await new Promise((res) => srv.listen(0, '127.0.0.1', res));
+  const { port } = srv.address();
+  const ms = await r.tcpConnectMs('127.0.0.1', port, 2000);
+  assert.ok(typeof ms === 'number' && ms >= 0 && ms < 2000);
+  await new Promise((res) => srv.close(res));
+  assert.equal(await r.tcpConnectMs('127.0.0.1', port, 2000), null);
+});
