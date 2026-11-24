@@ -453,9 +453,12 @@ class Reporter(DoctorBase):
 class Drain(DoctorBase):
     def runs(self, *ages_outcomes):
         lines = []
-        for age, outcome in ages_outcomes:
+        for age, outcome, *extra in ages_outcomes:   # optional: wt, owner, argv
+            wt, owner, argv = (list(extra) + [None, None, None])[:3]
             ts = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - age))
-            lines.append("%s repo=r wt=w sha=abc outcome=%s prepare_s=1.0 cmd_s=2.0 argv=npm test\n" % (ts, outcome))
+            tail = "\trun=x owner=%s cls=light" % owner if owner else ""
+            lines.append("%s repo=r wt=%s sha=abc outcome=%s prepare_s=1.0 cmd_s=2.0 argv=%s%s\n"
+                         % (ts, wt or "w", outcome, argv or "npm test", tail))
         write(os.path.join(self.rr, "log", "runs.log"), "".join(lines))
 
     def test_three_infra_failures_drain_then_three_healthy_ticks_reopen(self):
@@ -477,6 +480,47 @@ class Drain(DoctorBase):
         st = self.status_json()
         self.assertFalse(st["drained"])
         self.assertIn("drain undrain worker healthy 3 checks in a row (slots.cap -> 4)", self.log())
+
+    def test_deps_failed_from_one_worktree_does_not_drain(self):
+        """2026-11-24 hp: one worktree's broken install retried 3x (deps-failed) took all 8 slots offline."""
+        write(self.cap, "8\n")
+        self.runs((10, "deps-failed", "b7c853d13dd1"), (60, "deps-failed", "b7c853d13dd1"),
+                  (140, "deps-failed", "b7c853d13dd1"), (150, "rc=1", "b7c853d13dd1"))
+        self.doctor()
+        self.assertFalse(os.path.exists(self.drain))
+        self.assertEqual(read(self.cap).strip(), "8")
+        self.assertEqual(self.status_json()["infra_recent"], 1)
+
+    def test_deps_failed_across_worktrees_drains(self):
+        write(self.cap, "8\n")
+        self.runs((10, "deps-failed", "aaaaaaaaaaaa"), (20, "deps-failed", "bbbbbbbbbbbb"),
+                  (30, "deps-failed", "aaaaaaaaaaaa"), (40, "deps-failed", "cccccccccccc"))
+        self.doctor()
+        self.assertEqual(read(self.cap).strip(), "0")
+        self.assertIn("infra=3/300s", read(self.drain))
+
+    def test_deps_failed_from_one_session_across_lanes_does_not_drain(self):
+        """Concurrent rruns of one worktree log distinct lane mirror ids as wt=: the session dedupes them."""
+        self.runs((10, "deps-failed", "aaaaaaaaaaaa", "session:s1"), (20, "deps-failed", "bbbbbbbbbbbb", "session:s1"),
+                  (30, "deps-failed", "cccccccccccc", "session:s1"), (40, "deps-failed", "dddddddddddd", "session:s2"))
+        self.doctor()
+        self.assertFalse(os.path.exists(self.drain))
+        self.assertEqual(self.status_json()["infra_recent"], 2)
+
+    def test_deps_failed_from_one_worktree_under_cli_pids_does_not_drain(self):
+        """A client with no session logs owner=pid:<parent pid>, a new one per shell: the wt= still dedupes."""
+        self.runs((10, "deps-failed", "aaaaaaaaaaaa", "pid:101"), (20, "deps-failed", "aaaaaaaaaaaa", "pid:102"),
+                  (30, "deps-failed", "aaaaaaaaaaaa", "pid:103"))
+        self.doctor()
+        self.assertFalse(os.path.exists(self.drain))
+        self.assertEqual(self.status_json()["infra_recent"], 1)
+
+    def test_argv_text_cannot_fake_or_hide_an_outcome(self):
+        fake = "echo outcome=deps-failed prepare_s=1 outcome=lost rc=9 "
+        self.runs((10, "lost rc=255", "w", "session:s1", fake), (20, "lost rc=255", "w", "session:s1", fake),
+                  (30, "rc=1", "w", "session:s1", "echo outcome=rc=134 x"), (40, "rc=134", "w", "session:s1", fake))
+        self.doctor()
+        self.assertEqual(self.status_json()["infra_recent"], 3)
 
     def test_runner_pre_start_errors_drain(self):
         """error rc=70 = the runner's own failure before the start (2026-11-13: an unwritable ~/rr/w2)."""

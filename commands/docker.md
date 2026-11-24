@@ -863,6 +863,9 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   that address is up but nothing listens. rd-doctor on macOS ignores `lost` rows logged within 5 min of a
   wake (the lid close's own losses, `DOCTOR_WAKE_GRACE_S`) and stops a Colima VM whose engine no longer
   answers after sleep (2 checks, no slot held). A db job's `docker info` probe has a 20 s limit.
+  On every worker rd-doctor drains (slots.cap 0 until 3 healthy checks) after 3 infra failures in 5 min
+  (`lost rc=N`, `rc=134`, `error rc=70`, `deps-failed`); `deps-failed` counts once per worktree and per agent
+  session, so one project's broken install retried in a loop cannot take the worker offline.
 - **~/rr prune on a Mac worker = the Linux rules, as `rd`.** `rd-worker-mac` (root) runs `rd-tune prune`
   (`server/rd-tune.sh`, installed as `/usr/local/libexec/rd-tune`) as `rd` at start and every 10 min, in
   the background, single instance (`~/rr/state/prune.lock`), nice 19 + `taskpolicy -b`: mirrors / store

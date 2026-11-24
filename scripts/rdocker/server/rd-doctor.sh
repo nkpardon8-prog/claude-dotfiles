@@ -19,7 +19,9 @@
 #                    label or without the run label. "Gone" = no live run owns the token (see CT_PL).
 #  reporter          rd-reporter not active -> restart (Linux user unit; macOS launchctl kickstart when the
 #                    com.rdocker.reporter label is loaded). At most once per 5 min.
-#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost rc=N | deps-failed | rc=134 |
+#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost rc=N | deps-failed, counted once
+#                    per worktree (wt=) and per client session (owner=session:...) so one project's broken
+#                    install cannot drain the worker | rc=134 |
 #                    error rc=70: the runner's own pre-start failure, e.g. a ~/rr it cannot write) in the
 #                    last DOCTOR_INFRA_WINDOW_S of runs.log, or memory / disk critical -> drain: write the
 #                    drain marker and slots.cap = 0 (the runner and the pool probe then admit nothing; jobs
@@ -443,7 +445,7 @@ use strict; use warnings; use Time::Local qw(timegm); use Fcntl qw(O_RDONLY O_NO
 my ($f, $now, $win, $floor) = @ARGV;
 sysopen(my $fh, $f, O_RDONLY | O_NOFOLLOW) or do { print "0\n"; exit 0 };
 my $sz = -s $fh || 0; seek($fh, $sz > 262144 ? $sz - 262144 : 0, 0);
-my $n = 0;
+my $n = 0; my %dw;
 while (my $l = <$fh>) {
     my ($y, $mo, $d, $h, $mi, $s, $sg, $oh, $om) = $l =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)([+-])(\d\d):?(\d\d)\s/ or next;
     my $t = timegm($s, $mi, $h, $d, $mo - 1, $y) - ($sg eq "-" ? -1 : 1) * ($oh * 3600 + $om * 60);
@@ -452,7 +454,21 @@ while (my $l = <$fh>) {
     # old label of a client that left before the start (now abandoned-setup / moved): not a worker fault
     # error rc=70: the runner failed before the start for its own reasons (a perl error, an unwritable ~/rr,
     # the run-local Postgres not coming up) - 2026-11-13 a root-owned ~/rr/w2 failed 15 runs in a row unseen
-    $n++ if $l =~ /\soutcome=(?:lost rc=\d+|deps-failed|error rc=70)\s/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
+    # fields come from the fixed head only (argv is free text up to the tab that starts the runner fields)
+    my ($head, $tail) = split /\t/, $l, 2;
+    my ($wt, $o) = $head =~ /^\S+ repo=\S* wt=(\S*) sha=\S* outcome=(.+?) prepare_s=/ or next;
+    # deps-failed counts only when neither its wt= nor its session owner= was seen in the window (2026-11-24):
+    # a broken install in one project retried 3x drained all 8 hp slots. wt= catches retries from one worktree
+    # under any owner; the session catches concurrent rruns of one worktree (they log distinct lane mirror ids
+    # as wt=). Not caught: lanes of a client with no session (owner=pid:N) - rare, left as is
+    if ($o eq "deps-failed") {
+        my ($who) = ($tail // "") =~ /^run=\S* owner=(session:\S+)/;
+        my @k = ("w:$wt", defined $who ? "o:$who" : ());
+        $n++ unless grep { $dw{$_} } @k;
+        $dw{$_} = 1 for @k;
+        next;
+    }
+    $n++ if $o =~ /^(?:lost rc=\d+|error rc=70|(?:[a-z]+ )?rc=134)$/;
 }
 print "$n\n";
 '
