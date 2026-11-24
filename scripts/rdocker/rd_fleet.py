@@ -354,9 +354,14 @@ def ingest_url(doc):
     return (re.sub(r"^http", "ws", o) + "/ingest") if o.startswith("http") else ""
 
 
+def machine_key_var(name):
+    """The dashboard Worker's secret that holds a machine's reporter key."""
+    return "MACHINE_KEY_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
+
+
 def secret_put_hint(name, alias):
     """The owner's command: pipes the key from the machine into wrangler (never shown, never stored)."""
-    var = "MACHINE_KEY_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
+    var = machine_key_var(name)
     read = "import json,os;print(json.load(open(os.path.expanduser('~/.config/rdocker/reporter.json')))['key'],end='')"
     return "ssh %s %s | wrangler secret put %s" % (alias, shlex.quote("/usr/bin/python3 -c " + shlex.quote(read)), var)
 
@@ -420,13 +425,13 @@ def parse_key_expiry(text):
     return str(exp)[:10] if re.match(r"\d{4}-\d\d-\d\d", str(exp)) else None
 
 
-def commit_push(name, push):
+def commit_push(name, push, what="add/update"):
     top_rc, top, _ = rd_common.run(["git", "-C", rd_common.HERE, "rev-parse", "--show-toplevel"], timeout=10)
     if top_rc:
         return "dotfiles is not a git repo here: fleet.json left uncommitted"
     top = top.strip()
     rel = os.path.relpath(rd_common.FLEET_PATH, top)
-    steps = [["add", rel], ["commit", "-m", "rdocker fleet: add/update %s" % name, "--", rel]] + ([["push"]] if push else [])
+    steps = [["add", rel], ["commit", "-m", "rdocker fleet: %s %s" % (what, name), "--", rel]] + ([["push"]] if push else [])
     for cmd in steps:
         rc, _, err = rd_common.run(["git", "-C", top] + cmd, timeout=90)
         if rc:
@@ -573,3 +578,85 @@ def add_server(cfg, ns):
                       "unattended until fixed (re-run add-server, it is idempotent; `ssh %s rd-verify` re-checks)"
                       % (len(failed), m["alias"]))
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------- remove-server
+
+def remove_server(cfg, ns):
+    """`rdocker remove-server <name>`: the reverse of add-server. Runs server/unprovision-linux.sh on the box
+    over ssh as the admin login (rd itself is the user it deletes), then drops the machine from fleet.json,
+    rewrites the ssh blocks, commits (+ pushes) and prints the owner's `wrangler secret delete`.
+    ns: name, admin_user, purge_packages, fleet_only, no_push, dry_run. -> exit code."""
+    dry = ns.dry_run
+    try:
+        doc = load_doc()
+    except FleetError as e:
+        rd_common.say(str(e))
+        return 2
+    m = get([entry(x) for x in doc["machines"]], ns.name)
+    if not m:
+        rd_common.say("no machine named %r in fleet.json" % ns.name)
+        return 2
+    if "home" in m["roles"]:
+        rd_common.say("%s is the home (docker host): make another machine home first "
+                      "(rdocker add-server <name> <ip> --role home,worker), then remove this one" % ns.name)
+        return 2
+    rest = {**doc, "machines": [x for x in doc["machines"] if x["name"] != ns.name]}
+    if problems(rest):
+        rd_common.say("fleet.json would be invalid without %s: %s" % (ns.name, "; ".join(problems(rest))))
+        return 2
+
+    def sh(cmd, label, tty=False, timeout=300):
+        print("%s: %s" % (label, " ".join(shlex.quote(c) for c in cmd)))
+        if dry:
+            return 0, "", ""
+        if tty:
+            return interactive(cmd), "", ""
+        return rd_common.run(cmd, timeout=timeout)
+
+    if not ns.fleet_only:
+        if m["os"] != "linux":
+            rd_common.say("%s is a %s machine: unprovision-linux.sh is for linux boxes (use --fleet-only "
+                          "to drop the entry only)" % (ns.name, m["os"]))
+            return 2
+        if not m["ip"]:
+            rd_common.say("%s has no ip in fleet.json: nothing to ssh to (use --fleet-only)" % ns.name)
+            return 2
+        if not ns.admin_user or ns.admin_user == m["user"]:
+            rd_common.say("--admin-user <login> is required: an existing sudo login that is not %r "
+                          "(the user unprovision deletes)" % m["user"])
+            return 2
+        keys = list(dict.fromkeys(doc.get("client_keys", []) + ([own_pubkey()] if own_pubkey() else [])))
+        target = "%s@%s" % (ns.admin_user, m["ip"])
+        remote = "/tmp/rdocker-unprovision-" + ns.name
+        tmp = tempfile.mkdtemp(prefix="rdk-unprov-", dir=rd_common.STATE_DIR if os.path.isdir(rd_common.STATE_DIR) else None)
+        try:
+            src = stage_dir(keys, tmp)
+            if sh(["scp", "-r", "-P", str(m["port"]), "-o", "StrictHostKeyChecking=accept-new", src,
+                   "%s:%s" % (target, remote)], "copy unprovision files")[0]:
+                rd_common.say("could not copy to %s (is sshd up on port %d and the key/password right?)" % (target, m["port"]))
+                return 1
+        finally:
+            shutil.rmtree(tmp, True)
+        args = ["--user", m["user"], "--yes", "--keys", remote + "/client_keys", "--admin-user", ns.admin_user] + (
+            ["--purge-packages"] if ns.purge_packages else [])
+        # one remote shell line: it also deletes the staged copy, because unprovision takes our client keys
+        # off the admin login (a second ssh afterwards may no longer get in)
+        line = "sudo bash %s/unprovision-linux.sh %s; rc=$?; rm -rf %s; exit $rc" % (
+            remote, " ".join(shlex.quote(a) for a in args), remote)
+        if sh(["ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", "-p", str(m["port"]), target, line],
+              "unprovision (asks for the sudo password once)", tty=True)[0]:
+            rd_common.say("unprovision failed (see output above); fleet.json unchanged - fix and re-run "
+                          "(it is idempotent), or --fleet-only to drop the entry anyway")
+            return 1
+    print("fleet.json: remove %s" % ns.name)
+    if not dry:
+        save(rest)
+        ssh_blocks(load(), cfg)
+        if m["alias"]:
+            rd_common.run(["ssh-keygen", "-R", m["alias"]], timeout=10)
+        print("git: " + commit_push(ns.name, not ns.no_push, what="remove"))
+    print("removed %s (%s)" % (ns.name, m["ip"] or "no ip"))
+    print("owner, once: wrangler secret delete %s" % machine_key_var(ns.name))
+    print("other clients: rdocker sync-fleet --pull")
+    return 0

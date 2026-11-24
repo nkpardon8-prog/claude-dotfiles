@@ -373,5 +373,92 @@ class AddServer(unittest.TestCase):
         self.assertEqual(rd_setup.build_parser().parse_args(["sync-fleet", "--pull"]).pull, True)
 
 
+def rns(**kw):
+    d = dict(name="hp", admin_user="admin", purge_packages=False, fleet_only=False, no_push=True, dry_run=False)
+    d.update(kw)
+    return types.SimpleNamespace(**d)
+
+
+class RemoveServer(unittest.TestCase):
+    """remove-server: unprovision over ssh as the admin login, then the fleet entry goes (add-server's harness)."""
+    run_, interactive = AddServer.run_, AddServer.interactive
+    verify_out, expiry = AddServer.verify_out, AddServer.expiry
+
+    def setUp(self):
+        AddServer.setUp(self)
+        doc = json.load(open(self.fleet))
+        doc["machines"].append(rd_fleet.entry({"name": "box", "ip": "100.9.8.7", "roles": ["worker"], "alias": "rd-box",
+                                               "enabled": True, "port": 2222}))
+        rd_fleet.save(doc, self.fleet)
+
+    def test_dry_run_prints_and_changes_nothing(self):
+        before = open(self.fleet).read()
+        with mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", dry_run=True)), 0)
+        self.assertEqual(open(self.fleet).read(), before)
+        self.assertEqual((self.cmds, self.inter), ([], []))
+        text = out.getvalue()
+        self.assertIn("unprovision-linux.sh", text)
+        self.assertIn("admin@100.9.8.7", text)
+        self.assertIn("wrangler secret delete MACHINE_KEY_BOX", text)
+
+    def test_full_flow_unprovisions_then_drops_the_entry(self):
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/stage/rdocker-provision"):
+            rc = rd_fleet.remove_server(self.cfg, rns(name="box", purge_packages=True))
+        self.assertEqual(rc, 0)
+        (un,) = self.inter
+        self.assertEqual(un[:2], ["ssh", "-t"])
+        self.assertEqual(un[un.index("-p") + 1], "2222")
+        self.assertEqual(un[-2], "admin@100.9.8.7")
+        line = un[-1]
+        self.assertTrue(line.startswith("sudo bash /tmp/rdocker-unprovision-box/unprovision-linux.sh "), line)
+        for need in ("--user rd", "--yes", "--keys /tmp/rdocker-unprovision-box/client_keys", "--admin-user admin",
+                     "--purge-packages", "rm -rf /tmp/rdocker-unprovision-box", "exit $rc"):
+            self.assertIn(need, line)
+        scp = next(c for c in self.cmds if c[0] == "scp")
+        self.assertEqual(scp[-1], "admin@100.9.8.7:/tmp/rdocker-unprovision-box")
+        self.assertIn("2222", scp)
+        self.assertIsNone(rd_fleet.get(rd_fleet.load(), "box"))
+        self.assertIn(["ssh-keygen", "-R", "rd-box"], self.cmds)
+        commit = next(c for c in self.cmds if c[0] == "git" and "commit" in c)
+        self.assertIn("rdocker fleet: remove box", commit)
+        self.assertFalse(any(c[0] == "git" and "push" in c for c in self.cmds))        # --no-push
+        with open(rd_common.FLEET_SSH_PATH) as f:
+            self.assertNotIn("Host rd-box", f.read())
+
+    def test_default_keeps_packages(self):
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/s"):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 0)
+        self.assertNotIn("--purge-packages", self.inter[0][-1])
+
+    def test_failed_unprovision_leaves_fleet_unchanged(self):
+        before = open(self.fleet).read()
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/s"), \
+                mock.patch.object(rd_fleet, "interactive", return_value=1):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
+        self.assertEqual(open(self.fleet).read(), before)
+        self.assertFalse(any(c[0] == "git" for c in self.cmds))
+
+    def test_fleet_only_skips_the_box(self):
+        self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", fleet_only=True, admin_user=None)), 0)
+        self.assertEqual(self.inter, [])
+        self.assertFalse(any(c[0] in ("scp", "ssh") for c in self.cmds))
+        self.assertIsNone(rd_fleet.get(rd_fleet.load(), "box"))
+
+    def test_refusals_exit_2_and_change_nothing(self):
+        before = open(self.fleet).read()
+        self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="nope")), 2)
+        self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="laptop")), 2)          # the home
+        self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", admin_user=None)), 2)
+        self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", admin_user="rd")), 2)   # deletes itself
+        self.assertEqual(open(self.fleet).read(), before)
+        self.assertEqual((self.cmds, self.inter), ([], []))
+
+    def test_cli_registers_remove_server(self):
+        a = rd_setup.build_parser().parse_args(["remove-server", "box", "--admin-user", "adm", "--purge-packages", "--dry-run"])
+        self.assertEqual((a.cmd, a.name, a.admin_user, a.purge_packages, a.fleet_only, a.dry_run),
+                         ("remove-server", "box", "adm", True, False, True))
+
+
 if __name__ == "__main__":
     unittest.main()

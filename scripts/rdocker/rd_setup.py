@@ -705,6 +705,17 @@ def build_parser():
     s.add_argument("--heavy-slots", type=int)
     s.add_argument("--no-push", action="store_true", help="commit fleet.json but do not push the dotfiles")
     s.add_argument("--dry-run", action="store_true", help="print the commands, change nothing")
+    s = sp.add_parser("remove-server", help="the reverse of add-server: unprovision a Linux box over ssh "
+                      "(server/unprovision-linux.sh) and drop it from fleet.json")
+    s.add_argument("name")
+    s.add_argument("--admin-user", metavar="U", help="existing sudo login on the box, not the service user "
+                   "(required unless --fleet-only)")
+    s.add_argument("--purge-packages", action="store_true", help="also purge the packages provision installed "
+                   "(docker-ce & co; only ones the box did not have before)")
+    s.add_argument("--fleet-only", action="store_true", help="the box is gone or not ours to touch: only drop "
+                   "the fleet.json entry")
+    s.add_argument("--no-push", action="store_true", help="commit fleet.json but do not push the dotfiles")
+    s.add_argument("--dry-run", action="store_true", help="print the commands, change nothing")
     s = sp.add_parser("bench-worker", help="benchmark one fleet worker (linux or mac) over ssh; stores ~/rr/speed there")
     s.add_argument("name")
     s = sp.add_parser("sync-fleet", help="validate fleet.json and rewrite ~/.ssh/config.d/rdocker from it")
@@ -884,6 +895,8 @@ def command(argv):
     cfg = rd_common.load_cfg()
     if cmd == "add-server":
         return rd_fleet.add_server(cfg, ns)
+    if cmd == "remove-server":
+        return rd_fleet.remove_server(cfg, ns)
     if cmd == "bench-worker":
         return rd_fleet.bench_worker(cfg, ns.name)
     if cmd == "sync-fleet":

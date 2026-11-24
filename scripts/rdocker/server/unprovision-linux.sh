@@ -48,8 +48,9 @@ REMOVED=() KEPT=() FAILED=()
 gone() { REMOVED+=("$*"); }
 kept() { KEPT+=("$*"); }
 # act CMD...: run it (or print it under --dry-run); a failure is recorded, never fatal - finish the rest
+exec 3>&1      # act's dry-run lines go here: a caller's >/dev/null must not hide them
 act() {
-  if [ "$DRY" = 1 ]; then echo "+ $*"; return 0; fi
+  if [ "$DRY" = 1 ]; then echo "+ $*" >&3; return 0; fi
   "$@" || { FAILED+=("$*"); echo "unprovision: failed: $*" >&2; return 1; }
 }
 quiet() { "$@" >/dev/null 2>&1; }      # a probe or best-effort step whose output nobody needs
@@ -58,7 +59,7 @@ rm_file() {   # rm_file PATH WHAT: remove one file of ours
   act rm -f "$1" && gone "$2 ($1)"
 }
 rmdir_empty() { [ -d "$1" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ] && act rmdir "$1"; return 0; }
-has() { case " $(echo $2) " in *" $1 "*) return 0 ;; esac; return 1; }   # has WORD LIST
+has() { [[ " ${2//$'\n'/ } " == *" $1 "* ]]; }   # has WORD LIST (space/newline separated)
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 
 while [ $# -gt 0 ]; do
@@ -87,11 +88,10 @@ fi
 # --- the record of the box before provision ----------------------------------------------------------------
 HAVE_PRIOR=0
 PRIOR_USER_EXISTED="" PRIOR_LINGER=0 PRIOR_PKGS_MISSING="" PRIOR_PKGS_PRESENT="" PRIOR_ENABLED="" PRIOR_MASKED=""
-PRIOR_FILES="" PRIOR_DEFAULT_TARGET="" PRIOR_UFW_ACTIVE="" PRIOR_DOCKER_GROUP="" PRIOR_CHRONY_MAKESTEP=""
+PRIOR_FILES="" PRIOR_DEFAULT_TARGET="" PRIOR_UFW_ACTIVE="" PRIOR_DOCKER_GROUP="" PRIOR_CHRONY_MAKESTEP="" PRIOR_DOCKER_DATA=1
 if [ -f "$PRIOR" ]; then
   # root-written, 0600: refuse one anybody else could have edited (it is sourced as root)
-  [ "$(stat -c '%u' "$PRIOR")" = 0 ] && ! [ "$(stat -c '%A' "$PRIOR" | cut -c6,9)" != "--" ] \
-    || die "$PRIOR is not root-owned 0600: refusing to read it"
+  [ "$(stat -c '%u %a' "$PRIOR")" = "0 600" ] || die "$PRIOR is not root-owned 0600: refusing to read it"
   grep -vqE '^(#.*|PRIOR_[A-Za-z0-9_]+=.*)$' "$PRIOR" && die "$PRIOR has unexpected lines: refusing to read it"
   # shellcheck disable=SC1090
   . "$PRIOR"; HAVE_PRIOR=1
@@ -188,19 +188,19 @@ fi
 # --- 3. the capped docker data disk (ext4 loop image at /var/lib/docker) ---------------------------------------
 say "step docker-disk"
 DISK_REMOVED=0
-img_mounted() { findmnt -n /var/lib/docker >/dev/null 2>&1 && losetup -j "$DOCKER_IMG" 2>/dev/null | grep -q .; }
+# is MOUNTPOINT mounted from IMAGE's loop device?
+mounted_from() { local dev; dev=$(losetup -j "$2" -nO NAME 2>/dev/null | head -1)
+  [ -n "$dev" ] && mountpoint -q "$1" 2>/dev/null && [ "$(findmnt -no SOURCE "$1" | head -1)" = "$dev" ]; }
 if [ -f "$DOCKER_IMG" ]; then
-  if img_mounted && [ "$DOCKER_OK" != 1 ]; then
+  if ! mounted_from /var/lib/docker "$DOCKER_IMG"; then
+    kept "docker data image $DOCKER_IMG: not mounted, so its contents cannot be checked for data that is not ours (mount it and re-run, or delete it by hand)"
+  elif [ "$DOCKER_OK" != 1 ]; then
     kept "docker data image $DOCKER_IMG: docker is not running, so its containers cannot be checked for ones that are not ours"
-  elif img_mounted && [ $((FOREIGN_CT + FOREIGN_VOL)) -gt 0 ]; then
+  elif [ $((FOREIGN_CT + FOREIGN_VOL)) -gt 0 ]; then
     kept "docker data image $DOCKER_IMG at /var/lib/docker (+ its /etc/fstab line): it holds containers/volumes that are not ours; move them, then re-run"
-  elif ! img_mounted && grep -qF "$DOCKER_IMG /var/lib/docker" /etc/fstab && [ "$DOCKER_OK" = 1 ]; then
-    kept "docker data image $DOCKER_IMG: in /etc/fstab but not mounted, its contents cannot be checked"
   else
-    if img_mounted; then
-      act systemctl stop docker.socket docker.service containerd.service >/dev/null 2>&1
-      act umount /var/lib/docker || act umount -l /var/lib/docker
-    fi
+    act systemctl stop docker.socket docker.service >/dev/null 2>&1
+    act umount /var/lib/docker || act umount -l /var/lib/docker
     for dev in $(losetup -j "$DOCKER_IMG" -nO NAME 2>/dev/null); do act losetup -d "$dev"; done
     rm_file "$DOCKER_IMG" "docker data image (pool images, build cache)" && DISK_REMOVED=1
   fi
@@ -227,10 +227,7 @@ RR=${RD_HOME:+$RD_HOME/rr}
 if unit_is_ours rd-rrfs.service; then act systemctl disable --now rd-rrfs.service >/dev/null 2>&1; fi
 if [ -f "$RR_IMG" ]; then
   for mp in "$RR_STAGE" ${RR:+"$RR"}; do
-    if mountpoint -q "$mp" 2>/dev/null && losetup -j "$RR_IMG" 2>/dev/null | grep -q . \
-       && [ "$(findmnt -no SOURCE "$mp")" = "$(losetup -j "$RR_IMG" -nO NAME | head -1)" ]; then
-      act umount "$mp" || act umount -l "$mp"
-    fi
+    mounted_from "$mp" "$RR_IMG" && { act umount "$mp" || act umount -l "$mp"; }
   done
   for dev in $(losetup -j "$RR_IMG" -nO NAME 2>/dev/null); do act losetup -d "$dev"; done
   rm_file "$RR_IMG" "~$RD_USER/rr XFS volume image"
@@ -242,12 +239,14 @@ if [ -n "$RR" ] && [ -d "$RR" ] && ! mountpoint -q "$RR"; then act chattr -i "$R
 # --- 5. unit files and drop-ins ------------------------------------------------------------------------------------
 say "step units"
 for u in $OUR_UNITS; do rm_file "$SD/$u" "unit $u"; done
+DOCKER_UNITS_CH=0
 for d in ssh.service.d/10-rdocker.conf docker.service.d/10-rdocker.conf docker.socket.d/10-rdocker.conf \
          ssh.service.d/10-rdocker-restart.conf tailscaled.service.d/10-rdocker-restart.conf \
          docker.service.d/10-rdocker-restart.conf chrony.service.d/10-rdocker-restart.conf; do
   if [ "$d" = docker.service.d/10-rdocker.conf ] && [ -f "$DOCKER_IMG" ]; then
     [ -f "$SD/$d" ] && kept "$SD/$d (docker waits for the data image that is kept)"; continue
   fi
+  [ -e "$SD/$d" ] && case "$d" in docker.*) DOCKER_UNITS_CH=1 ;; esac
   rm_file "$SD/$d" "drop-in $d"
   rmdir_empty "$SD/$(dirname "$d")"
 done
@@ -328,25 +327,25 @@ fi
 
 # --- 7. firewall + the services rd-harden turned off ---------------------------------------------------------------
 say "step firewall"
+drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6 copy of each
+  local r
+  for r in "allow in on tailscale0 to any port $PORT proto tcp" "allow in on tailscale0 to any port 22 proto tcp" "allow 41641/udp"; do
+    # shellcheck disable=SC2086  # word-split on purpose: a ufw rule
+    ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
+  done
+}
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   if [ "$HAVE_PRIOR" = 1 ]; then
     [ "$PRIOR_UFW_ACTIVE" = 0 ] && act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
-    # our rules go either way (when ufw was already on, the box had its own way in)
-    for r in "allow in on tailscale0 to any port $PORT proto tcp" "allow in on tailscale0 to any port 22 proto tcp" "allow 41641/udp"; do
-      # shellcheck disable=SC2086
-      ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
-    done
+    drop_ufw_rules    # either way (when ufw was already on, the box had its own way in)
   else
     kept "ufw on with rdocker's rules (no record whether ufw was on before; undo: sudo ufw --force disable)"
   fi
 elif command -v ufw >/dev/null 2>&1 && [ "$HAVE_PRIOR" = 1 ]; then
-  for r in "allow in on tailscale0 to any port $PORT proto tcp" "allow in on tailscale0 to any port 22 proto tcp" "allow 41641/udp"; do
-    # shellcheck disable=SC2086
-    ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
-  done
+  drop_ufw_rules
 fi
 if command -v iptables >/dev/null 2>&1 && quiet iptables -S DOCKER-USER && iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
-  act iptables -F DOCKER-USER && act iptables -A DOCKER-USER -j RETURN && gone "DOCKER-USER firewall chain rules"
+  act iptables -F DOCKER-USER && gone "DOCKER-USER firewall chain rules"
 fi
 if [ "$HAVE_PRIOR" = 1 ]; then
   for u in $PRIOR_ENABLED; do
@@ -367,23 +366,17 @@ fi
 # --- 8. docker config ---------------------------------------------------------------------------------------------
 say "step docker-config"
 DOCKER_CH=0
-if [ "$HAVE_PRIOR" = 1 ] && ! prior_file /etc/docker/daemon.json && [ -f /etc/docker/daemon.json ] \
-   && grep -q '"containerd-snapshotter": false' /etc/docker/daemon.json; then
-  rm_file /etc/docker/daemon.json "docker daemon.json" && DOCKER_CH=1
-else
-  restore_shared /etc/docker/daemon.json "docker daemon.json" && DOCKER_CH=1
-fi
-[ -e "$SD/docker.socket.d/10-rdocker.conf" ] || [ "$DOCKER_CH" = 1 ] || true
+restore_shared /etc/docker/daemon.json "docker daemon.json" && DOCKER_CH=1
 if getent group docker >/dev/null; then
   if [ "$HAVE_PRIOR" = 1 ]; then
     case "$PRIOR_DOCKER_GROUP" in
       yes:*) want=""; for m in $(echo "${PRIOR_DOCKER_GROUP#yes:}" | tr ',' ' '); do
-               id "$m" >/dev/null 2>&1 && [ "$m" != "$RD_USER" -o "$USER_OURS" != 1 ] && want="$want,$m"; done
+               id "$m" >/dev/null 2>&1 && { [ "$m" != "$RD_USER" ] || [ "$USER_OURS" != 1 ]; } && want="$want,$m"; done
              want=${want#,}
              [ "$(getent group docker | cut -d: -f4)" = "$want" ] || { act gpasswd -M "$want" docker >/dev/null && gone "docker group members (back to: ${want:-none})"; } ;;
     esac
-  elif [ -n "$(getent group docker | cut -d: -f4 | tr ',' '\n' | grep -vx "$RD_USER")" ] || true; then
-    kept "docker group members: rd-harden set them to $RD_USER only (no record of the members before)"
+  else
+    kept "docker group: rd-harden set its members to $RD_USER only; any member from before is not known (no record)"
   fi
 fi
 
@@ -406,7 +399,7 @@ if [ -n "$RD_UID" ]; then
     if [ -n "$RR" ] && mountpoint -q "$RR" 2>/dev/null; then
       kept "user $RD_USER: $RR is still a mount point (unmount it, then re-run)"
     else
-      act userdel -r "$RD_USER" 2>/dev/null && gone "user $RD_USER and its home $RD_HOME (~/rr, mise node/pnpm, reporter, configs)"
+      act userdel -r "$RD_USER" && gone "user $RD_USER and its home $RD_HOME (~/rr, mise node/pnpm, reporter, configs)"
       getent group "$RD_USER" >/dev/null 2>&1 && [ -z "$(getent group "$RD_USER" | cut -d: -f4)" ] && act groupdel "$RD_USER"
       rm_file "/var/lib/systemd/linger/$RD_USER" "linger for $RD_USER"
     fi
@@ -466,7 +459,7 @@ if [ "$PURGE" = 1 ]; then
     P=""
     for p in $PURGEABLE; do has "$p" "$PRIOR_PKGS_MISSING" && pkg_installed "$p" && P="$P $p"; done
     if has docker-ce "$P" && [ $((FOREIGN_CT + FOREIGN_VOL)) -gt 0 ]; then
-      P=$(for p in $P; do case "$p" in docker-*|containerd.io) ;; *) echo "$p" ;; esac; done | xargs)
+      P=$(printf '%s\n' $P | grep -vE '^(docker-.*|containerd\.io)$' | xargs)
       kept "docker packages: containers/volumes that are not ours still use docker"
     fi
     if [ -n "${P# }" ]; then
@@ -491,8 +484,10 @@ if [ "$PURGE" = 1 ]; then
 else
   kept "packages (docker-ce & co, chrony, build-essential, ufw, ...): kept - re-run with --purge-packages to remove the ones provision installed"
 fi
-if [ "$DOCKER_PURGED" != 1 ] && [ "$DOCKER_CH" = 1 ] || { [ "$DISK_REMOVED" = 1 ] && [ "$DOCKER_PURGED" != 1 ]; }; then
-  command -v docker >/dev/null 2>&1 && { act systemctl daemon-reload; act systemctl restart docker.socket docker.service >/dev/null 2>&1; }
+# a kept docker comes back up on its own config (and, when the image went, a fresh /var/lib/docker)
+if [ "$DOCKER_PURGED" != 1 ] && command -v docker >/dev/null 2>&1 \
+   && [ $((DOCKER_CH + DISK_REMOVED + DOCKER_UNITS_CH)) -gt 0 ]; then
+  act systemctl restart docker.socket docker.service >/dev/null 2>&1
 fi
 
 # --- 13. our state ----------------------------------------------------------------------------------------------
