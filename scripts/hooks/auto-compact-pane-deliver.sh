@@ -12,6 +12,10 @@
 #          the screen alone misread a thinking turn as idle (live 2026-11-16), and a new turn can
 #          start right after a Stop (queued notifications);
 #        - Pane's agent state, else Claude's own screen (spinner row / "esc to interrupt"), is idle;
+#          Pane's "working" also counts background agents/shells/wakeups, so when the transcript
+#          says the main turn ended and the screen shows no main spinner, it reads as idle
+#          (logged "idle(background)"). Background status rows are never a spinner. With no
+#          transcript, Pane's "working" still blocks;
 #        - the prompt box is empty, read by OUR parser first (Pane's composer flag misread it),
 #          or shows the same unchanging text, which may be Claude's grey "suggested next prompt"
 #          (the screen has no colour, so it looks like typing; the same goes for a fresh session's
@@ -267,10 +271,16 @@ panel_status() {
     [ "$sstate" = "idle" ] && agent="idle(screen)"
   elif [ "$sstate" = "busy" ] || [ "$sstate" = "compacting" ]; then
     agent="$agent+screen-$sstate"
+  elif [ "$agent" = "working" ] && [ "$tstate" = "idle" ] && [ "$sstate" = "idle" ]; then
+    # Pane reports "working" while ANY background agent, shell or wakeup timer runs, which in a
+    # busy window is almost always (live 2026-11-24: never-idle for 30 min, then give-up). The
+    # transcript is the source of truth for the MAIN turn, and Claude's screen shows no main
+    # spinner: the main turn has ended, so compact (background work survives a compaction).
+    agent="idle(background)"
   fi
   printf '%s/%s/%s\n' "$agent" "$comp" "$tstate"
   case "$agent" in
-    idle|"idle(screen)")
+    idle|"idle(screen)"|"idle(background)")
       if [ "$tstate" != "busy" ]; then
         [ "$comp" = "empty" ] && { printf 'ready\n\n'; return; }
         [ "$comp" = "text" ] && [ "$held" != "$KNOWN_DRAFT" ] && { printf 'maybe-ghost\n%s\n' "$held"; return; }
