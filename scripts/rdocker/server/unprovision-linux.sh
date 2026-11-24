@@ -560,10 +560,17 @@ if [ "$PURGE" = 1 ]; then
         pkg_installed "$p" || { act env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$p" >/dev/null && gone "chrony's replacement of $p (reinstalled)"; }
       done
     fi
-    if [ "$DOCKER_PURGED" = 1 ]; then
+    # docker that provision installed and that is gone now (this run's purge, or an earlier one): its leftovers go
+    if [ "$DOCKER_PURGED" = 1 ] || { has docker-ce "$PRIOR_PKGS_MISSING" && ! pkg_installed docker-ce; }; then
       for f in /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do prior_file "$f" || rm_file "$f" "docker apt repo"; done
       # runtime data: docker's only when the box had none before; containerd's only when we installed containerd
       if [ "$PRIOR_DOCKER_DATA" = 0 ] && [ ! -d /var/lib/docker.pre-rdocker ] && [ -d /var/lib/docker ]; then
+        # dockerd bind-mounts its root onto itself; that bind outlives the purged daemon (never our image here:
+        # step 3 removed that, and kept docker installed while it stayed)
+        if mountpoint -q /var/lib/docker && ! mounted_from /var/lib/docker "$DOCKER_IMG" \
+           && [ "$(findmnt -no SOURCE /var/lib/docker | head -1 | sed 's/.*\[\(.*\)\]$/\1/')" = /var/lib/docker ]; then
+          act umount /var/lib/docker
+        fi
         act rm -rf /var/lib/docker && gone "/var/lib/docker (docker installed by provision, purged)"
       fi
       if has containerd.io "$P" && ! pkg_installed containerd.io && [ -d /var/lib/containerd ]; then
