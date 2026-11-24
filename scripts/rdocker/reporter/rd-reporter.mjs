@@ -1114,6 +1114,18 @@ export const shareArgv = (c) => ('n' in c ? [c.op, String(c.n)] : [c.op]);
 
 const writableByOthers = (st) => (st.mode & 0o022) !== 0;
 
+/** The pool's own account: never allowed to run the share switch (rd-worker-mac runs jobs as it). */
+const POOL_USER = 'rd';
+/** This process's account name for `uid` (null when it cannot be told). */
+function userName(uid) {
+  try {
+    const u = os.userInfo();
+    return u.uid === uid ? u.username : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Every folder above `dir` (up to /) must be a real folder (no symlink) owned by root or `uid`, and not
  * writable by group/others unless sticky (/Users/Shared is 1777: nobody else can rename what we own in it),
@@ -1143,15 +1155,17 @@ export function hasAcl(paths, run = (args) => spawnSync('/bin/ls', args, { encod
 
 /**
  * May this process run the share switch? -> {ok: true, cmd} or {ok: false, why}. Re-checked on every order.
- * deps (tests only; never from the config): platform, uid, euid, lstat, acl, shareFile, shareCmd.
+ * deps (tests only; never from the config): platform, uid, euid, user, lstat, acl, shareFile, shareCmd.
  */
 export function shareControlCheck(cfg, deps = {}) {
-  const { platform = process.platform, uid = process.getuid?.() ?? -1, euid = process.geteuid?.() ?? -1, lstat = fs.lstatSync, acl = hasAcl, shareFile = SHARE_FILE, shareCmd = SHARE_CMD } = deps;
+  const { platform = process.platform, uid = process.getuid?.() ?? -1, euid = process.geteuid?.() ?? -1, user = userName(uid), lstat = fs.lstatSync, acl = hasAcl, shareFile = SHARE_FILE, shareCmd = SHARE_CMD } = deps;
   if (cfg?.shareControl !== true) return { ok: false, why: 'shareControl is not enabled in reporter.json' };
   if (typeof cfg.url !== 'string' || !cfg.url.startsWith('wss://')) return { ok: false, why: 'share control needs a wss:// dashboard url' };
   if (platform !== 'darwin') return { ok: false, why: 'not a Mac' };
   if (uid === 0 || euid === 0) return { ok: false, why: 'the reporter runs as root' };
   if (!(uid > 0) || uid !== euid) return { ok: false, why: 'unknown or mixed user ids' };
+  // The pool user never, even if it somehow came to own the share file (a bad restore): by account name.
+  if (user === null || user === POOL_USER || user === cfg.poolUser) return { ok: false, why: `the reporter runs as the pool user (${user ?? 'unknown'})` };
   const look = (p) => {
     try {
       return lstat(p); // never follows a symlink

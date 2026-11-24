@@ -109,7 +109,7 @@ const lstatOf = (over = {}) => {
   };
 };
 const CFG = { shareControl: true, url: 'wss://spine.example/ingest' };
-const check = (cfg = CFG, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, euid: UID, lstat: lstatOf(), acl: () => false, ...deps });
+const check = (cfg = CFG, deps = {}) => r.shareControlCheck(cfg, { platform: 'darwin', uid: UID, euid: UID, user: 'ethanball', lstat: lstatOf(), acl: () => false, ...deps });
 const why = (over, deps = {}) => check(CFG, { lstat: lstatOf(over), ...deps }).why ?? 'ok';
 
 test('check: only with shareControl:true over wss, on macOS, not root, as the owner of the share file and folder', () => {
@@ -120,6 +120,10 @@ test('check: only with shareControl:true over wss, on macOS, not root, as the ow
   assert.match(check({ ...CFG, url: 'ws://localhost:8787/ingest' }).why, /wss/);
   assert.match(check(CFG, { platform: 'linux' }).why, /not a Mac/);
   assert.match(check(CFG, { uid: 0, euid: 0 }).why, /root/);
+  // The pool user is refused by name even when it owns both paths (UID matches the tree).
+  assert.match(check(CFG, { user: 'rd' }).why, /pool user \(rd\)/);
+  assert.match(check({ ...CFG, poolUser: 'pool2' }, { user: 'pool2' }).why, /pool user/);
+  assert.match(check(CFG, { user: null }).why, /pool user \(unknown\)/);
   assert.match(check(CFG, { euid: 0 }).why, /root/);
   assert.match(check(CFG, { euid: 502 }).why, /mixed/);
   // ethanair: the reporter runs as rd (uid 502), the share file belongs to its owner (501)
