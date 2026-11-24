@@ -65,6 +65,28 @@ test('config: shareControl must be a boolean', () => {
   assert.equal(r.validateConfig({ ...ok, shareControl: 'yes' }).length, 1);
 });
 
+test('config: controlOnly must be a boolean and needs shareControl', () => {
+  const ok = { name: 'ethanair', url: 'wss://x.example/ingest', key: 'k'.repeat(40) };
+  assert.deepEqual(r.validateConfig({ ...ok, shareControl: true, controlOnly: true }), []);
+  assert.deepEqual(r.validateConfig({ ...ok, controlOnly: true }), ['controlOnly needs shareControl: true']);
+  assert.deepEqual(r.validateConfig({ ...ok, shareControl: false, controlOnly: true }), ['controlOnly needs shareControl: true']);
+  assert.deepEqual(r.validateConfig({ ...ok, shareControl: true, controlOnly: 'yes' }), ['controlOnly: true or false']);
+});
+
+test('hello: a control-only helper signs the rd-ctl prefix and says ctl:true; a stats hello does neither', async () => {
+  const { createHmac } = await import('node:crypto');
+  const key = 'k'.repeat(40);
+  const nonce = 'a'.repeat(32);
+  const h = r.signHello('ethanair', key, 1_700_000_000, nonce, true);
+  assert.equal(h.ctl, true);
+  assert.equal(h.sig, createHmac('sha256', key).update(`rd-ctl-v1|ethanair|1700000000|${nonce}`).digest('hex'));
+  assert.equal(h.sig, '033f0edbf1614a9d82a2f034844e4103d7d12c92eb72ba469297587a124b1693'); // the same vector as dashboard tests/share-control.test.ts
+  const s = r.signHello('ethanair', key, 1_700_000_000, nonce);
+  assert.equal('ctl' in s, false);
+  assert.equal(s.sig, createHmac('sha256', key).update(`rd-ingest-v1|ethanair|1700000000|${nonce}`).digest('hex'));
+  assert.notEqual(h.sig, s.sig);
+});
+
 // ---- who may run the switch
 const UID = 501;
 const st = (o) => ({ isFile: () => o.kind === 'file', isDirectory: () => o.kind === 'dir', uid: o.uid ?? UID, mode: o.mode ?? 0o100755 });

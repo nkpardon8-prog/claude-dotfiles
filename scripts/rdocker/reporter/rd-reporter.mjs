@@ -11,8 +11,11 @@
 //     "routeLog": "~/.local/state/rdocker/route.log", // optional (agent hosts): the rrun client's route.log
 //     "notify": true,                      // optional: show fleet alerts on this machine (agent Macs)
 //     "reach": true,                       // optional (agent hosts): probe each pool worker's sshd (default on)
-//     "shareControl": true }               // optional (lent Macs, OWNER's reporter only): let dashboard admins
+//     "shareControl": true,                // optional (lent Macs, OWNER's reporter only): let dashboard admins
 //                                          //   change this Mac's share switch (see share control below)
+//     "controlOnly": true }                // optional, needs shareControl: a control-only helper for a Mac whose
+//                                          //   stats reporter runs as another user (ethanair: rd). Sends no stats;
+//                                          //   key = the separate MACHINE_CTL_KEY_<NAME> secret (see below)
 // Protocol (dashboard/shared/protocol.ts is the typed source of truth):
 //   -> {t:'hello', v:1, name, ts, nonce, sig[, notify:true]}  sig = hex HMAC-SHA256(key, "rd-ingest-v1|name|ts|nonce")
 //   <- {t:'mode', ms}                           60000 when nobody watches, 5000 while a browser is open
@@ -21,6 +24,9 @@
 //   -> "ping"  <- "pong"                       after every frame; the DO's auto-response, feeds the watchdog
 //   <- {t:'share', nonce, exp, cmd}             control:true only; -> {t:'share-ack', nonce, ok, code, out}
 //   (hello carries control:true when shareControl is on AND this user may run the switch, see below)
+//   controlOnly: -> {t:'hello', ..., ctl:true[, control:true]}  sig over "rd-ctl-v1|name|ts|nonce" with the
+//   MACHINE_CTL_KEY_<NAME> key; then only "ping" (every 60 s) and share acks, never frames. The dashboard
+//   keeps it beside the machine's stats socket and sends it the machine's share orders.
 // CPU is sampled every 5 s locally; each frame carries the samples since the previous one (hist).
 //
 // Linux: /proc, /sys/class/hwmon, statfs; WSL: + Windows host RAM via powershell.exe (optional).
@@ -54,7 +60,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.5.0'; // 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.6.0'; // 1.6.0: controlOnly (a share-control helper for a Mac whose stats reporter is another user); 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -899,10 +905,12 @@ export function fleetEntry(name, text) {
 }
 
 export const helloMessage = (name, ts, nonce) => `rd-ingest-v${INGEST_V}|${name}|${ts}|${nonce}`;
+/** A control-only helper's hello (a distinct prefix: never a valid stats hello). MIRROR of protocol.ts ctlHelloMessage. */
+export const ctlHelloMessage = (name, ts, nonce) => `rd-ctl-v${INGEST_V}|${name}|${ts}|${nonce}`;
 
-export function signHello(name, key, tsS = Math.floor(Date.now() / 1000), nonce = randomBytes(16).toString('hex')) {
-  const sig = createHmac('sha256', key).update(helloMessage(name, tsS, nonce)).digest('hex');
-  return { t: 'hello', v: INGEST_V, name, ts: tsS, nonce, sig };
+export function signHello(name, key, tsS = Math.floor(Date.now() / 1000), nonce = randomBytes(16).toString('hex'), ctl = false) {
+  const sig = createHmac('sha256', key).update((ctl ? ctlHelloMessage : helloMessage)(name, tsS, nonce)).digest('hex');
+  return { t: 'hello', v: INGEST_V, name, ts: tsS, nonce, sig, ...(ctl ? { ctl: true } : {}) };
 }
 
 /** ms until the next wall-clock multiple of `interval` (all reporters tick together). */
@@ -943,6 +951,8 @@ export function validateConfig(c) {
   if (typeof c.key !== 'string' || c.key.length < 32) errs.push('key: at least 32 chars (npm run machine-key)');
   if (c.notify !== undefined && typeof c.notify !== 'boolean') errs.push('notify: true or false');
   if (c.shareControl !== undefined && typeof c.shareControl !== 'boolean') errs.push('shareControl: true or false');
+  if (c.controlOnly !== undefined && typeof c.controlOnly !== 'boolean') errs.push('controlOnly: true or false');
+  else if (c.controlOnly === true && c.shareControl !== true) errs.push('controlOnly needs shareControl: true');
   return errs;
 }
 
@@ -1739,8 +1749,10 @@ function log(...a) {
 
 function run(cfg) {
   if (typeof WebSocket === 'undefined') throw new Error('this node has no global WebSocket; need node 22+');
-  const col = new Collector(cfg);
-  const notify = cfg.notify === true ? createNotifier() : null;
+  // controlOnly: no collector, no frames; the "ping" keep-alive alone, at the idle pace.
+  const ctlOnly = cfg.controlOnly === true;
+  const col = ctlOnly ? null : new Collector(cfg);
+  const notify = cfg.notify === true && !ctlOnly ? createNotifier() : null;
   const share = createShareControl(cfg);
   let ws = null;
   let interval = SLOW_MS;
@@ -1749,12 +1761,14 @@ function run(cfg) {
   let backoff = 1000;
   let sending = false;
 
-  col.sample();
-  const sampleLoop = () => {
+  if (col) {
     col.sample();
+    const sampleLoop = () => {
+      col.sample();
+      setTimeout(sampleLoop, untilTick(Date.now(), SAMPLE_MS));
+    };
     setTimeout(sampleLoop, untilTick(Date.now(), SAMPLE_MS));
-  };
-  setTimeout(sampleLoop, untilTick(Date.now(), SAMPLE_MS));
+  }
 
   // Watchdog state for the current socket (see shouldReconnect).
   let lastInboundAt = 0;
@@ -1766,9 +1780,9 @@ function run(cfg) {
     sending = true;
     try {
       const withInfo = Date.now() - infoAt > 10 * 60_000;
-      let f;
+      let f = null;
       try {
-        f = await col.frame({ withInfo, fast: interval < SLOW_MS });
+        if (col) f = await col.frame({ withInfo, fast: interval < SLOW_MS });
       } catch (e) {
         log('frame failed:', e?.message ?? e);
         return;
@@ -1777,7 +1791,7 @@ function run(cfg) {
       if (sock && sock.readyState === WebSocket.OPEN) {
         buffered = [...buffered.slice(-2), sock.bufferedAmount]; // leftover from the previous frame
         try {
-          sock.send(JSON.stringify(f));
+          if (f) sock.send(JSON.stringify(f));
           // Keep-alive: the Worker auto-answers "ping" with "pong" without waking, so an idle
           // reporter still hears back once per frame and the watchdog can tell the link is alive.
           sock.send('ping');
@@ -1825,7 +1839,7 @@ function run(cfg) {
   };
 
   const connect = () => {
-    log(`connecting ${cfg.url} as ${cfg.name}`);
+    log(`connecting ${cfg.url} as ${cfg.name}${ctlOnly ? ' (control-only: share orders, no stats)' : ''}`);
     const sock = new WebSocket(cfg.url);
     ws = sock;
     lastInboundAt = lastSendOkAt = Date.now();
@@ -1836,7 +1850,7 @@ function run(cfg) {
       try {
         const control = share.enabled();
         if (cfg.shareControl === true && !control) log(`share control is on in the config but refused: ${shareControlCheck(cfg).why}`);
-        const hello = signHello(cfg.name, cfg.key);
+        const hello = signHello(cfg.name, cfg.key, undefined, undefined, ctlOnly);
         conn = hello.nonce;
         sock.send(JSON.stringify({ ...hello, ...(notify ? { notify: true } : {}), ...(control ? { control: true } : {}) }));
       } catch (e) {
@@ -1872,11 +1886,12 @@ function run(cfg) {
         const first = !helloOk;
         helloOk = true;
         backoff = 1000;
-        const faster = m.ms < interval;
-        interval = m.ms;
+        const ms = ctlOnly ? SLOW_MS : m.ms; // a helper has nothing to show a viewer
+        const faster = ms < interval;
+        interval = ms;
         if (first) {
           infoAt = 0;
-          log(`connected; frame every ${interval / 1000}s`);
+          log(ctlOnly ? 'connected (control-only)' : `connected; frame every ${interval / 1000}s`);
         } else log(`mode -> every ${interval / 1000}s`);
         if (first || faster) void send(); // a new viewer sees fresh data at once
         schedule();
