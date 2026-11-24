@@ -89,7 +89,7 @@ fi
 # --- the record of the box before provision ----------------------------------------------------------------
 HAVE_PRIOR=0
 PRIOR_USER_EXISTED="" PRIOR_LINGER=0 PRIOR_PKGS_MISSING="" PRIOR_PKGS_PRESENT="" PRIOR_ENABLED="" PRIOR_MASKED=""
-PRIOR_USER_NAME="" PRIOR_UFW_RULES="" PRIOR_UFW_DEFAULTS="" PRIOR_FILES="" PRIOR_DEFAULT_TARGET="" PRIOR_UFW_ACTIVE="" PRIOR_DOCKER_GROUP="" PRIOR_CHRONY_MAKESTEP="" PRIOR_DOCKER_DATA=1
+PRIOR_USER_NAME="" PRIOR_UFW_RULES="" PRIOR_UFW_DEFAULTS="" PRIOR_DOCKER_USER="" PRIOR_FILES="" PRIOR_DEFAULT_TARGET="" PRIOR_UFW_ACTIVE="" PRIOR_DOCKER_GROUP="" PRIOR_CHRONY_MAKESTEP="" PRIOR_DOCKER_DATA=1
 if [ -f "$PRIOR" ]; then
   # root-written, 0600: refuse one anybody else could have edited (it is sourced as root)
   [ "$(stat -c '%u %a' "$PRIOR")" = "0 600" ] || die "$PRIOR is not root-owned 0600: refusing to read it"
@@ -140,9 +140,10 @@ if [ -n "$RD_UID" ] && [ "$USER_OURS" = 1 ]; then
 fi
 
 # --- 2. pool containers (labelled ours) --------------------------------------------------------------------
-# Ours = positive proof only: one of the pool's labels, an rrun run's compose project, or (a volume) mounted by one
-# of our containers AND created no earlier than it (`-v name:/path` makes one without a label). Everything else
-# is the box's: it is counted, never removed, and keeps the docker disk. A failed listing = nothing is known.
+# Ours = positive proof only: one of the pool's labels or an rrun run's compose project. Everything else (an
+# unlabelled volume too, whoever made it) is the box's: counted, never removed, and it keeps the docker disk.
+# A failed listing = nothing is known = nothing removed. Only the local daemon is asked (never DOCKER_HOST/context).
+export DOCKER_HOST=unix:///var/run/docker.sock; unset DOCKER_CONTEXT
 say "step containers"
 DOCKER_OK=0 INVENTORY_OK=0 FOREIGN=0 N_IMAGES=0
 if command -v docker >/dev/null 2>&1; then
@@ -160,9 +161,10 @@ classify() {   # stdin "<id>|<labels>|<compose project>" -> "OURS <id>" / "OTHER
          if ($3 ~ /^rr[0-9a-f]{12}-default$/) o = 1
          print (o ? "OURS " : "OTHER ") $1 }'
 }
-inventory() {   # -> globals C_ROWS V_ROWS N_ROWS (classified), N_IMAGES
+inventory() {   # -> globals C_ROWS V_ROWS N_ROWS (classified), N_IMAGES, DOCKER_ROOT
   local c v n i
   INVENTORY_OK=1
+  inv DOCKER_ROOT info -f '{{.DockerRootDir}}'
   inv c ps -a --no-trunc --format '{{.ID}}|{{.Labels}}|{{.Label "com.docker.compose.project"}}'
   inv v volume ls --format '{{.Name}}|{{.Labels}}|{{.Label "com.docker.compose.project"}}'
   inv n network ls --no-trunc --filter type=custom --format '{{.ID}}|{{.Labels}}|{{.Label "com.docker.compose.project"}}'
@@ -170,25 +172,10 @@ inventory() {   # -> globals C_ROWS V_ROWS N_ROWS (classified), N_IMAGES
   C_ROWS=$(classify <<< "$c"); V_ROWS=$(classify <<< "$v"); N_ROWS=$(classify <<< "$n")
   N_IMAGES=$(sort -u <<< "$i" | grep -c . || true)
 }
-epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
 if [ "$DOCKER_OK" = 1 ]; then
   inventory
   CTS=$(awk '$1 == "OURS" {print $2}' <<< "$C_ROWS")
   n=$(grep -c . <<< "$CTS" || true)
-  # unlabelled volumes our containers made: created no earlier than the (earliest) container of ours mounting it
-  ATTR_VOLS=""
-  if [ "$n" -gt 0 ]; then
-    # shellcheck disable=SC2086
-    inv CINFO inspect -f '{{.Created}}|{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' $CTS
-    while IFS='|' read -r created vols; do
-      [ -n "$created" ] || continue
-      for vol in $vols; do
-        grep -qx "OTHER $vol" <<< "$V_ROWS" || continue
-        vc=$(docker volume inspect -f '{{.CreatedAt}}' "$vol" 2>/dev/null) || { INVENTORY_OK=0; continue; }
-        [ "$(epoch "$vc")" -ge $(( $(epoch "$created") - 1 )) ] && ATTR_VOLS="$ATTR_VOLS $vol"
-      done
-    done <<< "$CINFO"
-  fi
   if [ "$INVENTORY_OK" != 1 ]; then
     RERUN=1; kept "docker objects: listing them failed, so nothing in docker was removed (re-run once docker answers)"
   else
@@ -197,9 +184,7 @@ if [ "$DOCKER_OK" = 1 ]; then
       # shellcheck disable=SC2086
       act docker rm -f -v $CTS >/dev/null && gone "$n pool container(s) (labelled rdocker.*)"
     fi
-    VOLS=$( { awk '$1 == "OURS" {print $2}' <<< "$V_ROWS"; for vol in $ATTR_VOLS; do
-              # still used by a container that is not ours: not ours to remove
-              [ "$DRY" = 1 ] || [ -z "$(docker ps -aq --filter "volume=$vol" 2>/dev/null)" ] && echo "$vol"; done; } | grep . | sort -u)
+    VOLS=$(awk '$1 == "OURS" {print $2}' <<< "$V_ROWS")
     NETS=$(awk '$1 == "OURS" {print $2}' <<< "$N_ROWS")
     for kind in volume network; do
       [ "$kind" = volume ] && OBJS=$VOLS || OBJS=$NETS
@@ -209,10 +194,10 @@ if [ "$DOCKER_OK" = 1 ]; then
     done
     # what stays: every container / volume / custom network that is not ours (after the removals above)
     oc=$(grep -c '^OTHER' <<< "$C_ROWS" || true); on=$(grep -c '^OTHER' <<< "$N_ROWS" || true)
-    ov=$(awk '$1 == "OTHER" {print $2}' <<< "$V_ROWS" | grep -vxF -f <(printf '%s\n' $VOLS _none_) | grep -c . || true)
+    ov=$(grep -c '^OTHER' <<< "$V_ROWS" || true)
     FOREIGN=$((oc + ov + on))
     [ "$oc" -gt 0 ] && kept "$oc container(s) that are not ours - never touched"
-    [ "$ov" -gt 0 ] && kept "$ov docker volume(s) that are not ours - never touched"
+    [ "$ov" -gt 0 ] && kept "$ov docker volume(s) without a pool label - never touched: $(awk '$1 == "OTHER" {print $2}' <<< "$V_ROWS" | head -5 | xargs)"
     [ "$on" -gt 0 ] && kept "$on docker network(s) that are not ours - never touched"
   fi
 fi
@@ -233,23 +218,28 @@ detach_loops() {   # the loop devices of image $1; one a process still maps (a s
   losetup -j "$1" 2>/dev/null | grep -q . && kept "$1: deleted, but a running service still maps it - its disk space returns at the next reboot"
   return 0
 }
+img_still_mounted() {   # is any loop device of image $1 mounted anywhere (this mount namespace)?
+  local d
+  for d in $(losetup -j "$1" -nO NAME 2>/dev/null); do findmnt -rn -S "$d" >/dev/null && return 0; done
+  return 1
+}
 # is MOUNTPOINT mounted from IMAGE's loop device?
 mounted_from() { local dev; dev=$(losetup -j "$2" -nO NAME 2>/dev/null | head -1)
   [ -n "$dev" ] && mountpoint -q "$1" 2>/dev/null && [ "$(findmnt -no SOURCE "$1" | head -1)" = "$dev" ]; }
 if [ -f "$DOCKER_IMG" ]; then
   if ! mounted_from /var/lib/docker "$DOCKER_IMG"; then
     RERUN=1; kept "docker data image $DOCKER_IMG: not mounted, so its contents cannot be checked for data that is not ours (mount it and re-run, or delete it by hand)"
-  elif [ "$DOCKER_OK" != 1 ] || [ "$INVENTORY_OK" != 1 ]; then
+  elif [ "$DOCKER_OK" != 1 ] || [ "$INVENTORY_OK" != 1 ] || [ "$DOCKER_ROOT" != /var/lib/docker ]; then
     RERUN=1; kept "docker data image $DOCKER_IMG: docker did not answer, so it cannot be checked for data that is not ours"
   elif [ "$FOREIGN" -gt 0 ]; then
     RERUN=1; kept "docker data image $DOCKER_IMG at /var/lib/docker (+ its /etc/fstab line): it holds containers/volumes/networks that are not ours; move them, then re-run"
   else
-    act systemctl stop docker.socket docker.service >/dev/null 2>&1
     # dockerd bind-mounts its root onto itself, on top of our image: take off every layer, or one umount
-    # leaves the image mounted underneath (and docker would come back up on a deleted image)
-    unmount_all /var/lib/docker
-    if [ "$DRY" != 1 ] && mounted_from /var/lib/docker "$DOCKER_IMG"; then
-      FAILED+=("could not unmount the docker data image from /var/lib/docker: image kept")
+    # leaves the image mounted underneath (and docker would come back up on a deleted image). The image is
+    # deleted only once docker stopped and no mount anywhere in this namespace comes from its loop device.
+    if ! act systemctl stop docker.socket docker.service >/dev/null 2>&1 || ! unmount_all /var/lib/docker \
+       || { [ "$DRY" != 1 ] && img_still_mounted "$DOCKER_IMG"; }; then
+      FAILED+=("could not stop docker / unmount the docker data image everywhere: image kept")
     else
       detach_loops "$DOCKER_IMG"
       rm_file "$DOCKER_IMG" "docker data image ($N_IMAGES image(s), build cache; the box's pre-provision docker data is restored below)" && DISK_REMOVED=1
@@ -319,11 +309,17 @@ fi
 
 # --- 6. config files -----------------------------------------------------------------------------------------------
 say "step config"
+# The way back in (sshd listener/port, ufw, our client keys) goes only in a run that finishes everything else:
+# an incomplete run (RERUN) must leave the re-run able to log in exactly as this one did.
 SSHD_CHANGED=0
-for f in /etc/ssh/sshd_config.d/10-rdocker.conf /etc/ssh/sshd_config.d/05-rdocker-hardening.conf \
-         /etc/ssh/sshd_config.d/05-rdocker-hardening.conf.rdbak; do
-  [ -e "$f" ] && SSHD_CHANGED=1; rm_file "$f" "sshd config"
-done
+if [ "$RERUN" = 1 ]; then
+  kept "sshd config, ufw rules and our client keys: kept until a re-run finishes the rest (it must still get in)"
+else
+  for f in /etc/ssh/sshd_config.d/10-rdocker.conf /etc/ssh/sshd_config.d/05-rdocker-hardening.conf \
+           /etc/ssh/sshd_config.d/05-rdocker-hardening.conf.rdbak; do
+    [ -e "$f" ] && SSHD_CHANGED=1; rm_file "$f" "sshd config"
+  done
+fi
 rm_file /etc/sysctl.d/90-rdocker.conf "sysctl (nonlocal bind, swappiness)"
 rm_file /etc/sysctl.d/91-rdocker-panic.conf "sysctl (reboot on panic)"
 J=/etc/systemd/journald.conf.d/50-rdocker.conf; JCH=0; [ -e "$J" ] && JCH=1; rm_file "$J" "journald 50M cap"
@@ -386,27 +382,28 @@ drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6
   local r
   local rules=("allow in on tailscale0 to any port $PORT proto tcp" "allow 41641/udp")
   [ "$PORT" = 22 ] || rules+=("allow in on tailscale0 to any port 22 proto tcp")
+  grep -q '^PRIOR_UFW_RULES=' "$PRIOR" 2>/dev/null || { kept "ufw rules (the record has no snapshot of the box's own rules)"; return 0; }
   for r in "${rules[@]}"; do
     grep -qxF "ufw $r" <<< "$PRIOR_UFW_RULES" && continue      # the box had this rule itself
     # shellcheck disable=SC2086  # word-split on purpose: a ufw rule
     ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
   done
 }
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  if [ "$HAVE_PRIOR" = 1 ]; then
-    [ "$PRIOR_UFW_ACTIVE" = 0 ] && act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
-    drop_ufw_rules    # either way (when ufw was already on, the box had its own way in)
-    if [ "$PRIOR_UFW_ACTIVE" = 1 ] && [ -n "$PRIOR_UFW_DEFAULTS" ]; then   # rd-harden set deny in / allow out
-      read -r din dout <<< "$PRIOR_UFW_DEFAULTS"
-      cur=$(ufw status verbose 2>/dev/null | sed -n 's/^Default: \([a-z]*\) (incoming), \([a-z]*\) (outgoing).*/\1 \2/p')
-      [ "$cur" = "$din $dout" ] || { act ufw default "$din" incoming >/dev/null && act ufw default "$dout" outgoing >/dev/null \
-        && gone "ufw default policies (back to $din incoming, $dout outgoing)"; }
-    fi
-  else
-    kept "ufw on with rdocker's rules (no record whether ufw was on before; undo: sudo ufw --force disable)"
+ufw_defaults() { (. /etc/default/ufw 2>/dev/null && for v in "${DEFAULT_INPUT_POLICY:-}" "${DEFAULT_OUTPUT_POLICY:-}"; do
+  case "$v" in DROP) echo deny ;; ACCEPT) echo allow ;; REJECT) echo reject ;; esac; done | xargs); }
+if [ "$RERUN" = 1 ] || ! command -v ufw >/dev/null 2>&1; then :
+elif [ "$HAVE_PRIOR" = 1 ]; then
+  if [ "$PRIOR_UFW_ACTIVE" = 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
   fi
-elif command -v ufw >/dev/null 2>&1 && [ "$HAVE_PRIOR" = 1 ]; then
-  drop_ufw_rules
+  drop_ufw_rules    # either way (when ufw was already on, the box had its own way in)
+  if [ -n "$PRIOR_UFW_DEFAULTS" ] && [ "$(ufw_defaults)" != "$PRIOR_UFW_DEFAULTS" ]; then   # rd-harden: deny in / allow out
+    read -r din dout <<< "$PRIOR_UFW_DEFAULTS"
+    act ufw default "$din" incoming >/dev/null && act ufw default "$dout" outgoing >/dev/null \
+      && gone "ufw default policies (back to $din incoming, $dout outgoing)"
+  fi
+elif ufw status 2>/dev/null | grep -q '^Status: active'; then
+  kept "ufw on with rdocker's rules (no record whether ufw was on before; undo: sudo ufw --force disable)"
 fi
 # rd-docker-user's exact rule set (rd-docker-user.sh), removed only when all of it is there - never a flush
 DU_RULES=("-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" "-i lo -j RETURN" "-i tailscale0 -j RETURN"
@@ -419,6 +416,14 @@ if command -v iptables >/dev/null 2>&1 && quiet iptables -S DOCKER-USER; then
     # shellcheck disable=SC2086
     for r in "${DU_RULES[@]}"; do act iptables -D DOCKER-USER $r; done
     gone "DOCKER-USER firewall rules of rd-docker-user"
+  fi
+  # the box's own rules, which rd-docker-user's rebuild had dropped (live until the box's own tooling rewrites them)
+  if [ "$HAVE_PRIOR" = 1 ] && [ -n "$PRIOR_DOCKER_USER" ]; then
+    while read -r _a _chain rule; do
+      [ "$_a" = -A ] && [ "$_chain" = DOCKER-USER ] && [ -n "$rule" ] || continue
+      # shellcheck disable=SC2086  # word-split on purpose: an iptables rule
+      quiet iptables -C DOCKER-USER $rule || { act iptables -A DOCKER-USER $rule && gone "DOCKER-USER rule of the box put back: $rule"; }
+    done <<< "$PRIOR_DOCKER_USER"
   fi
 fi
 if [ "$HAVE_PRIOR" = 1 ]; then
@@ -529,15 +534,15 @@ drop_keys() {   # drop_keys USER BLOB...: remove authorized_keys lines whose key
   fi
   gone "$n rdocker client key(s) from $u's authorized_keys"
 }
-if [ -f "$STATE_DIR/added-keys" ]; then
+if [ "$RERUN" = 1 ]; then :      # kept for the re-run (see step 6)
+elif [ -f "$STATE_DIR/added-keys" ]; then
   for u in $(awk '{print $1}' "$STATE_DIR/added-keys" | sort -u); do
     [ "$u" = "$RD_USER" ] && [ "$USER_OURS" = 1 ] && continue
     # shellcheck disable=SC2046
     drop_keys "$u" $(awk -v u="$u" '$1 == u {print $2}' "$STATE_DIR/added-keys")
   done
-fi
-# --keys only where no ledger exists: the ledger names exactly the keys provision added (never one already there)
-if [ ! -f "$STATE_DIR/added-keys" ] && [ -n "$KEYS" ] && [ "$ADMIN_USER" != "$RD_USER" ]; then
+# --keys only on a box with no record at all: the ledger names exactly the keys provision added
+elif [ "$HAVE_PRIOR" != 1 ] && [ -n "$KEYS" ] && [ "$ADMIN_USER" != "$RD_USER" ]; then
   # shellcheck disable=SC2046
   drop_keys "$ADMIN_USER" $(awk '/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ {print $2}' "$KEYS")
 fi
@@ -546,7 +551,9 @@ fi
 say "step packages"
 DOCKER_PURGED=0
 if [ "$PURGE" = 1 ]; then
-  if [ "$HAVE_PRIOR" != 1 ]; then
+  if [ "$HAVE_PRIOR" = 1 ] && [ ! -s "$STATE_DIR/prior/packages" ]; then
+    kept "packages: the record has no package list, none purged"
+  elif [ "$HAVE_PRIOR" != 1 ]; then
     kept "packages: no record of which ones the box had before provision, none purged (by hand: sudo apt-get purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)"
   else
     P=""
@@ -561,18 +568,26 @@ if [ "$PURGE" = 1 ]; then
     has docker-ce "$P" && pkg_installed docker-ce-rootless-extras && [ -s "$STATE_DIR/prior/packages" ] \
       && ! grep -qx docker-ce-rootless-extras "$STATE_DIR/prior/packages" && P="$P docker-ce-rootless-extras"
     autoremovable() { apt-get -s autoremove 2>/dev/null | awk '/^Remv / {print $2}' | sed 's/:.*//' | sort -u; }
+    safe_purge() {   # safe_purge WHAT PKG...: purge only when apt's own plan removes nothing the box had before
+      local what=$1 plan bad; shift
+      [ "$DRY" = 1 ] && { echo "+ apt-get purge $* (after checking apt's plan removes nothing the box had)" >&3; gone "$what: $*"; return 0; }
+      plan=$(apt-get -s purge "$@" 2>/dev/null) || { FAILED+=("apt-get -s purge $* failed: nothing purged"); return 1; }
+      bad=$(awk '/^(Purg|Remv) / {print $2}' <<< "$plan" | sed 's/:.*//' | sort -u | comm -12 - "$STATE_DIR/prior/packages" | xargs)
+      [ -z "$bad" ] || { FAILED+=("apt would also remove packages the box had before ($bad): nothing purged"); return 1; }
+      env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "$@" >/dev/null || { FAILED+=("apt-get purge $*"); return 1; }
+      gone "$what: $*"
+    }
     ORPHANS_BEFORE=$(autoremovable)   # orphans the box already had: never ours to take
     if [ -n "${P# }" ]; then
       # shellcheck disable=SC2086
-      act env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq $P >/dev/null && gone "packages:$P"
-      has docker-ce "$P" && ! pkg_installed docker-ce && DOCKER_PURGED=1
+      safe_purge packages $P
+      has docker-ce "$P" && { [ "$DRY" = 1 ] || ! pkg_installed docker-ce; } && DOCKER_PURGED=1
       # the dependencies our purge left orphaned, minus orphans from before and anything the box had before
       if [ -s "$STATE_DIR/prior/packages" ] && [ "$DRY" != 1 ]; then
         DEPS=$(autoremovable | comm -23 - <(printf '%s\n' "$ORPHANS_BEFORE" | sort -u) \
                | comm -23 - "$STATE_DIR/prior/packages" | xargs)
         # shellcheck disable=SC2086
-        [ -n "$DEPS" ] && act env DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq $DEPS >/dev/null \
-          && gone "$(echo "$DEPS" | wc -w | tr -d ' ') dependency package(s) apt installed for them"
+        [ -n "$DEPS" ] && safe_purge "dependency packages apt installed for them" $DEPS
       elif [ "$DRY" = 1 ]; then echo "+ apt-get purge the dependencies apt installed for them (not ones the box had before)"; fi
       # a purge also deletes config the box had (unattended-upgrades' postrm removes 20auto-upgrades): put it back
       restore_shared /etc/apt/apt.conf.d/20auto-upgrades "automatic apt updates"
@@ -582,7 +597,9 @@ if [ "$PURGE" = 1 ]; then
       done
     fi
     # docker that provision installed and that is gone now (this run's purge, or an earlier one): its leftovers go
-    if [ "$DOCKER_PURGED" = 1 ] || { has docker-ce "$PRIOR_PKGS_MISSING" && ! pkg_installed docker-ce; }; then
+    [ "$DOCKER_PURGED" = 1 ] && [ "$DRY" != 1 ] && : > "$STATE_DIR/docker-purged"   # a re-run may finish the cleanup
+    if { [ "$DOCKER_PURGED" = 1 ] || [ -f "$STATE_DIR/docker-purged" ]; } && [ ! -f "$DOCKER_IMG" ] \
+       && ! mounted_from /var/lib/docker "$DOCKER_IMG"; then
       for f in /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do prior_file "$f" || rm_file "$f" "docker apt repo"; done
       # runtime data: docker's only when the box had none before; containerd's only when we installed containerd
       if [ "$PRIOR_DOCKER_DATA" = 0 ] && [ ! -d /var/lib/docker.pre-rdocker ] && [ -d /var/lib/docker ]; then

@@ -116,7 +116,11 @@ record_prior_state() {
     printf 'PRIOR_UFW_ACTIVE=%s\n' "$(ufw status 2>/dev/null | grep -q '^Status: active' && echo 1 || echo 0)"
     # rules / default policies ufw already had: rd-harden's identical rules then are not ours to delete
     printf 'PRIOR_UFW_RULES=%q\n' "$(ufw show added 2>/dev/null | grep '^ufw ' || true)"
-    printf 'PRIOR_UFW_DEFAULTS=%q\n' "$(ufw status verbose 2>/dev/null | sed -n 's/^Default: \([a-z]*\) (incoming), \([a-z]*\) (outgoing).*/\1 \2/p')"
+    # default policies from ufw's own file (valid while ufw is off too), in `ufw default` words
+    printf 'PRIOR_UFW_DEFAULTS=%q\n' "$(. /etc/default/ufw 2>/dev/null && for v in "${DEFAULT_INPUT_POLICY:-}" "${DEFAULT_OUTPUT_POLICY:-}"; do
+      case "$v" in DROP) echo deny ;; ACCEPT) echo allow ;; REJECT) echo reject ;; esac; done | xargs)"
+    # the box's own DOCKER-USER rules (rd-docker-user rebuilds that chain from scratch): put back by unprovision
+    printf 'PRIOR_DOCKER_USER=%q\n' "$(iptables -S DOCKER-USER 2>/dev/null | grep '^-A DOCKER-USER ' || true)"
     printf 'PRIOR_DOCKER_GROUP=%q\n' "$(getent group docker >/dev/null && echo "yes:$(getent group docker | cut -d: -f4)" || echo no)"
     printf 'PRIOR_CHRONY_MAKESTEP=%s\n' "$(grep -qs '^makestep 0.05 -1' /etc/chrony/chrony.conf && echo 1 || echo 0)"
     printf 'PRIOR_DOCKER_DATA=%s\n' "$([ -n "$(ls -A /var/lib/docker 2>/dev/null)" ] && echo 1 || echo 0)"

@@ -12,8 +12,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   shared files it edits, the installed package list) and the client keys it adds (`/etc/rdocker/added-keys`).
 - New `rdocker remove-server <name> --admin-user U`: unprovision over ssh, drop the fleet entry, commit/push,
   print `wrangler secret delete MACHINE_KEY_<NAME>`.
-- Verified by a real round trip in a privileged systemd container on the home host (provision, pool + friend
-  containers, unprovision default / `--purge-packages` / re-run, legacy box without the record).
+- Exit 3 = incomplete (something of ours had to stay, e.g. a docker disk that also holds the box's own containers);
+  remove-server then leaves fleet.json alone. sshd is only reloaded, never restarted.
+- Verified by real round trips in a privileged systemd Ubuntu 24.04 container on the home host (provision, pool +
+  friend containers and a borrowed friend volume, unprovision default / `--purge-packages` / re-run, a box without
+  the record). They found and fixed: dockerd's self-bind on top of our image mount, `unattended-upgrades`' purge
+  deleting the box's own `20auto-upgrades`, a docker restart stopping the friend's container.
 
 ## 2026-11-17 - dotfiles-sync revert guard (the 5e15bea6 incident)
 

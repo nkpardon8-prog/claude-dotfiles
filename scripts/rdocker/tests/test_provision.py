@@ -483,6 +483,12 @@ class Unprovision(unittest.TestCase):
         self.assertNotRegex(u, r"rm -rf /(\s|$)")
         self.assertIn("never purged", u)                                    # base tools stay
         self.assertIn('"0 600"', u)                                         # the record must be root-only to be sourced
+        self.assertIn("export DOCKER_HOST=unix:///var/run/docker.sock", u)   # only the local daemon is ever asked
+        self.assertNotIn("CreatedAt", u)                                    # ownership = labels, never timestamps
+        self.assertNotRegex(u, r"\bact (env DEBIAN_FRONTEND=noninteractive )?apt-get purge")   # only via safe_purge
+        self.assertNotRegex(u, r"iptables -F")                              # never a chain flush
+        self.assertRegex(u, r"systemctl reload ssh")
+        self.assertNotRegex(u, r"systemctl restart ssh")
 
     def test_provision_records_prior_state_once_before_any_change(self):
         s = read(PROV)

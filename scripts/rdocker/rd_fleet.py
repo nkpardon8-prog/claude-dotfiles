@@ -666,9 +666,9 @@ def remove_server(cfg, ns):
             rd_common.say(str(e))
             return 1
         now = get([entry(x) for x in cur["machines"]], ns.name)
-        if now and (now["ip"], now["user"]) != (m["ip"], m["user"]):
-            rd_common.say("fleet.json's %s changed meanwhile (ip/user): not removing it; check and re-run "
-                          "with --fleet-only" % ns.name)
+        if now and now != m:     # edited (or made home) by another client meanwhile: not ours to drop blindly
+            rd_common.say("fleet.json's %s changed while it was being unprovisioned: not removing it; check it, "
+                          "then re-run with --fleet-only" % ns.name)
             return 1
         save({**cur, "machines": [x for x in cur["machines"] if x["name"] != ns.name]})
         ssh_blocks(load(), cfg)

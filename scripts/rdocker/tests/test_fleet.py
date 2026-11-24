@@ -462,6 +462,16 @@ class RemoveServer(unittest.TestCase):
             self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
         self.assertEqual(rd_fleet.get(rd_fleet.load(), "box")["ip"], "100.9.9.9")
 
+    def test_entry_made_home_meanwhile_is_not_removed(self):
+        def interactive(cmd):
+            doc = json.load(open(self.fleet))
+            rd_fleet.save(rd_fleet.upsert(doc, {"name": "box", "roles": ["home", "worker"]}), self.fleet)
+            return 0
+        with mock.patch.object(rd_fleet, "stage_dir", return_value="/s"), \
+                mock.patch.object(rd_fleet, "interactive", interactive):
+            self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box")), 1)
+        self.assertEqual(rd_fleet.home(rd_fleet.load())["name"], "box")
+
     def test_fleet_only_skips_the_box(self):
         self.assertEqual(rd_fleet.remove_server(self.cfg, rns(name="box", fleet_only=True, admin_user=None)), 0)
         self.assertEqual(self.inter, [])
