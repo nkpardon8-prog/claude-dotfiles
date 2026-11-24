@@ -36,6 +36,13 @@ for n in "$(command -v node 2>/dev/null || true)" /opt/homebrew/bin/node /usr/lo
 done
 [ -n "$NODE" ] || { echo "no node 22+ found (PATH, /opt/homebrew/bin, /usr/local/bin)" >&2; exit 1; }
 
+# Would CONFIG's share control accept orders here? Only asks a reporter that knows --share-check (1.6.0+):
+# an older one would ignore the flag and start a second reporter.
+share_check() {
+  grep -q -- "'--share-check'" "$MJS" 2>/dev/null || { echo "unknown (reporter before 1.6.0)"; return 0; }
+  "$NODE" "$MJS" --config "$1" --share-check || true
+}
+
 install_mjs() {
   [ -f "$STAGE/rd-reporter.mjs" ] || { echo "missing $STAGE/rd-reporter.mjs" >&2; exit 1; }
   "$NODE" "$STAGE/rd-reporter.mjs" --version >/dev/null
@@ -65,7 +72,7 @@ owner)
     fs.writeFileSync(f + ".tmp", JSON.stringify(c, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(f + ".tmp", f);
     console.log("reporter.json: shareControl true (name " + c.name + ")");' "$CFG"
   chmod 600 "$CFG"
-  echo "share-check: $("$NODE" "$MJS" --config "$CFG" --share-check || true)"
+  echo "share-check: $(share_check "$CFG")"
   L=$(owner_label) || { echo "no LaunchAgent runs $MJS; load units/com.rdocker.reporter.plist" >&2; exit 1; }
   launchctl kickstart -k "gui/$UID_/$L" && echo "restarted gui/$UID_/$L"
   ;;
@@ -107,7 +114,7 @@ helper-prepare)
 </plist>
 PLIST
   chmod 644 "$CTL_PLIST.tmp" && mv "$CTL_PLIST.tmp" "$CTL_PLIST"
-  echo "share-check: $("$NODE" "$MJS" --config "$CTL_CFG" --share-check || true)"
+  echo "share-check: $(share_check "$CTL_CFG")"
   echo "prepared $CTL_PLIST (not started)"
   ;;
 helper-key)
@@ -120,7 +127,7 @@ helper-start)
   ;;
 status)
   [ -f "$MJS" ] && echo "reporter $("$NODE" "$MJS" --version) at $MJS"
-  for f in "$CFG" "$CTL_CFG"; do [ -f "$f" ] && echo "$(basename "$f"): mode $(stat -f %Lp "$f"), share-check $("$NODE" "$MJS" --config "$f" --share-check || true)"; done
+  for f in "$CFG" "$CTL_CFG"; do [ -f "$f" ] && echo "$(basename "$f"): mode $(stat -f %Lp "$f"), share-check $(share_check "$f")"; done
   launchctl print "gui/$UID_" 2>/dev/null | grep -E 'com\.rdocker\.reporter' || echo "no com.rdocker.reporter* in gui/$UID_"
   for l in rd-reporter rd-reporter-ctl; do [ -f "$HOME/Library/Logs/$l.log" ] && { echo "--- $l.log"; tail -n 6 "$HOME/Library/Logs/$l.log"; }; done
   ;;
