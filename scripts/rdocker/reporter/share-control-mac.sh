@@ -42,7 +42,7 @@ install_mjs() {
   mkdir -p "$DIR"
   [ -f "$MJS" ] && cp -p "$MJS" "$MJS.bak"
   cp "$STAGE/rd-reporter.mjs" "$MJS.new" && chmod 644 "$MJS.new" && mv "$MJS.new" "$MJS"
-  echo "reporter $("$NODE" "$MJS" --version) at $MJS${MJS:+ (previous kept as rd-reporter.mjs.bak)}"
+  echo "reporter $("$NODE" "$MJS" --version) at $MJS$([ -f "$MJS.bak" ] && echo " (previous kept as rd-reporter.mjs.bak)")"
 }
 
 # The label of the LaunchAgent that runs $MJS without --config (the owner's stats reporter).
