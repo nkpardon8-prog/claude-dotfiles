@@ -342,7 +342,9 @@ fi
 say "step firewall"
 drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6 copy of each
   local r
-  for r in "allow in on tailscale0 to any port $PORT proto tcp" "allow in on tailscale0 to any port 22 proto tcp" "allow 41641/udp"; do
+  local rules=("allow in on tailscale0 to any port $PORT proto tcp" "allow 41641/udp")
+  [ "$PORT" = 22 ] || rules+=("allow in on tailscale0 to any port 22 proto tcp")
+  for r in "${rules[@]}"; do
     # shellcheck disable=SC2086  # word-split on purpose: a ufw rule
     ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
   done
@@ -409,7 +411,7 @@ say "step user"
 if [ -n "$RD_UID" ]; then
   if [ "$USER_OURS" = 1 ]; then
     case "$RD_HOME" in /|/root|/home|/usr*|/etc*|/var|/bin*|/sbin*|"") die "refusing: $RD_USER's home is $RD_HOME" ;; esac
-    if [ -n "$RR" ] && mountpoint -q "$RR" 2>/dev/null; then
+    if [ "$DRY" != 1 ] && [ -n "$RR" ] && mountpoint -q "$RR" 2>/dev/null; then
       RERUN=1; kept "user $RD_USER: $RR is still a mount point (unmount it, then re-run)"
     else
       act userdel -r "$RD_USER" && gone "user $RD_USER and its home $RD_HOME (~/rr, mise node/pnpm, reporter, configs)"
