@@ -333,11 +333,14 @@ def main() -> int:
     ckpt_before: list[int] = []
     ckpt_after: list[int] = []
     high = {"n": 0, "human": 0, "injected": 0, "midturn": 0}
+    # A "climb" is one passage of a main window from under UNATTENDED_CTX to at or over it.
+    climbs = {"n": 0, "with_boundary": 0}
 
     for path, kind, finished in files:
         side = "main" if kind == "main" else "sub"
         run_cost, peak, run_calls = 0.0, 0, 0
         run_ctx_sum, prev_ctx = 0, None
+        climb_open = climb_hit = False
         for c in read_calls(path):
             if c["id"] in seen or c["ts"] is None or c["ts"] < cutoff:
                 continue
