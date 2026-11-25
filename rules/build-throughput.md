@@ -47,3 +47,7 @@ own context on it, and run every review and verify pass on Codex Sol (medium; hi
 ## 7. Spend fewer tokens on talk
 Peer FYIs need no reply unless they ask a question; log them. Owner updates are short and come at
 milestones. While waiting on a job, schedule long wakeups (25 minutes or more), not short polls.
+Every step re-reads the whole conversation, so steps spent checking are not free:
+- Start a long job with ONE background run and wait for its completion notice. No sleep-and-check
+  loops on a log file (measured 2026-11-24: about 6% of all usage went to them).
+- Batch small checks into one command instead of one step each.
