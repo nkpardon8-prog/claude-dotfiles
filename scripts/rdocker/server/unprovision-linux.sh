@@ -231,6 +231,10 @@ detach_loops() {   # the loop devices of image $1; one a process still maps (a s
   losetup -j "$1" 2>/dev/null | grep -q . && kept "$1: deleted, but a running service still maps it - its disk space returns at the next reboot"
   return 0
 }
+mounts_at_or_below() {   # is anything mounted at or below dir $1? Unknown (unreadable mount table) counts as yes.
+  [ -r /proc/self/mounts ] || return 0
+  awk -v d="$1" '{ t = $2; gsub(/\\040/, " ", t) } t == d || index(t, d "/") == 1 { f = 1 } END { exit !f }' /proc/self/mounts
+}
 img_still_mounted() {   # is any loop device of image $1 mounted (this mount namespace)? Unknown counts as yes.
   local d devs
   devs=$(losetup -j "$1" -nO NAME 2>/dev/null) || return 0
@@ -391,9 +395,14 @@ if command -v iptables >/dev/null 2>&1 && quiet iptables -S DOCKER-USER; then
   # declaration). Only into a chain that is empty now - anything else there is not ours to merge with.
   if [ "$HAVE_PRIOR" = 1 ] && [ -n "$PRIOR_DOCKER_USER" ]; then
     if [ "$DRY" = 1 ]; then echo "+ iptables-restore --noflush: the box's own DOCKER-USER rules" >&3
-    elif [ -z "$(iptables -S DOCKER-USER 2>/dev/null | grep '^-A ' | grep -vx -- '-A DOCKER-USER -j RETURN')" ]; then
-      printf '*filter\n%s\nCOMMIT\n' "$PRIOR_DOCKER_USER" | iptables-restore --noflush \
+    elif ! cur=$(iptables -S DOCKER-USER 2>/dev/null); then FAILED+=("reading DOCKER-USER to put the box's own rules back")
+    elif [ -z "$(grep '^-A ' <<< "$cur" | grep -vx -- '-A DOCKER-USER -j RETURN')" ]; then
+      # docker's own trailing RETURN (some versions add it) must stay last, or the box's rules would never be reached
+      ret=0; grep -qx -- '-A DOCKER-USER -j RETURN' <<< "$cur" && ret=1
+      { [ "$ret" = 0 ] || iptables -D DOCKER-USER -j RETURN; } \
+        && printf '*filter\n%s\nCOMMIT\n' "$PRIOR_DOCKER_USER" | iptables-restore --noflush \
         && gone "the box's own DOCKER-USER rules (put back)" || FAILED+=("putting back the box's own DOCKER-USER rules")
+      [ "$ret" = 0 ] || iptables -A DOCKER-USER -j RETURN || FAILED+=("re-adding docker's DOCKER-USER RETURN rule")
     else kept "the box's own DOCKER-USER rules from before provision: the chain is not empty now, so not merged (they are listed in $PRIOR)"; fi
   fi
 fi
@@ -520,9 +529,12 @@ elif [ "$PURGE" = 1 ]; then
     }
     ORPHANS_BEFORE=$(autoremovable)   # orphans the box already had: never ours to take
     if [ -n "${P# }" ]; then
+      PURGE_OK=0
       # shellcheck disable=SC2086
-      safe_purge packages $P
-      has docker-ce "$P" && { [ "$DRY" = 1 ] || ! pkg_installed docker-ce; } && DOCKER_PURGED=1
+      safe_purge packages $P && PURGE_OK=1
+      # purged = apt succeeded AND dpkg no longer knows the package (not merely "not fully installed")
+      pkg_gone() { [ "$DRY" = 1 ] || ! dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -qv 'not-installed'; }
+      has docker-ce "$P" && [ "$PURGE_OK" = 1 ] && pkg_gone docker-ce && DOCKER_PURGED=1
       # the dependencies our purge left orphaned, minus orphans from before and anything the box had before
       if [ -s "$STATE_DIR/prior/packages" ] && [ "$DRY" != 1 ]; then
         DEPS=$(autoremovable | comm -23 - <(printf '%s\n' "$ORPHANS_BEFORE" | sort -u) \
@@ -550,14 +562,14 @@ elif [ "$PURGE" = 1 ]; then
           unmount_all /var/lib/docker lazy || FAILED+=("umount /var/lib/docker (docker's own bind of its root)")
         fi
         # nothing may be mounted at or below it: a recursive delete must never cross into another filesystem
-        if [ "$DRY" != 1 ] && findmnt -rn -R /var/lib/docker >/dev/null 2>&1; then
+        if [ "$DRY" != 1 ] && mounts_at_or_below /var/lib/docker; then
           FAILED+=("/var/lib/docker still has mounts at or below it: not deleted")
         else
           act rm -rf --one-file-system /var/lib/docker && gone "/var/lib/docker (docker installed by provision, purged)"
         fi
       fi
-      if has containerd.io "$P" && ! pkg_installed containerd.io && [ -d /var/lib/containerd ]; then
-        if [ "$DRY" != 1 ] && findmnt -rn -R /var/lib/containerd >/dev/null 2>&1; then FAILED+=("/var/lib/containerd still has mounts: not deleted")
+      if has containerd.io "$P" && pkg_gone containerd.io && [ -d /var/lib/containerd ]; then
+        if [ "$DRY" != 1 ] && mounts_at_or_below /var/lib/containerd; then FAILED+=("/var/lib/containerd still has mounts: not deleted")
         else act rm -rf --one-file-system /var/lib/containerd && gone "/var/lib/containerd (containerd installed by provision, purged)"; fi
       fi
       rmdir_empty /etc/docker
@@ -599,6 +611,7 @@ else
         || kept "sshd not reloaded (not running?): the restored config applies at its next start"
     else FAILED+=("sshd -t rejects the box's own sshd config: ssh NOT reloaded (fix it, then: sudo systemctl reload ssh)"); fi
   fi
+  ACCESS_FAILED=${#FAILED[@]}     # a failure from here on keeps the rest of the way in (ufw, then keys)
   drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6 copy of each
     local r
     local rules=("allow in on tailscale0 to any port $PORT proto tcp" "allow 41641/udp")
@@ -612,7 +625,8 @@ else
   }
   ufw_defaults() { (. /etc/default/ufw 2>/dev/null && for v in "${DEFAULT_INPUT_POLICY:-}" "${DEFAULT_OUTPUT_POLICY:-}"; do
     case "$v" in DROP) echo deny ;; ACCEPT) echo allow ;; REJECT) echo reject ;; esac; done | xargs); }
-  if ! command -v ufw >/dev/null 2>&1; then :
+  if [ "${#FAILED[@]}" -gt "$ACCESS_FAILED" ]; then kept "ufw: kept because the sshd step failed"
+  elif ! command -v ufw >/dev/null 2>&1; then :
   elif [ "$HAVE_PRIOR" = 1 ]; then
     if [ "$PRIOR_UFW_ACTIVE" = 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
       act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
@@ -643,7 +657,8 @@ else
     fi
     gone "$n rdocker client key(s) from $u's authorized_keys"
   }
-  if [ -f "$STATE_DIR/added-keys" ]; then
+  if [ "${#FAILED[@]}" -gt "$ACCESS_FAILED" ]; then kept "our client keys: kept because an sshd/ufw step failed (the retry must still get in)"
+  elif [ -f "$STATE_DIR/added-keys" ]; then
     for u in $(awk '{print $1}' "$STATE_DIR/added-keys" | sort -u); do
       [ "$u" = "$RD_USER" ] && [ "$USER_OURS" = 1 ] && continue
       # shellcheck disable=SC2046

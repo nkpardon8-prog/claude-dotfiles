@@ -729,7 +729,7 @@ fleet.json) is used once it answers.
     then the pool's; else the kind across all repos (`kind-any`, never below the class default). A full
     suite and a run of named files are different kinds (2026-11-24: mini-b ran a full `npm run test:db`
     for 7.7 h): `test:db` / `npm test` with a file or name-filter argument (shardable's rule: dirs and
-    globs still mean the suite) is the `-files` kind, so a full suite is never priced from targeted runs;
+    globs still mean the suite), a `-t` filter or a `--shard` is the `-files` kind, so a full suite is never priced from targeted runs;
     the per-worker ratio still learns from both. The
     class default (`rr_job_cost_s`) / bench speed is the last resort. **Wild misses are fed back:** a run
     that took over `rr_miss_x` (5) x its `pred_s` and 30 s more (any outcome, a cap kill too; runs.log
