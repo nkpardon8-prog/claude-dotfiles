@@ -41,6 +41,17 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
+# A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id. Everything below
+# (sidecar invalidation, transfer notice, sentinel retirement, handoff resume) belongs to the main
+# window, so a worker gets one reminder line and nothing else runs.
+_SUBAGENT_LIB="$ROOT/lib/subagent-event.sh"
+[ -f "$_SUBAGENT_LIB" ] && . "$_SUBAGENT_LIB"
+if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPUT"; then
+  jq -nc --arg ctx "You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done." \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$ctx}}'
+  exit 0
+fi
+
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 

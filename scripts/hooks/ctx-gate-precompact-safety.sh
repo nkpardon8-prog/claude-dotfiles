@@ -41,6 +41,12 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
+# A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id: this gate
+# guards main windows only, so never block a worker and never touch the parent's state.
+_SUBAGENT_LIB="$ROOT/lib/subagent-event.sh"
+[ -f "$_SUBAGENT_LIB" ] && . "$_SUBAGENT_LIB"
+if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPUT"; then exit 0; fi
+
 TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty' 2>/dev/null)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 
