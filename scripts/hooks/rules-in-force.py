@@ -365,6 +365,15 @@ def main() -> int:
     if not sid:
         return 0
 
+    agent_id = data.get("agent_id")
+    if mode == "session-start" and isinstance(agent_id, str) and agent_id:
+        # A worker's compaction: SessionStart(compact) with the PARENT's session_id plus agent_id.
+        # Give the worker the same note SubagentStart gives it; the parent's baseline is not ours.
+        note = worker_note(data, cwd, sid)
+        if note:
+            print(note)
+        return 0
+
     if mode in ("session-start", "prompt"):
         state = load_state(sid)
         fresh = mode == "session-start" and str(data.get("source") or "startup") != "resume"
@@ -386,16 +395,10 @@ def main() -> int:
         return 0
 
     if mode == "subagent":
-        if str(data.get("agent_type") or "") in NO_CLAUDE_MD_AGENTS:
-            return 0
-        repo = Repo(cwd)
-        if not repo.ok:
-            return 0
-        b = repo.base_rules()
-        if b is None or repo.local_rules() == b:
-            return 0
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart",
-                                                 "additionalContext": render([in_force_note(repo, b)], "", sid)}}))
+        note = worker_note(data, cwd, sid)
+        if note:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart",
+                                                     "additionalContext": note}}))
         return 0
     return 0
 
