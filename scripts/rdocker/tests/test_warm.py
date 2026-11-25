@@ -362,7 +362,7 @@ class Mirror(unittest.TestCase):
         with open(os.path.join(d, "rr", "log", "runs.log"), "w") as f:
             f.write("new0\nnew1\n")
         with mock.patch.object(rd_warm, "MIRROR_TAIL", 4):
-            out = subprocess.run(["sh", "-c", rd_warm.mirror_script("rr", False)], env=dict(os.environ, HOME=d),
+            out = subprocess.run(["sh", "-c", rd_warm.mirror_script("rr", False)], env=rdmods.child_env(d),
                                  capture_output=True, text=True).stdout
         self.assertEqual(out, "old3\nold4\nnew0\nnew1\n")
 
