@@ -43,6 +43,10 @@
 //   p50/p90 and worktree setup, 24 h job count, slot-wait total and prediction error.
 // Agent hosts: route (24 h rruns by placement: pool, cache, local, fallback-local) from the client's
 //   route.log (~/.local/state/rdocker/route.log, or "routeLog" in the config).
+// Agent hosts (agents, about once a minute): the last 24 h's Claude Code windows as {id: first 8 chars
+//   of the session id, name: /line name or statusline caption, proj: folder name} from ~/.claude/sessions
+//   and ~/.claude/session-status; workers send runs[].owner (the same tag, from runs.log owner=), so the
+//   dashboard shows which window on which Mac ran a pool job. "agentNames": false turns it off.
 // Mac workers lent by their owner (lend): the owner's share switch /Users/Shared/rdocker/share (level),
 //   root's rd-worker-mac status file /Users/Shared/rdocker/status ("jobs=N ts=EPOCH": pool jobs running
 //   here) and the pool user's (rd) CPU from ps. All three are readable by the owner, whose reporter
@@ -65,7 +69,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.7.0'; // 1.7.0: agentTokens (agent hosts: Claude Code + Codex tokens per local day, incremental background scan); 1.6.0: controlOnly (a share-control helper for a Mac whose stats reporter is another user); 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.8.0'; // 1.8.0: agents (agent hosts: session tag -> /line window name + folder, refreshed once a minute), runs[].owner (session tag from runs.log owner=) + runs[].waitS; 1.7.0: agentTokens (agent hosts: Claude Code + Codex tokens per local day, incremental background scan); 1.6.0: controlOnly (a share-control helper for a Mac whose stats reporter is another user); 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -484,7 +488,7 @@ export function parseLogTime(s) {
  * rr runs.log lines -> runs (format: rr_runner.pl run_log). The v2 tail after the TAB (run= owner= cls=
  * wait_s= exit_reason= setup= pred_s= client= pv= node= lock_s= slot_s= spred_s=) is cut off argv; on lines that
  * have the tail its pred_s, wait_s, slot_s and setup come back as `predS`, `waitS`, `slotS`, `setup` (pool
- * health only: Collector.newRuns keeps just the RUN_KEYS fields in a frame).
+ * health only: Collector.newRuns keeps just the RUN_KEYS fields in a frame), and owner= as `owner` (ownerTag).
  */
 export function parseRunsLog(text) {
   const out = [];
@@ -503,13 +507,14 @@ export function parseRunsLog(text) {
       run.slotS = n(f('slot_s'));
       const setup = f('setup');
       run.setup = setup === 'warm' || setup === 'clone' || setup === 'cold' ? setup : null;
+      run.owner = ownerTag(f('owner'));
     }
     out.push(run);
   }
   return out;
 }
 /** The fields of a run that go into a frame (shared/protocol.ts Run). */
-const RUN_KEYS = ['ts', 'repo', 'outcome', 'prepS', 'cmdS', 'argv'];
+const RUN_KEYS = ['ts', 'repo', 'outcome', 'prepS', 'cmdS', 'argv', 'waitS', 'owner']; // waitS, owner: 1.8.0 (absent on lines without the v2 tail)
 const frameRun = (r) => Object.fromEntries(RUN_KEYS.map((k) => [k, r[k]]));
 
 // ---------------------------------------------------------------------------- client routes (agent hosts)
@@ -546,6 +551,64 @@ export function routeStats(entries, now) {
     else if (e.target !== 'none') day.pool++;
   }
   return { at: now, day, last };
+}
+
+// ---------------------------------------------------------------------------- agent names (agent hosts)
+/** Short public tag of a Claude session id: its first 8 hex chars. Used on both sides of the join. */
+export const sessionTag = (sid) => {
+  const m = /^([0-9a-f]{8})-?[0-9a-f-]*$/i.exec(String(sid ?? ''));
+  return m ? m[1].toLowerCase() : null;
+};
+/** runs.log owner= ("session:<uuid>", "pid:123", "-") -> the session tag, or null (not a Claude session). */
+export const ownerTag = (owner) => (typeof owner === 'string' && owner.startsWith('session:') ? sessionTag(owner.slice(8)) : null);
+
+const AGENTS_MAX = 40;
+export const AGENTS_MAX_AGE_MS = 24 * 3600_000;
+const cleanName = (s, n) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+
+/**
+ * This Mac's recent Claude Code windows -> [{id, name, proj}] (newest first, at most AGENTS_MAX): id =
+ * sessionTag, name = the /line window name (~/.claude/sessions/<pid>.json `name`, else the statusline
+ * caption, the first line of ~/.claude/session-status/<sid>.txt), proj = the window's folder name. The
+ * dashboard joins it with the workers' runs.log owner= tags to show who ran a job, from which Mac. Only
+ * sessions touched within AGENTS_MAX_AGE_MS; a session with neither a name nor a folder is left out.
+ * `io` (tests): {listDir, readFile, mtimeMs}.
+ */
+export function agentNames(sessionsDir, statusDir, now, io = {}) {
+  const ls = io.listDir ?? ((d) => { try { return fs.readdirSync(d); } catch { return []; } });
+  const rd = io.readFile ?? ((f) => { try { return fs.readFileSync(f, 'utf8').slice(0, 64 * 1024); } catch { return null; } });
+  const mt = io.mtimeMs ?? ((f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } });
+  const by = new Map(); // tag -> {id, name, proj, at}
+  const put = (id, name, proj, at) => {
+    if (!id || at < now - AGENTS_MAX_AGE_MS) return;
+    const o = by.get(id) ?? { id, name: '', proj: null, at: 0 };
+    by.set(id, { id, name: o.name || name, proj: o.proj ?? proj, at: Math.max(o.at, at) });
+  };
+  for (const f of ls(sessionsDir)) {
+    if (!/^\d+\.json$/.test(f)) continue;
+    let j;
+    try {
+      j = JSON.parse(rd(path.join(sessionsDir, f)) ?? '');
+    } catch {
+      continue;
+    }
+    const at = Number(j?.updatedAt) || mt(path.join(sessionsDir, f));
+    const cwd = typeof j?.cwd === 'string' ? j.cwd.replace(/\/+$/, '') : '';
+    put(sessionTag(j?.sessionId), cleanName(j?.name, 40), cwd ? cleanName(path.basename(cwd), 40) || null : null, at);
+  }
+  for (const f of ls(statusDir)) {
+    const m = /^([0-9a-f-]{36})\.txt$/i.exec(f);
+    if (!m) continue;
+    const p = path.join(statusDir, f);
+    const at = mt(p);
+    if (at < now - AGENTS_MAX_AGE_MS) continue;
+    put(sessionTag(m[1]), cleanName((rd(p) ?? '').split('\n')[0], 40), null, at);
+  }
+  return [...by.values()]
+    .filter((a) => a.name || a.proj)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, AGENTS_MAX)
+    .map(({ id, name, proj }) => ({ id, name, proj }));
 }
 
 // ---------------------------------------------------------------------------- slot queue
@@ -1677,6 +1740,10 @@ export class Collector {
     // agent hosts: where their rruns went (route.log), recomputed about once a minute
     this.routeLog = expandHome(cfg.routeLog ?? '~/.local/state/rdocker/route.log');
     this.routeC = cached(async () => this.route(), HEALTH_EVERY_MS - 1000);
+    // agent hosts: session tag -> /line window name, so the dashboard can name who ran each pool job (1.8.0)
+    this.agentsOn = this.agentHost && cfg.agentNames !== false;
+    this.agentDirs = [expandHome(cfg.claudeSessions ?? '~/.claude/sessions'), expandHome(cfg.claudeSessionStatus ?? '~/.claude/session-status')];
+    this.agentsC = cached(async () => agentNames(this.agentDirs[0], this.agentDirs[1], Date.now()), HEALTH_EVERY_MS - 1000);
     // Mac workers: the owner's share switch + root's job count (readable without access to rd's ~/rr)
     const shared = this.mac ? '/Users/Shared/rdocker' : null;
     this.shareFile = expandHome(cfg.shareFile ?? process.env.RR_SHARE_FILE ?? (shared ? `${shared}/share` : ''));
@@ -2014,6 +2081,7 @@ export class Collector {
     const { jobs, deadSlots } = this.slots();
     const q = waitQueue(path.join(this.rrRoot, 'wait'), now);
     const route = this.agentHost ? await this.routeC() : null;
+    const agents = this.agentsOn ? await this.agentsC() : null;
     const lend = await this.lend(now);
     const hist = this.hist;
     this.hist = [];
@@ -2040,6 +2108,7 @@ export class Collector {
       ...(leaks.length ? { leaks } : {}),
       ...(this.reach ? { reach: this.reach.map((x) => ({ ...x, direct: directOf(this.peers, x.ip) })) } : {}), // agent hosts, latest probe
       ...(route ? { route } : {}), // agent hosts with a route.log; small, so every frame
+      ...(agents?.length ? { agents } : {}), // agent hosts: recent windows' names (<= 40 short rows), every frame
       ...(lend ? { lend } : {}), // lent Mac workers (status file present); small, so every frame
       ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)
     };

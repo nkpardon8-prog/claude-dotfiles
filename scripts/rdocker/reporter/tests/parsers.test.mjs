@@ -469,3 +469,34 @@ test('reach: tcpConnectMs connects to a listening port and fails on a closed one
   await new Promise((res) => srv.close(res));
   assert.equal(await r.tcpConnectMs('127.0.0.1', port, 2000), null);
 });
+
+test('runs.log owner= -> session tag; agentNames reads windows and captions (1.8.0)', () => {
+  const tail = '\trun=ab owner=session:BA3B7C7F-160d-4562-98cd-e3e09a491f77 cls=test wait_s=12.5 exit_reason=pass setup=warm pred_s=40 client=x pv=- node=22 lock_s=0.0 slot_s=3.0 spred_s=-';
+  const line = '2026-11-12T01:00:00+0000 repo=dentall wt=w sha=abc outcome=rc=0 prepare_s=1 cmd_s=30 argv=npx vitest run' + tail;
+  const [run] = r.parseRunsLog(line + '\n' + line.replace('owner=session:BA3B7C7F-160d-4562-98cd-e3e09a491f77', 'owner=pid:42'));
+  assert.equal(run.owner, 'ba3b7c7f');
+  assert.equal(run.waitS, 12.5);
+  assert.equal(r.parseRunsLog(line.replace(/owner=\S+/, 'owner=pid:42'))[0].owner, null);
+  assert.equal(r.ownerTag('-'), null);
+
+  const now = Date.parse('2026-11-25T16:00:00Z');
+  const files = {
+    '/s/93109.json': JSON.stringify({ sessionId: 'ba3b7c7f-160d-4562-98cd-e3e09a491f77', cwd: '/x/projects/dentall/', name: 'ai-notes\ttab', updatedAt: now - 60_000 }),
+    '/s/1.json': JSON.stringify({ sessionId: '0f928903-1afc-47f5-b719-ea400b6d3442', cwd: '/x/dash', updatedAt: now - 1000 }),
+    '/s/2.json': JSON.stringify({ sessionId: '11111111-1afc-47f5-b719-ea400b6d3442', name: 'stale', updatedAt: now - 2 * 86400_000 }),
+    '/s/3.json': '{broken',
+    '/c/0f928903-1afc-47f5-b719-ea400b6d3442.txt': 'dso UI / ref\nsecond line',
+    '/c/22222222-1afc-47f5-b719-ea400b6d3442.txt': 'caption only',
+    '/c/notes.txt': 'ignored',
+  };
+  const io = {
+    listDir: (d) => Object.keys(files).filter((f) => path.dirname(f) === d).map((f) => path.basename(f)),
+    readFile: (f) => files[f] ?? null,
+    mtimeMs: (f) => (f.includes('2222') ? now - 5000 : now - 3000),
+  };
+  assert.deepEqual(r.agentNames('/s', '/c', now, io), [
+    { id: '0f928903', name: 'dso UI / ref', proj: 'dash' }, // no window name: the caption; folder from the window's cwd
+    { id: '22222222', name: 'caption only', proj: null },
+    { id: 'ba3b7c7f', name: 'ai-notes tab', proj: 'dentall' }, // control characters collapse to spaces
+  ]);
+});
