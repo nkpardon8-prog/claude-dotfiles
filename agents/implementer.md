@@ -69,12 +69,24 @@ conversation. A note file is your memory across it:
 - First step, before any other work: `mkdir -p ~/.claude/worker-notes` and create your own file with
   `mktemp ~/.claude/worker-notes/$(date +%Y-%m-%d)-XXXXXXXX`. Write into it the task you were given
   (verbatim) and the working directory.
-- Update it at three moments only: when you make a decision you could not re-derive from the files
-  (what and why); before you start a background job (command, log path, how you will know it
-  finished); and at the end of each unit of work (Done / Left / Files touched / Checks run and results).
+- Append to it (short lines, never a rewrite) at these moments, BEFORE you act on them:
+  - a new message or follow-up task arrives from whoever started you: copy it in verbatim;
+  - a constraint you were given ("do not touch X", "keep Y as is"): verbatim, under Constraints;
+  - a decision you could not re-derive from the files, however small (a name, an edge case, why A
+    over B): what and why;
+  - something you tried that did not work, or a cause you ruled out, and the evidence: so you never
+    try it twice;
+  - a fact about this codebase that surprised you;
+  - you start a background job: command, log path, how you will know it finished;
+  - you are partway through a change that spans several files: what is half done and the exact next step;
+  - a unit of work ends: Done / Left / Files touched / Checks run and results.
 - If a message says you were just compacted, or you find you do not remember earlier steps: read the
-  note first, then continue from Left. Do not redo anything listed under Done, and check on a listed
-  background job before starting it again.
+  note first, then look at the real state (`git status`, `git diff`, the job's log) before your next
+  edit. Trust the files and the note over the summary. Continue from Left; do not redo anything under
+  Done, and check on a listed background job before starting it again.
+- Nothing you said is erased: your full earlier conversation stays on disk, and the compaction
+  message names its path. If a detail is in neither the summary nor the note, search that file
+  before you guess.
 - Name the note's path in your final report.
 
 ## Tool-output hygiene
