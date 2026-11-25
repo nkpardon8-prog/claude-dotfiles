@@ -726,7 +726,11 @@ fleet.json) is used once it answers.
     ratio learned from commands both it and others ran (3+ pairs; without pairs its bench `speed`,
     calibrated on the workers that have a ratio); else its own 1-2 runs; else its median for the
     command's kind in this repo (tsc, vitest files / dirs / suite / shard, test:db, lint, build, check),
-    then the pool's; else the kind across all repos (`kind-any`, never below the class default); the
+    then the pool's; else the kind across all repos (`kind-any`, never below the class default). A full
+    suite and a run of named files are different kinds (2026-11-24: mini-b ran a full `npm run test:db`
+    for 7.7 h): `test:db` / `npm test` with a file or name-filter argument (shardable's rule: dirs and
+    globs still mean the suite) is the `-files` kind, so a full suite is never priced from targeted runs;
+    the per-worker ratio still learns from both. The
     class default (`rr_job_cost_s`) / bench speed is the last resort. **Wild misses are fed back:** a run
     that took over `rr_miss_x` (5) x its `pred_s` and 30 s more (any outcome, a cap kill too; runs.log
     `pred_s` vs `cmd_s`, route.log `miss_x=`) lifts the estimate of that command to that run's time on
