@@ -53,6 +53,11 @@ log_line() {
 # Either way it is the harness's own id — never a transcript-mtime guess, which loses the race
 # against sibling tabs and can re-assert one window's name onto another.
 INPUT=$(head -c 1048576)
+# A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id: the window's
+# name belongs to the main window, which re-asserts it on its own starts. Leave before any log line.
+_subagent_lib="$(dirname "$0")/lib/subagent-event.sh"
+[ -f "$_subagent_lib" ] && . "$_subagent_lib"
+if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPUT"; then exit 0; fi
 sid=""
 if command -v jq >/dev/null 2>&1; then
   sid=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)

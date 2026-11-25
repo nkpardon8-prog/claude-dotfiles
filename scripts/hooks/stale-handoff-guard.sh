@@ -16,6 +16,11 @@
 # stdout is INJECTED into session context (non-async) — stay silent unless something happened.
 
 HOOK_JSON=$(cat)
+# A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id: the main window
+# already ran this guard at its own start, so a worker event is left alone (no moves, no output).
+_subagent_lib="$(dirname "$0")/lib/subagent-event.sh"
+[ -f "$_subagent_lib" ] && . "$_subagent_lib"
+if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$HOOK_JSON"; then exit 0; fi
 cwd=$(jq -r '.cwd // empty' <<<"$HOOK_JSON" 2>/dev/null)
 sid=$(jq -r '.session_id // empty' <<<"$HOOK_JSON" 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 cd "${cwd:-$PWD}" 2>/dev/null || exit 0
