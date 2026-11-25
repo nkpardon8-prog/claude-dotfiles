@@ -127,6 +127,18 @@ out=$(run_guard "$R")
   || bad "memory-cliff silent at 160 entries/lines under 22 KB (out=$out)"
 rm -rf "$memdir" 2>/dev/null; rmdir "$(dirname "$memdir")" 2>/dev/null
 
+# --- 9. WORKER compaction (agent_id present, parent's sid): nothing moved, nothing printed ---
+R="$T/worker"; mkrepo "$R"
+printf '# Post-Compact Reference - old\nbody\n<!-- END-OF-HANDOFF schema=v1 sid=deadbeef nonce=x -->\n' > "$R/CLAUDE.local.md"
+backdate "$R/CLAUDE.local.md" 8
+out=$(printf '{"cwd":"%s","session_id":"test-sid-000","source":"compact","agent_id":"a1","agent_type":"implementer"}' "$R" \
+  | bash "$GUARD" 2>/dev/null | grep -v 'auto-sync is PAUSED' || true)
+if [ -f "$R/CLAUDE.local.md" ] && [ ! -d "$R/.handoff-archive" ] && [ -z "$out" ]; then
+  ok "worker event: stale handoff left in place, silent"
+else
+  bad "worker event: stale handoff left in place, silent (out=$out)"
+fi
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
