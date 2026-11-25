@@ -50,50 +50,63 @@ echo "== §3 UserPromptSubmit nudge threshold tests =="
 # echo X | hook.sh` goes to echo, not to hook.sh; <<< here-string applies HOME only
 # to the hook subprocess).
 
-# 3a — UserPromptSubmit, ctx=49 (below SOFT=50): expect empty output
+# 3a — UserPromptSubmit, ctx=39 (below SOFT=40): expect empty output
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '39\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if [ -z "$OUT" ]; then pass "3a: submit ctx=39 → empty (below soft=40)"; else fail "3a: submit ctx=39 → expected empty, got: $OUT"; fi
+rm -rf "$TMPHOME"
+
+# 3a-bis — UserPromptSubmit, ctx=40 (AT SOFT boundary): expect soft advisory
+# >= semantics: ctx=40 fires; ctx=39 does not.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '40\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 40%")' >/dev/null 2>&1; then
+  pass "3a-bis: submit ctx=40 → soft advisory fires at exact SOFT boundary (>= semantics)"
+else
+  fail "3a-bis: submit ctx=40 → expected soft advisory at boundary, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3b — UserPromptSubmit, ctx=45 (soft zone 40-49%): expect soft advisory
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '45\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 45%")' >/dev/null 2>&1; then
+  pass "3b: submit ctx=45 → soft advisory"
+else
+  fail "3b: submit ctx=45 → expected soft advisory, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3b-2 — UserPromptSubmit, ctx=49 (highest SOFT value): expect soft advisory, NOT IMPORTANT
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '49\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if [ -z "$OUT" ]; then pass "3a: submit ctx=49 → empty (below soft=50)"; else fail "3a: submit ctx=49 → expected empty, got: $OUT"; fi
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 \
+   && ! printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
+  pass "3b-2: submit ctx=49 → SOFT (highest SOFT, boundary: 49 < 50 IMPORTANT)"
+else
+  fail "3b-2: submit ctx=49 → expected soft advisory, got: $OUT"
+fi
 rm -rf "$TMPHOME"
 
-# 3a-bis — UserPromptSubmit, ctx=50 (AT SOFT boundary): expect soft advisory
-# >= semantics: ctx=50 fires; ctx=49 does not.
+# 3c — UserPromptSubmit, ctx=50 (AT IMPORTANT boundary under 2026-11-24 tuning): expect IMPORTANT nudge
+# Threshold model: 40 SOFT / 50 IMPORTANT / 75 FORCE. ctx=50 is the FIRST value in the IMPORTANT
+# zone. Older commentary that said "50 = SOFT" was for the 50/65/75 model and is obsolete.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '50\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 50%")' >/dev/null 2>&1; then
-  pass "3a-bis: submit ctx=50 → soft advisory fires at exact SOFT boundary (>= semantics)"
-else
-  fail "3a-bis: submit ctx=50 → expected soft advisory at boundary, got: $OUT"
-fi
-rm -rf "$TMPHOME"
-
-# 3b — UserPromptSubmit, ctx=55 (soft zone 50-74%): expect soft advisory
-TMPHOME=$(mktemp -d)
-mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
-OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 55%")' >/dev/null 2>&1; then
-  pass "3b: submit ctx=55 → soft advisory"
-else
-  fail "3b: submit ctx=55 → expected soft advisory, got: $OUT"
-fi
-rm -rf "$TMPHOME"
-
-# 3c — UserPromptSubmit, ctx=65 (AT IMPORTANT boundary under 2026-05-28 tuning): expect IMPORTANT nudge
-# Threshold model: 50 SOFT / 65 IMPORTANT / 75 FORCE. ctx=65 is the FIRST value in the IMPORTANT
-# zone. Older R1-H3 commentary that said "65 = SOFT" was for the 50/75/85 model and is obsolete.
-TMPHOME=$(mktemp -d)
-mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
-OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
-  pass "3c: submit ctx=65 → IMPORTANT nudge (2026-05-28 tuning: 65-74% = IMPORTANT)"
+  pass "3c: submit ctx=50 → IMPORTANT nudge (2026-11-24 tuning: 50-74% = IMPORTANT)"
 else
-  fail "3c: submit ctx=65 → expected IMPORTANT zone, got: $OUT"
+  fail "3c: submit ctx=50 → expected IMPORTANT zone, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 

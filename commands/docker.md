@@ -755,7 +755,10 @@ fleet.json) is used once it answers.
     under `rr_spare_min_free_pct` 25 % or load per CPU over `rr_spare_max_load` 1.5, or no reading).
     Only holders of open slots count (probe `held`: slot index + age; the runner tries slots 0 .. open-1),
     so free base slots with the spare ones held is a free worker. Shards and the `--where` `free`
-    column use the same count (free open slots less the runs waiting). Each holder holds
+    column use the same count (free open slots less the runs waiting). hp's fleet slots are 6 (3 heavy)
+    since 2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower than at <= 3, and 5 -> 8 slots added
+    ~15 % throughput for ~30 % more per-job time; its rd-tune `slots.cap` stays 8 (the lower one wins).
+    Each holder holds
     its slot for its command's median **hold** there (prepare + command; probe `jobs[].hmed`, else the
     command median, else the worker's typical hold `ev.hold`) x `rr_queue_overrun_x` (1.3), minus how
     long it has held it; a holder already past that has at least `rr_queue_age_k` (1.0) x its age
