@@ -772,7 +772,7 @@ fleet.json) is used once it answers.
     (3+ waiting: 75 -> 1.00). Tonight's case: ethanair at share medium (3 of 7 slots), 18 runs
     waiting, mini-a idle - it read as free. Every rrun's `route.log` line now carries `qpred_s` (the
     placements' predicted slot wait) beside the measured `slot_s`: re-tune from those
-    (`rd-measure.py --keep` fetches the logs). A holder past its estimate: at age a with a scaled
+    (`rd-measure.py --keep` fetches the logs; it also keeps every fetched log in `~/.local/state/rdocker/logcache`). A holder past its estimate: at age a with a scaled
     median c it has max(c - a, `rr_queue_age_k` x a) left, so the age floor takes over from a = c / 2.
   - **risk**: p_infra (infra outcomes / fairly started runs, a 3 % prior over 30 runs) x (setup + half
     the run lost + a rerun on the best other worker). An unreliable worker loses only when that costs.
@@ -945,6 +945,12 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   `rr_warm_interval_s`, `rr_warm_tick_s`, `rr_warm_window_h`, `rr_warm_max_repos`, `rr_warm_max_load`.
 - On the worker, `~/rr/log/runs.log` shows a warm as `outcome=warm ... cmd_s=- argv=true` (stopped at
   READY; nothing ran). Its prepare time is real setup evidence for the scheduler.
+- Log mirror (2026-11-24): the loop (never `--once`) also copies each reachable fleet worker's
+  `runs.log` (optional Macs and this Mac's own worker included) into
+  `~/.local/state/rdocker/logcache/runs.<name>.log`, at most every 30 min, in a background thread
+  (one short ssh per worker; the whole log the first time, then the last 1,000 lines). The copy is
+  append-only and never loses a line; `rd-measure.py` reads it for a worker that is offline (see
+  share/README.md "Turnaround numbers").
 
 ## What runs where (automatic)
 

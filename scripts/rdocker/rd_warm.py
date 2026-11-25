@@ -41,6 +41,14 @@ every rrun push from this Mac (the base-branch refs are the same).
 Loop: a pass every rr_warm_interval_s; in between, a cheap `ssh true` per worker every
 rr_warm_tick_s, and a worker that went down -> up starts a pass at once ("just came online").
 Log: warm.log, one line per action (repeated skips are logged when their reason changes).
+
+Log mirror (2026-11-24, rd_logcache): the loop also copies each reachable fleet worker's runs.log -
+optional Macs included, this Mac's own worker too - into ~/.local/state/rdocker/logcache/runs.<name>.log,
+so rd-measure can still read a worker that has since gone offline. At most every MIRROR_EVERY_S, in a
+background thread (a warm pass never waits on it), one short ssh per worker (MIRROR_TIMEOUT_S; a worker
+that does not answer is skipped until the next mirror): the last MIRROR_TAIL lines (from runs.log.1 too
+when runs.log is shorter), the whole log (.1 + current) for a worker with no copy yet or no good mirror in
+MIRROR_WHOLE_AFTER_S (this Mac asleep, the worker away). `--once` and triggers never mirror.
 """
 import fcntl
 import os
@@ -52,6 +60,7 @@ import threading
 import time
 
 import rd_common
+import rd_logcache
 import rd_pool
 import rd_run
 
@@ -66,6 +75,13 @@ PASS_LOCK = os.path.join(rd_common.STATE_DIR, "warm-pass.lock")   # one pass at 
 _LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) +\S+ +rrun +(.*) rc=\S* [0-9.]+s \| ([^\t]+)(?:\t.*)?$")
 
 _last_skip = {}                      # (worker, slug) -> reason last logged (repeats are not)
+
+MIRROR_EVERY_S = 1800                # runs.log mirror cadence (stamp file in the cache dir)
+MIRROR_TAIL = 1000                   # lines per mirror (~6 h of hp at its busiest); a first copy is whole
+MIRROR_TIMEOUT_S = 20                # per worker; 60 for a whole copy
+MIRROR_WHOLE_AFTER_S = 3 * 3600      # no good mirror of a worker for this long: copy it whole again (hp logs
+#                                      ~170 rows/h at its busiest, so a tail of MIRROR_TAIL could miss rows)
+_mirror_busy = threading.Lock()      # one mirror at a time in this process
 
 
 def wlog(msg):
@@ -514,13 +530,105 @@ def _run_pass(cfg, repo_path, items=None, held=None, queue_only=False):
         os.close(lk)
 
 
+# ---------------------------------------------------------------------------- log mirror
+
+def mirror_hosts(cfg):
+    """Every enabled fleet worker (this Mac's own one too, whatever its share switch: reading its log is
+    not using it) as rd_pool Hosts; none when there is no usable fleet."""
+    try:
+        import rd_fleet
+        return [rd_pool.host_for(cfg, w) for w in rd_fleet.workers(rd_fleet.load(cfg))]
+    except Exception:
+        return []
+
+
+def mirror_script(root, whole):
+    """The remote shell for one worker's runs.log: whole (.1 + current) or its last MIRROR_TAIL lines."""
+    f = '"$HOME"/%s/log/runs.log' % root
+    if whole:
+        return "cat %s.1 %s 2>/dev/null; true" % (f, f)
+    return ('f=%s; n=$(cat "$f" 2>/dev/null | wc -l); [ "$n" -lt %d ] && tail -n $((%d - n)) "$f.1" 2>/dev/null; '
+            'tail -n %d "$f" 2>/dev/null; true') % (f, MIRROR_TAIL, MIRROR_TAIL, MIRROR_TAIL)
+
+
+def mirror_logs(cfg):
+    """One mirror over every worker -> {name: lines added, or None when it did not answer}."""
+    cache = rd_logcache.default_dir()
+    res = {}
+    for h in mirror_hosts(cfg):
+        key = "runs." + h.name
+        ok = os.path.join(cache, ".mirror-ok-" + h.name)    # the last good mirror of this worker
+        try:
+            whole = not os.path.exists(rd_logcache.path(cache, key)) or \
+                time.time() - os.path.getmtime(ok) > MIRROR_WHOLE_AFTER_S
+        except OSError:
+            whole = True
+        try:
+            script = mirror_script(rd_run.rr_root(h.cfg), whole)
+        except rd_run.RunError:
+            continue
+        rc, out = remote(h, script, timeout=60 if whole else MIRROR_TIMEOUT_S)
+        if rc != 0:
+            res[h.name] = None
+            continue
+        res[h.name] = rd_logcache.merge(cache, key, out)
+        with open(ok, "w"):
+            pass
+    if res:
+        wlog("mirror runs.log: %s" % ", ".join("%s %s" % (n, "unreachable" if v is None else "+%d" % v)
+                                               for n, v in sorted(res.items())))
+    return res
+
+
+def _mirror_thread(cfg):
+    if not _mirror_busy.acquire(False):
+        return
+    try:
+        mirror_logs(cfg)
+    except Exception as e:           # a broken mirror must never touch warming: log it, try next time
+        wlog("mirror error: %s: %s" % (type(e).__name__, str(e)[:200]))
+    finally:
+        _mirror_busy.release()
+
+
+def maybe_mirror(cfg, now=None):
+    """Start a background mirror when the last one is MIRROR_EVERY_S old -> the thread, or None. The stamp
+    is set at the start, so a failing mirror is not retried every pass."""
+    if _mirror_busy.locked():
+        return None
+    now = time.time() if now is None else now
+    stamp = os.path.join(rd_logcache.default_dir(), ".mirror-stamp")
+    try:
+        if now - os.path.getmtime(stamp) < MIRROR_EVERY_S:
+            return None
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        with open(stamp, "w"):
+            pass
+        os.utime(stamp, (now, now))
+    except OSError as e:
+        wlog("mirror skipped: %s" % e)
+        return None
+    t = threading.Thread(target=_mirror_thread, args=(cfg,), name="rd-warm-mirror", daemon=True)
+    t.start()
+    return t
+
+
 # ---------------------------------------------------------------------------- loop
 
-def loop(once=False, repo_path=None, sleep=time.sleep, clock=time.monotonic, max_passes=None):
-    """`rdocker warm`: passes forever (or once); returns the exit code."""
+def loop(once=False, repo_path=None, sleep=time.sleep, clock=time.monotonic, max_passes=None, mirror=True):
+    """`rdocker warm`: passes forever (or once); returns the exit code. Each loop turn also offers the
+    log mirror (maybe_mirror: background, every 30 min at most); --once never does."""
     passes = 0
     while True:
         cfg = rd_common.load_cfg()
+        if mirror and not once:
+            try:
+                maybe_mirror(cfg)
+            except Exception as e:
+                wlog("mirror error: %s: %s" % (type(e).__name__, str(e)[:200]))
         try:
             up = run_pass(cfg, repo_path)
             rc = 0

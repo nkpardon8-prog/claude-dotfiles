@@ -286,6 +286,7 @@ class Trigger(unittest.TestCase):
             return dict(first)
         it = iter(ups)
         with mock.patch.object(rd_warm, "run_pass", side_effect=fake_pass), \
+                mock.patch.object(rd_warm, "maybe_mirror"), \
                 mock.patch.object(rd_warm, "worker_hosts", return_value=[]), \
                 mock.patch.object(rd_warm, "reachable", side_effect=lambda hs: next(it)), \
                 mock.patch.object(rd_warm, "wlog"), \
@@ -307,10 +308,74 @@ class Trigger(unittest.TestCase):
 
     def test_once_and_a_failing_pass(self):
         with mock.patch.object(rd_warm, "run_pass", side_effect=RuntimeError("boom")), \
+                mock.patch.object(rd_warm, "maybe_mirror") as mirror, \
                 mock.patch.object(rd_warm, "wlog") as log, \
                 mock.patch.object(rd_common, "load_cfg", return_value=dict(rd_common.DEFAULTS)):
             self.assertEqual(rd_warm.loop(once=True), 1)
         self.assertIn("pass error: RuntimeError: boom", log.call_args[0][0])
+        mirror.assert_not_called()                                   # --once never mirrors logs
+
+
+class Mirror(unittest.TestCase):
+    """The runs.log mirror into rd_logcache: reachable workers only, whole first copy then tails,
+    at most every MIRROR_EVERY_S, in the background, and a failure never reaches the warm loop."""
+
+    def setUp(self):
+        self.cache = rd_warm.rd_logcache.default_dir()
+        shutil.rmtree(self.cache, True)
+        self.addCleanup(shutil.rmtree, self.cache, True)
+        cfg = dict(rd_common.DEFAULTS)
+        self.hosts = [rd_pool.host_for(cfg, test_pool.worker(n)) for n in ("up", "away")]
+        self.cfg = cfg
+
+    def test_reachable_workers_are_copied_whole_then_by_tail(self):
+        scripts = []
+        logs = {"up": "2026-11-24T10:00:00+0000 repo=r outcome=rc=0\n"}
+
+        def fake_remote(h, script, timeout=30):
+            scripts.append((h.name, "tail" in script, timeout))
+            return (0, logs["up"]) if h.name == "up" else (None, "")
+        with mock.patch.object(rd_warm, "mirror_hosts", return_value=self.hosts), \
+                mock.patch.object(rd_warm, "remote", side_effect=fake_remote), \
+                mock.patch.object(rd_warm, "wlog") as log:
+            self.assertEqual(rd_warm.mirror_logs(self.cfg), {"up": 1, "away": None})
+            logs["up"] += "2026-11-24T10:05:00+0000 repo=r outcome=rc=1\n"
+            self.assertEqual(rd_warm.mirror_logs(self.cfg), {"up": 1, "away": None})
+        self.assertEqual(scripts, [("up", False, 60), ("away", False, 60), ("up", True, rd_warm.MIRROR_TIMEOUT_S),
+                                   ("away", False, 60)])           # away still has no copy: whole when it answers
+        old = time.time() - rd_warm.MIRROR_WHOLE_AFTER_S - 10      # no good mirror of up for 3 h: whole again
+        os.utime(os.path.join(self.cache, ".mirror-ok-up"), (old, old))
+        with mock.patch.object(rd_warm, "mirror_hosts", return_value=self.hosts[:1]), \
+                mock.patch.object(rd_warm, "remote", side_effect=fake_remote), mock.patch.object(rd_warm, "wlog"):
+            self.assertEqual(rd_warm.mirror_logs(self.cfg), {"up": 0})
+        self.assertEqual(scripts[-1], ("up", False, 60))
+        self.assertIn("mirror runs.log: away unreachable, up +1", log.call_args[0][0])
+        with open(os.path.join(self.cache, "runs.up.log")) as f:
+            self.assertEqual(f.read(), logs["up"])
+
+    def test_tail_script_reads_rotated_log_only_when_needed(self):
+        d = tempfile.mkdtemp(prefix="mirror-", dir=rdmods.TEST_HOME)
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "rr", "log"))
+        with open(os.path.join(d, "rr", "log", "runs.log.1"), "w") as f:
+            f.write("".join("old%d\n" % i for i in range(5)))
+        with open(os.path.join(d, "rr", "log", "runs.log"), "w") as f:
+            f.write("new0\nnew1\n")
+        with mock.patch.object(rd_warm, "MIRROR_TAIL", 4):
+            out = subprocess.run(["sh", "-c", rd_warm.mirror_script("rr", False)], env=dict(os.environ, HOME=d),
+                                 capture_output=True, text=True).stdout
+        self.assertEqual(out, "old3\nold4\nnew0\nnew1\n")
+
+    def test_at_most_every_30_min_in_the_background_and_errors_are_logged(self):
+        ran = []
+        with mock.patch.object(rd_warm, "mirror_logs", side_effect=lambda cfg: ran.append(1) or 1 / 0), \
+                mock.patch.object(rd_warm, "wlog") as log:
+            t = rd_warm.maybe_mirror(self.cfg, now=1000.0)
+            t.join(5)
+            self.assertIsNone(rd_warm.maybe_mirror(self.cfg, now=1000.0 + rd_warm.MIRROR_EVERY_S - 1))
+            rd_warm.maybe_mirror(self.cfg, now=1000.0 + rd_warm.MIRROR_EVERY_S).join(5)
+        self.assertEqual(ran, [1, 1])
+        self.assertIn("mirror error: ZeroDivisionError", log.call_args[0][0])
 
 
 FAKE_NPM = """#!/bin/sh

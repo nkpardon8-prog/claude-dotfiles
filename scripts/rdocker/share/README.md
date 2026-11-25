@@ -212,14 +212,31 @@ one finding). Set `RD_STEWARD_SELF` to name this Mac in the finding (default: it
 
 ## Turnaround numbers (rd-measure, any Mac with the pool's ssh aliases)
 `rd-measure.py` prints the pool's turnaround for one time window, the same way every time, so a
-placement change can be compared before / after (2026-11-21: the cold-setup veto removed). Read-only: it
-fetches every client's `route.log` (this Mac + `--client` aliases, default `nickmini-docker`) and every
-fleet worker's `runs.log` over ssh. Per job class: queue wait (`slot_s` + `lock_s`) p50/p90,
+placement change can be compared before / after (2026-11-21: the cold-setup veto removed). Read-only on
+the pool: it fetches every client's `route.log` (this Mac + `--client` aliases, default `nickmini-docker`)
+and every fleet worker's `runs.log` over ssh. Per job class: queue wait (`slot_s` + `lock_s`) p50/p90,
 submit-to-finish (the client's wall seconds) p50/p95, jobs per worker, cold jobs per worker and the
 cold-setup estimate error (`prepare_s` / `spred_s`); then a replay of hp's queue spikes on the workers
-that had a free slot then, with no cold veto (optimistic and strict warm bounds).
+that had a free slot then, with no cold veto (optimistic and strict warm bounds). A worker counts as
+online (capacity, in the replay and the wasted-capacity timeline) only from started / warm rows, and not
+after it refused (`busy` / `refused` / `off`): an optional Mac turning jobs away is no idle capacity.
+
+Two more sections (2026-11-24): **interrupted runs** - runs.log rows cut short (`interrupted`, `lost`,
+rc 130 / 137 / 143) with their job-hours by kind, cap kills (rc 124) beside them, the client-side count
+(route.log rc 130 / 143 on every host, incl. workers with no runs.log), and how many had an identical
+successor (same repo + argv, same owner session or any) arriving within 10 min: the job-hours a "join
+the in-flight identical run" feature could save. **Worker contention** - per worker, the same command's
+run time by the mean slots busy during it (<= 3 / 4-6 / 7+) and the median slowdown over the groups.
+
+**Log cache.** Every fetched log is merged into `~/.local/state/rdocker/logcache/<runs.W|route.C>.log`
+(append-only, deduped by record, never loses a line), and the report reads that copy. A machine that does
+not answer is read from the cache alone and shown as `CACHE ONLY` with the age of its newest line. The
+client warm daemon (`com.rdocker.warm`) also mirrors each reachable worker's `runs.log` there every 30 min
+in the background, so an optional Mac's jobs survive it going offline. `--logs DIR` never touches the
+cache; `--cache ''` turns it off. The cache dir has the `--logs` layout, so `--logs` can read it too.
 
 ```sh
 python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-measure.py --since "2026-11-21 22:30" --until "2026-11-22 08:30"
 python3 .../rd-measure.py --hours 10 --keep /tmp/logs     # the last 10 h, logs saved; --logs DIR re-reads them, --json
+python3 .../rd-measure.py --since ... --until ... --fleet old-fleet.json --save before.json   # pin the fleet of an old window
 ```
