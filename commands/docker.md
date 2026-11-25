@@ -526,12 +526,18 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   exits with its code instead of running it again, with one stderr line: `rrun: cached result (same code +
   command, 3m ago on hp); RRUN_CACHE=0 to run again`. Passes are kept 24 h, failures 20 min (flakes).
   **`RRUN_CACHE=0` always runs** (and saves the fresh result); `rrun --where <cmd>` has a `cache:` line
-  (hit / miss / not cached and why). The key is a hash of exactly what the worker gets: the HEAD commit,
-  the base branches pushed (as commits), every uncommitted / untracked / env file rrun sends (path, exec
-  bit, bytes), the deleted files, the env passed (`rr_env_pass` + `-e`, values included), the deps dirs
-  and the runner script, plus the argv, the cwd and the job class. Ignored files that never travel do
-  not count. So a fetch that moves origin/dev or origin/main changes the key (two worktrees on one
-  commit share only when their base branches match too). Each attempt re-hashes what it really sent; if a file changed in between, nothing is saved.
+  (hit / miss / not cached and why). The key (format version `rd_cache.KEY_VERSION`, 2) is a hash of
+  exactly what the worker gets that can decide the result: the HEAD commit, every uncommitted / untracked /
+  env file rrun sends (path, exec bit, bytes), the deleted files, the env passed (`rr_env_pass` + `-e`,
+  values included), the deps dirs and the runner script, plus the argv, the cwd and the job class. Ignored
+  files that never travel do not count. The base branches pushed (origin/dev, main, master, as commits)
+  count only for a command that can read them (`rd_cache.reads_base`): a git-ref flag in the argv or the
+  npm script it runs (vitest `--changed`, jest `--changedSince` / `--onlyChanged` / `-o` / `--lastCommit`),
+  or a vitest / jest config it may load (in the run dir or a parent, a `--config` file, and what those
+  import, as shipped) that mentions changed / lastCommit / projects / workspace, a workspace config, a
+  root-moving flag, or anything it cannot read. tsc, eslint and plain vitest / jest skip them, so a fetch
+  that moves origin/dev no longer invalidates their results (until 2026-11-24 it did, about every 85 min:
+  0 pool hits in 2,176 lookups). Limit: a config imported as a bare package name is not followed. Each attempt re-hashes what it really sent; if a file changed in between, nothing is saved.
   Cached: one-shot tsc / vue-tsc / eslint (no `--fix`) / `vitest run` / jest (no watch), directly, via
   npx or `node [--max-old-space-size=N] <their bin>`, and `npm test` / `npm run test|typecheck|lint[:x]`
   whose script (pre/post included, read from the package.json rrun ships) is only those tools joined by
@@ -901,9 +907,19 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   used go until 30 % is free, anything not used in the last 10 min (Linux 30), never a mirror a running job
   uses. Under that pressure, with no slot held (it holds them all meanwhile) and only while Colima already runs (never started for it),
   also the Colima VM (its disk is on `~/rr`): stopped containers > 24 h, images and anonymous volumes no
-  container uses, never `rdocker.keep`, then `fstrim`. Log: `/var/log/rd-worker-mac.log`. A Mac not yet
+  container uses, never `rdocker.keep` nor a pinned DB image (below), then `fstrim`. Log: `/var/log/rd-worker-mac.log`. A Mac not yet
   re-installed can run `rd-tune prune-loop` as `rd` (detached; `~/rr/state/prune-loop.lock`,
   `~/rr/log/prune.log`).
+- **Docker prune on a non-home worker (rd-tune, every 30 min, no slot held) keeps the DB images.** Stopped
+  containers > 24 h and images built > 72 h ago that no container uses go (`image prune -a --filter
+  until=72h`, never `rdocker.keep`). `until` tests the BUILD date, so until 2026-11-24 postgres:17 went
+  every cycle and the next DB job re-pulled ~450 MB. Now each local image of a `KEEP_IMAGE_REPOS`
+  repository (default `postgres`, any tag; env or tune.conf can widen it) first gets a pin: one created,
+  never-started container `rd-pin-<repo>-<tag>` (`--network none`, labels `rdocker.keep=1` +
+  `rdocker.pin=<repo:tag>`), so docker's own prune keeps the image. When the tag moves to a newer pull,
+  rd-tune re-makes the pin on it (removing its own old pin by id) and the old image becomes prunable. A
+  name taken by a container that is not a pin is never touched; that pass then skips the image prune and
+  prints `rd-tune: pin <ref>: ...`. Remove a pin only by its exact name.
 - **Speed:** `rdocker bench-worker <name>` runs the same benchmark as Linux's `rd-tune bench` over ssh
   (on a Mac the script is piped in, nothing installed) and stores `~/rr/speed` there, which the probe
   prefers over fleet.json's placeholder. `rrun --bench` also creates a missing `~/rr` (0700) now.

@@ -26,6 +26,18 @@ def job(argv, outputs=None):
     return rd_pool.classify(argv, outputs)
 
 
+def reader(files):
+    """{repo-relative path: bytes} -> a read_file with .names(dir), like rd_run.shipped_reader's."""
+    def read(rel):
+        return files.get(rel)
+
+    def names(d):
+        pre = d + "/" if d else ""
+        return {p[len(pre):].split("/")[0] for p in files if p.startswith(pre)}
+    read.names = names
+    return read
+
+
 def tar_of(files):
     """{name: (data, mode)} -> overlay-style tar bytes."""
     buf = io.BytesIO()
@@ -101,6 +113,85 @@ class Cacheable(unittest.TestCase):
         self.assertIn("outside the repo", check(None, ("npm", "--prefix", "../..", "test"), "client", sub))
         self.assertIsNone(rd_cache.why_not_script(["vitest", "run"], "", lambda rel: None))
 
+    def test_reads_base_only_for_commands_that_compare_against_a_git_ref(self):
+        def rb(argv, scripts=None, relcwd=""):
+            files = {} if scripts is None else {"package.json": json.dumps({"scripts": scripts}).encode()}
+            return rd_cache.reads_base(list(argv), relcwd, reader(files))
+        for argv in (["tsc", "--noEmit"], ["npx", "tsc", "-p", "server"], ["eslint", "src"], ["vitest", "run"],
+                     ["vitest", "run", "src/a.test.ts"], ["jest", "--ci"], ["node", "x/vitest.mjs", "run"]):
+            with self.subTest(argv=argv):
+                self.assertFalse(rb(argv))
+        for argv in (["vitest", "run", "--changed"], ["vitest", "run", "--changed=origin/dev"],
+                     ["vitest", "run", "--changed", "origin/dev"], ["npx", "vitest", "run", "--changed", "HEAD~1"],
+                     ["jest", "--changedSince=origin/main"], ["jest", "--changedSince", "main"], ["jest", "-o"],
+                     ["jest", "--onlyChanged"], ["jest", "--lastCommit"], ["jest", "--changedFilesWithAncestor"],
+                     ["vitest", "run", "--changed", "dev"], ["vitest", "run", "refs/remotes/origin/dev"]):
+            with self.subTest(argv=argv):
+                self.assertTrue(rb(argv))
+        self.assertFalse(rb(["npm", "test"], {"test": "tsc --noEmit && vitest run", "pretest": "eslint ."}))
+        self.assertFalse(rb(["npm", "run", "lint"], {"lint": "npm run lint:a", "lint:a": "eslint ."}))
+        # the base read hides in the script body, a pre/post hook, or a nested npm run
+        self.assertTrue(rb(["npm", "test"], {"test": "vitest run --changed origin/dev"}))
+        self.assertTrue(rb(["npm", "test"], {"test": "vitest run", "posttest": "jest --changedSince=origin/dev"}))
+        self.assertTrue(rb(["npm", "test"], {"test": "npm run t:a", "t:a": "vitest run --changed"}))
+        self.assertTrue(rb(["npm", "test", "--", "--changed"], {"test": "vitest run"}))   # its own args
+        # unreadable = keep the base in the key
+        self.assertTrue(rb(["npm", "test"]))
+        self.assertTrue(rb(["npm", "test"], {"test": "npm run nope"}))
+        self.assertTrue(rb(["npm", "test"], {"test": "vitest run 'unclosed"}))
+
+    def test_reads_base_from_a_vitest_or_jest_config(self):
+        """Plain `vitest run` reads origin/dev when its config sets test.changed (review 2026-11-24)."""
+        def rb(argv, files, relcwd=""):
+            return rd_cache.reads_base(list(argv), relcwd, reader({k: v.encode() for k, v in files.items()}))
+        plain = {"vitest.config.ts": "import { defineConfig } from 'vitest/config'\nexport default defineConfig({test: {}})\n"}
+        self.assertFalse(rb(["vitest", "run"], plain))
+        self.assertFalse(rb(["vitest", "run"], dict(plain, **{"server/a.ts": "changed"})))   # not a config
+        self.assertFalse(rb(["vitest", "run"], {"vitest.config.ts": "import o from './opts.js'", "opts.ts": "export default {}"}))
+        # opts.ts is there but not a regular file (a symlink reads as absent): it may win over opts.js
+        def rl(files, odd):
+            r = reader({k: v.encode() for k, v in files.items()})
+            plain_names = r.names
+            r.names = lambda d: plain_names(d) | ({os.path.basename(odd)} if os.path.dirname(odd) == d else set())
+            return rd_cache.reads_base(["vitest", "run"], "", r)
+        self.assertTrue(rl({"vitest.config.ts": "import o from './opts'", "opts.js": "export default {}"}, "opts.ts"))
+        self.assertFalse(rl({"vitest.config.ts": "import o from './opts'", "opts.js": "export default {}"}, "other.ts"))
+        for files, relcwd in (({"vitest.config.ts": "export default {test: {changed: 'origin/dev'}}"}, ""),
+                              ({"vite.config.mts": "export default {test: {changed: process.env.BASE}}"}, ""),
+                              ({"jest.config.js": "module.exports = {changedSince: 'main'}"}, ""),
+                              ({"jest.config.js": "module.exports = {onlyChanged: true}"}, "server/src"),   # a parent's
+                              ({"package.json": json.dumps({"jest": {"lastCommit": True}})}, ""),
+                              ({"vitest.workspace.ts": "export default ['server']"}, ""),
+                              ({"vitest.config.ts": "export default {test: {projects: ['a/*']}}"}, ""),
+                              # what a config imports, with or without an extension
+                              ({"vitest.config.ts": "import base from './cfg/base'\nexport default base",
+                                "cfg/base.ts": "export default {test: {changed: true}}"}, ""),
+                              ({"server/vitest.config.ts": "import b from '../shared/vitest.base.mjs'",
+                                "shared/vitest.base.mjs": "export default {test: {changed: 'HEAD~1'}}"}, "server"),
+                              # vite loads ./opts.ts for an import of ./opts.js
+                              ({"vitest.config.ts": "import o from './opts.js'\nexport default o",
+                                "opts.ts": "export default {test: {changed: 'origin/dev'}}"}, ""),
+                              # an import it cannot resolve (or a symlink, read as absent) = keep the base
+                              ({"vitest.config.ts": "import o from './gone.js'\nexport default o"}, "")):
+            with self.subTest(files=sorted(files), relcwd=relcwd):
+                self.assertTrue(rb(["vitest", "run"], files, relcwd))
+        # a --config file is the one read; a root-moving flag or a missing config = keep the base
+        alt = {"vitest.unit.ts": "export default {test: {changed: true}}"}
+        self.assertTrue(rb(["vitest", "run", "--config", "vitest.unit.ts"], alt))
+        self.assertTrue(rb(["vitest", "run", "--config=vitest.unit.ts"], alt))
+        self.assertFalse(rb(["vitest", "run", "-c", "vitest.ok.ts"], {"vitest.ok.ts": "export default {}"}))
+        self.assertTrue(rb(["vitest", "run", "-c", "nope.ts"], {}))
+        self.assertTrue(rb(["vitest", "run", "--root", "server"], plain))
+        self.assertTrue(rb(["jest", "--config", '{"onlyChanged": true}'], {}))
+        # an npm script runs in its package dir: that dir's config counts
+        self.assertTrue(rb(["npm", "--prefix", "server", "test"],
+                           {"server/package.json": json.dumps({"scripts": {"test": "vitest run"}}),
+                            "server/vitest.config.ts": "export default {test: {changed: true}}"}))
+        # tsc / eslint have no git-ref mode: their configs are not read
+        self.assertFalse(rb(["tsc", "--noEmit"], {"vitest.config.ts": "changed"}))
+        # a reader that cannot list dirs: keep the base
+        self.assertTrue(rd_cache.reads_base(["vitest", "run"], "", lambda rel: None))
+
     def test_env_files_that_set_a_database_are_refused(self):
         t = tar_of({".env": (b"A=1\nexport DATABASE_URL=postgres://x\n", 0o600), "x.ts": (b"DATABASE_URL=1", 0o600)})
         self.assertIn(".env sets a database variable (DATABASE_URL)", rd_cache.env_files_why(t, [".env"]))
@@ -153,6 +244,19 @@ class Identity(unittest.TestCase):
                   (c, ["vitest", "run"], "", "heavy"), (self.cid(sha="e" * 40), ["vitest", "run"], "", "normal")]
         for args in others:
             self.assertNotEqual(k, rd_cache.key(*args))
+        # a new key format never reads an old entry: KEY_VERSION is hashed into both ids
+        old_kv = rd_cache.KEY_VERSION
+        try:
+            rd_cache.KEY_VERSION = old_kv + 1
+            self.assertNotEqual(k, rd_cache.key(c, ["vitest", "run"], "", "normal"))
+            self.assertNotEqual(c, self.cid())
+        finally:
+            rd_cache.KEY_VERSION = old_kv
+
+    def test_run_keys_the_base_only_when_the_command_reads_it(self):
+        base = self.BASE["base_specs"]
+        self.assertEqual(rd_cache.Run("k", "c").base_for(base), base)
+        self.assertEqual(rd_cache.Run("k", "c", keys_base=False).base_for(base), [])
 
 
 class Store(unittest.TestCase):
@@ -366,8 +470,10 @@ class CacheE2E(test_run.RunBase):
             ("env file shipped", lambda: wfile(os.path.join(wt, ".env"), "A=1\n"), "miss"),
             ("env file content", lambda: wfile(os.path.join(wt, ".env"), "A=2\n"), "miss"),
             ("commit", lambda: (self.git("-C", wt, "add", "-A"), self.git("-C", wt, "commit", "-qm", "c2")), "miss"),
-            ("base branch appears", lambda: self.git("-C", wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1"), "miss"),
-            ("base branch moves", lambda: self.git("-C", wt, "update-ref", "refs/remotes/origin/dev", "HEAD"), "miss"),
+            # `vitest run` never reads origin/dev: its moves must not cost the hit (2026-11-24: 0 pool hits
+            # in 2,176 lookups while origin/dev moved every ~85 min)
+            ("base branch appears", lambda: self.git("-C", wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1"), "hit"),
+            ("base branch moves", lambda: self.git("-C", wt, "update-ref", "refs/remotes/origin/dev", "HEAD"), "hit"),
         ]
         for what, change, want in steps:
             with self.subTest(what=what):
@@ -382,6 +488,46 @@ class CacheE2E(test_run.RunBase):
             with self.subTest(what=what):
                 self.assertEqual(go(**dict(env)), want, what)
                 self.assertEqual(go(**dict(env)), "hit", what + " (repeat)")
+
+    def test_a_command_that_reads_the_base_branch_misses_when_it_moves(self):
+        def go(*argv):
+            before = self.runs()
+            r = self.rrun(*argv)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return "miss" if self.runs() > before else "hit"
+        changed = ("vitest", "run", "--changed", "origin/dev")
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD")
+        self.assertEqual((go(*changed), go(*changed), go("vitest", "run"), go("vitest", "run")),
+                         ("miss", "hit", "miss", "hit"))
+        wfile(os.path.join(self.wt, "x.txt"), "x\n")
+        self.git("-C", self.wt, "add", "x.txt")
+        self.git("-C", self.wt, "commit", "-qm", "x")
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1")
+        self.assertEqual((go(*changed), go("vitest", "run")), ("miss", "miss"))     # new HEAD: both miss
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD")    # only the base moves
+        self.assertEqual((go(*changed), go(*changed), go("vitest", "run")), ("miss", "hit", "hit"))
+        # a config that sets test.changed keys it too, for the plain command
+        wfile(os.path.join(self.wt, "vitest.config.ts"), "export default {test: {changed: 'origin/dev'}}\n")
+        self.assertEqual((go("vitest", "run"), go("vitest", "run")), ("miss", "hit"))
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1")
+        self.assertEqual(go("vitest", "run"), "miss")
+        os.unlink(os.path.join(self.wt, "vitest.config.ts"))
+        # a committed symlink as the config: its blob is the target's path, so it counts as unreadable
+        wfile(os.path.join(self.wt, "real.config.ts"), "export default {test: {changed: 'origin/dev'}}\n")
+        os.symlink("real.config.ts", os.path.join(self.wt, "vitest.config.ts"))
+        self.git("-C", self.wt, "add", "real.config.ts", "vitest.config.ts")
+        self.git("-C", self.wt, "commit", "-qm", "link")
+        self.assertEqual((go("vitest", "run"), go("vitest", "run")), ("miss", "hit"))
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1")
+        self.assertEqual(go("vitest", "run"), "miss")
+        self.git("-C", self.wt, "rm", "-q", "vitest.config.ts", "real.config.ts")
+        self.git("-C", self.wt, "commit", "-qm", "unlink")
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD")
+        # a package.json script that reads the base keys it too
+        wfile(os.path.join(self.wt, "package.json"), json.dumps({"scripts": {"test": "vitest run --changed origin/dev"}}))
+        self.assertEqual((go("npm", "test"), go("npm", "test")), ("miss", "hit"))
+        self.git("-C", self.wt, "update-ref", "refs/remotes/origin/dev", "HEAD~1")
+        self.assertEqual(go("npm", "test"), "miss")
 
     def test_files_changed_between_key_and_send_are_never_saved(self):
         """The key is computed, then (during the push) a file changes, so the worker gets other

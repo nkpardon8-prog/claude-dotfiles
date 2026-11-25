@@ -736,7 +736,8 @@ def argv_refusal(cfg, wt, argv):
 
 def shipped_reader(wt, tar, deleted):
     """-> read(rel): a file's bytes exactly as the worker will have it (the overlay's copy, else
-    the pushed commit's; None when deleted / absent)."""
+    the pushed commit's; None when deleted / absent / not a regular file, e.g. a committed symlink,
+    whose blob is its target's path and not what a tool loading it reads)."""
     over = {n: d for n, _m, d in rd_cache.tar_members(tar)}
     gone = set(deleted)
 
@@ -745,9 +746,25 @@ def shipped_reader(wt, tar, deleted):
             return over[rel]
         if rel in gone:
             return None
-        p = subprocess.run(["git", "cat-file", "blob", "%s:%s" % (wt["sha"], rel)], cwd=wt["top"],
-                           capture_output=True)
+        p = subprocess.run(["git", "ls-tree", "-z", wt["sha"], "--", rel], cwd=wt["top"], capture_output=True)
+        m = re.match(rb"^(100644|100755) blob ([0-9a-f]+)\t", p.stdout) if p.returncode == 0 else None
+        if m is None:
+            return None
+        p = subprocess.run(["git", "cat-file", "blob", m.group(2).decode()], cwd=wt["top"], capture_output=True)
         return p.stdout if p.returncode == 0 else None
+
+    def names(d):
+        """The file names directly in repo dir d ("" = top) as shipped; None when git cannot list it."""
+        pre = d + "/" if d else ""
+        p = subprocess.run(["git", "ls-tree", "--name-only", "-z", wt["sha"], "--", pre or "."],
+                           cwd=wt["top"], capture_output=True)
+        if p.returncode != 0:
+            return None
+        got = {os.path.basename(n.decode("utf-8", "surrogateescape").rstrip("/"))
+               for n in p.stdout.split(b"\0") if n}
+        got |= {n[len(pre):] for n in over if n.startswith(pre) and "/" not in n[len(pre):]}
+        return {n for n in got if pre + n not in gone}
+    read.names = names
     return read
 
 
@@ -767,8 +784,9 @@ def cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs):
         rd_cache.why_not_script(argv, wt["relcwd"], shipped_reader(wt, tar, deleted))
     if why:
         return None, why
-    cid = rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps)
-    return rd_cache.Run(rd_cache.key(cid, argv, wt["relcwd"], job["cls"]), cid), None
+    keys_base = rd_cache.reads_base(argv, wt["relcwd"], shipped_reader(wt, tar, deleted))
+    cid = rd_cache.content_id(wt["sha"], base if keys_base else [], tar, envs, deleted, env, deps)
+    return rd_cache.Run(rd_cache.key(cid, argv, wt["relcwd"], job["cls"]), cid, keys_base), None
 
 
 # ---------------------------------------------------------------------------- deps dirs
@@ -3131,7 +3149,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
                                                                      len(deleted), len(tar)), "overlay_s")
     env = ship_env(cfg, env_pairs, wt["top"])
     if cache is not None:            # what this attempt really sends must be what the key hashed
-        cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
+        cache.shipped(rd_cache.content_id(wt["sha"], cache.base_for(base), tar, envs, deleted, env, deps))
     run_id = str(uuid.uuid4())
     pred = round(h.run_s, 1) if isinstance(h.run_s, (int, float)) else None
     if pred is not None:

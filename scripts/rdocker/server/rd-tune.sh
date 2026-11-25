@@ -11,8 +11,9 @@
 #    ~/rr filesystem is low on space, least-recently-used mirrors, then store entries (see prune());
 #    every 30 min, the pool result cache ~/rr/rcache (home worker): expired, then LRU over RCACHE_MAX_MB;
 #    Every 30 min and only while no rrun slot is held: npm cache over 1 GB, and - on non-home workers
-#    only - stopped containers (> 24 h) and images (unused > 72 h), never anything labelled
-#    rdocker.keep (the home host's janitor owns those);
+#    only - stopped containers (> 24 h) and images (unused, built > 72 h ago), never anything labelled
+#    rdocker.keep nor a KEEP_IMAGE_REPOS image (the DB images; see pin_keep_images) (the home host's
+#    janitor owns those);
 #  * `rd-tune prune` (as the rd user, e.g. a Mac worker): just the ~/rr prune below, single instance
 #    (~/rr/state/prune.lock), at low priority (nice 19; macOS taskpolicy -b, Linux ionice -c3). A Mac worker
 #    has no systemd: its root daemon rd-worker-mac runs this as rd every 10 min (install-worker-mac.sh copies
@@ -43,6 +44,8 @@ fi
 PRUNE_MIN_FREE_PCT=${PRUNE_MIN_FREE_PCT:-20} PRUNE_TARGET_FREE_PCT=${PRUNE_TARGET_FREE_PCT:-25}
 PRUNE_MIN_FREE_GB=${PRUNE_MIN_FREE_GB:-25} PRUNE_TARGET_FREE_GB=${PRUNE_TARGET_FREE_GB:-30}
 PRUNE_RECENT_S=${PRUNE_RECENT_S:-1800}
+# image repositories (any tag; space-separated) the docker prune never removes: see pin_keep_images
+KEEP_IMAGE_REPOS=${KEEP_IMAGE_REPOS:-postgres}
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 # sha256 chain steps/s (4 threads) of the i7-6700 reference. UNCALIBRATED until measured on the HP.
@@ -336,7 +339,7 @@ prune_rcache() {   # $1 = rr
 
 # Docker on a non-home worker, only while holding every rrun slot (idle_run: a run may have pulled an image
 # it has not started yet) and never anything labelled rdocker.keep. Normal (every 30 min): stopped containers > 24 h,
-# images unused > 72 h. "pressure" (a Mac whose ~/rr is low: its Colima VM disk lives there; at most every
+# unused images built > 72 h ago. "pressure" (a Mac whose ~/rr is low: its Colima VM disk lives there; at most every
 # 10 min): also every image no container uses (created > 10 min ago) and every anonymous volume none uses
 # (API 1.42+, client and server: older ones prune named volumes too), then fstrim in the VM so its sparse
 # disk gives the space back. Linux: the system docker while systemd runs
@@ -354,12 +357,48 @@ docker_up() {
     [ -z "${RD_NO_SERVICES:-}" ] && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker
   fi
 }
+# The DB images (KEEP_IMAGE_REPOS, any tag) stay through docker's own prune. `image prune -a --filter until=`
+# tests an image's BUILD date, not its last use, and cannot exclude a repository: postgres:17 (dentall's
+# provisioner) and postgres:16-alpine (rr_pg_lanes) went at every prune that found no container up, and the
+# next DB job re-pulled ~450 MB (2026-11-24). `image prune -a` keeps every image a container uses, even a
+# stopped one, and the container prune skips rdocker.keep: so each such local image gets one created,
+# never-started pin container (rd-pin-<repo>-<tag>, labels rdocker.keep=1 + rdocker.pin=<repo:tag>, no
+# network). When the tag moves to a newer pull, the pin is re-made on it and the old image becomes prunable.
+# A pin is removed (by the id just checked) only when its name AND its rdocker.pin label are ours;
+# nothing else is touched. A pin that cannot be made (or a listing that fails) skips that image prune.
+pin_keep_images() {   # status 1 = a pin could not be made (the caller then skips the image prune)
+  local repo list="" ref iid name have hid rest bad=0
+  for repo in $KEEP_IMAGE_REPOS; do
+    list="$list$(tmo 60 docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' "$repo" 2>/dev/null || echo FAIL)
+"
+  done
+  case "$list" in *FAIL*) return 1 ;; esac
+  while read -r ref iid; do
+    case "$ref" in *'<none>'*|'') continue ;; esac
+    name="rd-pin-$(printf '%s' "$ref" | tr -c 'A-Za-z0-9_.-' '-')"
+    # "<id>|<image>|<pin label>|", compared as exact strings (no field splitting: a label is not trimmed)
+    have=$(tmo 30 docker container inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "rdocker.pin"}}|' "$name" 2>/dev/null)
+    if [ -n "$have" ]; then
+      hid=${have%%|*} rest=${have#*|}
+      [ "$rest" = "$iid|$ref|" ] && continue                # pinned on the image the tag points at now
+      if [ "${rest#*|}" != "$ref|" ]; then                  # that name is not our pin: never touched
+        echo "rd-tune: pin $ref: the name $name is taken by another container"; bad=1; continue
+      fi
+      tmo 60 docker container rm "$hid" >/dev/null 2>&1 || { bad=1; continue; }   # by the id checked above
+    fi
+    tmo 60 docker container create --pull never --network none --name "$name" --label rdocker.keep=1 \
+      --label "rdocker.pin=$ref" "$ref" >/dev/null 2>&1 || { echo "rd-tune: pin $ref: create failed"; bad=1; }
+  done <<< "$list"
+  return "$bad"
+}
 docker_prune() {   # $1 = pressure | (empty)
   [ "$IS_HOME" != 1 ] && docker_up || return 0
   local t="tmo 600" api   # a hung daemon never wedges the prune (and its locks)
+  local pinned=1
+  pin_keep_images || pinned=0                         # before any prune: the DB images stay
   $t docker container prune -f --filter until=24h --filter "label!=rdocker.keep" >/dev/null 2>&1
   if [ "${1:-}" = pressure ]; then
-    $t docker image prune -a -f --filter until=10m --filter "label!=rdocker.keep" >/dev/null 2>&1
+    [ "$pinned" = 1 ] && $t docker image prune -a -f --filter until=10m --filter "label!=rdocker.keep" >/dev/null 2>&1
     # anonymous volumes only (as the mini's janitor): a named one may be kept alive by rdocker.ttl
     api=$(tmo 20 docker version --format '{{.Client.APIVersion}} {{.Server.APIVersion}}' 2>/dev/null)
     if awk -v v="$api" 'BEGIN { n = split(v, w, " "); if (n != 2) exit 1
@@ -370,7 +409,7 @@ docker_prune() {   # $1 = pressure | (empty)
     is_mac && [ -x "$colima" ] && tmo 120 "$colima" ssh -- sudo fstrim -a >/dev/null 2>&1
     echo "rd-tune: prune docker (disk low: unused images and volumes)"
   else
-    $t docker image prune -a -f --filter until=72h --filter "label!=rdocker.keep" >/dev/null 2>&1
+    [ "$pinned" = 1 ] && $t docker image prune -a -f --filter until=72h --filter "label!=rdocker.keep" >/dev/null 2>&1
   fi
 }
 

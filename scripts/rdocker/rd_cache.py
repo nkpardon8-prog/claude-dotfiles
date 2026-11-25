@@ -17,9 +17,12 @@ What is cacheable (why_not_static / why_not_script; anything else is never cache
   docker on the worker (the runner reports it), was interrupted, retried after a lost worker in a
   sharded run, hedged, or whose files changed while it ran.
 
-The key (key()) = sha256 over content_id + argv + relcwd + job class. content_id() hashes exactly
-what a worker receives for the run: HEAD sha (the commit pushed), the base branches pushed (as
-shas), every overlay member (path, exec bit, sha256 of the bytes) plus which are env files, the
+The key (key()) = sha256 over KEY_VERSION + content_id + argv + relcwd + job class. content_id()
+hashes exactly what a worker receives for the run that can decide its result: HEAD sha (the commit
+pushed), the base branches pushed (as shas) ONLY when the command can read them (reads_base: a
+`--changed <ref>` / `--changedSince` style flag in argv or the npm script it runs; tsc, eslint and
+plain vitest / jest never compare against origin/dev, and origin/dev moving ~every 85 min used to
+invalidate every entry: 0 pool hits in 2,176 lookups, 2026-11-24), every overlay member (path, exec bit, sha256 of the bytes) plus which are env files, the
 deleted list, the env dict of the runner header (rr_env_pass + -e, values included), the deps dirs,
 and the runner script itself. The worker's mirror is `git checkout -f <sha>` + `git clean -fd`,
 then the overlay and deletes: its tracked/untracked tree is a function of exactly these inputs.
@@ -44,7 +47,8 @@ import time
 import rd_common
 
 CACHE_DIR = os.path.join(rd_common.STATE_DIR, "cache")
-FORMAT = 1
+FORMAT = 1            # the entry's meta "v" (the pool runner checks it too: rr_runner.pl rc_*)
+KEY_VERSION = 2       # bump whenever what key() / content_id() hash changes (2: base shas only if read)
 PASS_TTL_S = 24 * 3600
 FAIL_TTL_S = 20 * 60
 MAX_BYTES = 200 * 1024 * 1024
@@ -61,6 +65,25 @@ NODE_FLAG_RE = re.compile(r"^--(max-old-space-size|max-semi-space-size|stack-siz
 DB_NAME_RE = re.compile(r"(^|_)(DB|DATABASE|PG|POSTGRES|POSTGRESQL|MYSQL|MONGO|MONGODB|REDIS|NEON|SUPABASE)"
                         r"(_|$)|^PG[A-Z]+$|DATABASE_URL", re.I)
 SHELL_RE = re.compile(r"[;|<>`$()\\&\n]")   # globs are fine: the same files expand the same way
+# an argument that makes a cacheable tool compare against a git ref (the pushed base branches): vitest
+# --changed[=<ref>], jest --changedSince / --changedFilesWithAncestor / --onlyChanged / -o / --lastCommit,
+# or a ref spelled out. Over-matching only costs hits (the base stays in the key); missing one is a stale hit.
+BASE_ARG_RE = re.compile(r"^-o$|^--(no-?)?(changed|only-?changed|last-?commit)|origin/|refs/|(^|[=\s])(dev|main|master)$",
+                         re.I)
+# vitest / jest also take those from a config file (vitest `test.changed`, jest `changedSince` / `onlyChanged`):
+# the configs they load from the run's dir or a parent (jest walks up), what those import, and a --config file
+# are read as shipped. Any of these words in one (comments too), or a config that fans out to other project
+# dirs (projects / workspace), keeps the base in the key; so does a flag that moves the root.
+CONFIG_FILE_RE = re.compile(r"^(vitest|vite|jest)\.(config|workspace|projects)\b.*\.(json|[cm]?[jt]sx?)$")
+CONFIG_BASE_RE = re.compile(r"changed|last-?commit|\bprojects\b|\bworkspace\b|origin/", re.I)
+CONFIG_IMPORT_RE = re.compile(r"""['"`](\.{1,2}/[^'"`\n]+)['"`]""")
+CONFIG_EXTS = ("", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json")
+CONFIG_INDEX = ("index.ts", "index.js")   # an import of a dir
+TS_SWAPS = ((".js", ".ts"), (".js", ".tsx"), (".jsx", ".tsx"), (".mjs", ".mts"), (".cjs", ".cts"))
+CONFIG_FLAGS = {"-c", "--config"}
+ROOT_FLAGS = {"-r", "--root", "--dir", "--rootDir", "--roots", "--project", "--projects", "--workspace",
+              "--selectProjects"}
+CONFIG_MAX_FILES = 40
 
 
 # ---------------------------------------------------------------------------- what is cacheable
@@ -193,25 +216,160 @@ def _script_why(scripts, name, depth=0):
     return None
 
 
-def why_not_script(argv, relcwd, read_file):
-    """npm argv -> None when its script (and pre/post) are known checks only, else why not.
-    read_file(repo-relative path) -> bytes or None: the file exactly as rrun ships it."""
-    if not argv or os.path.basename(argv[0]) != "npm":
-        return None
+def _npm_scripts(argv, relcwd, read_file):
+    """npm argv -> (script name, its package.json scripts dict, None) or (None, None, why not)."""
     name, _prefix, why = _npm_parse(argv)
     if why:
-        return why
+        return None, None, why
     d = npm_pkg_dir(argv, relcwd)
     if d is None:
-        return "npm --prefix outside the repo"
+        return None, None, "npm --prefix outside the repo"
     raw = read_file((d + "/" if d else "") + "package.json")
     try:
         scripts = json.loads(raw.decode("utf-8")).get("scripts") if raw else None
     except (ValueError, UnicodeDecodeError, AttributeError):
         scripts = None
     if not isinstance(scripts, dict):
-        return "no readable package.json scripts in ./%s" % d
-    return _script_why(scripts, name)
+        return None, None, "no readable package.json scripts in ./%s" % d
+    return name, scripts, None
+
+
+def why_not_script(argv, relcwd, read_file):
+    """npm argv -> None when its script (and pre/post) are known checks only, else why not.
+    read_file(repo-relative path) -> bytes or None: the file exactly as rrun ships it."""
+    if not argv or os.path.basename(argv[0]) != "npm":
+        return None
+    name, scripts, why = _npm_scripts(argv, relcwd, read_file)
+    return why or _script_why(scripts, name)
+
+
+def _script_words(scripts, name, depth=0):
+    """Every word the npm script `name` runs (pre/post and nested `npm run`s included), or None when
+    any of it cannot be read (the caller then keeps the base branches in the key)."""
+    body = scripts.get(name)
+    if not isinstance(body, str) or depth > 4:
+        return None
+    out = []
+    for hook in ("pre" + name, "post" + name):
+        if hook in scripts:
+            more = _script_words(scripts, hook, depth + 1)
+            if more is None:
+                return None
+            out += more
+    for seg in body.split("&&"):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            return None
+        out += words
+        if words and words[0] == "npm":
+            sub, _prefix, why = _npm_parse(words)
+            more = None if why else _script_words(scripts, sub, depth + 1)
+            if more is None:
+                return None
+            out += more
+    return out
+
+
+def _rel(*parts):
+    p = os.path.normpath(os.path.join(*parts)).replace(os.sep, "/")
+    return None if p == ".." or p.startswith(("../", "/")) else ("" if p == "." else p)
+
+
+def _configs_read_base(words, run_dirs, read_file, names):
+    """words = everything the command runs; run_dirs = the repo-relative dirs it runs in. -> True when a
+    vitest / jest config it may load (see CONFIG_FILE_RE) could read a git ref, or cannot be told."""
+    todo, seen, listed_in = [], set(), {}
+
+    def shipped(rel):                # is rel an entry (file, symlink, dir...) git ships? None = cannot tell
+        d = os.path.dirname(rel)
+        if d not in listed_in:
+            listed_in[d] = names(d)
+        return None if listed_in[d] is None else os.path.basename(rel) in listed_in[d]
+    for i, w in enumerate(words):
+        flag, eq, val = w.partition("=")
+        if flag in ROOT_FLAGS:
+            return True
+        if flag in CONFIG_FLAGS:
+            val = val if eq else (words[i + 1] if i + 1 < len(words) else "")
+            if val.lstrip().startswith("{"):
+                if CONFIG_BASE_RE.search(val):
+                    return True
+                continue
+            todo += [(_rel(d or ".", val), True) for d in run_dirs]
+    for d in run_dirs:
+        while d is not None:
+            listed = names(d)
+            if listed is None:
+                return True
+            found = [n for n in sorted(listed) if CONFIG_FILE_RE.match(n)]
+            if any(re.match(r"^\w+\.(workspace|projects)\b", n) for n in found):
+                return True                  # fans out to other dirs' configs
+            todo += [(_rel(d or ".", n), True) for n in found]
+            if "package.json" in listed:
+                raw = read_file(_rel(d or ".", "package.json"))
+                try:
+                    pkg = json.loads(raw.decode("utf-8")) if raw is not None else {}
+                except (ValueError, UnicodeDecodeError):
+                    return True
+                if not isinstance(pkg, dict):
+                    return True
+                if CONFIG_BASE_RE.search(json.dumps([pkg.get("jest"), pkg.get("vitest")])):
+                    return True
+            d = None if d == "" else _rel(d, "..")
+    while todo:
+        path, exact = todo.pop()
+        if path is None:
+            return True
+        # every file the path may resolve to (vite / esbuild also load x.ts for an import of ./x.js); all
+        # that exist are read. None found, or one that is listed but is not a regular file (read_file reads
+        # a symlink as absent; it may win over a readable sibling) = keep the base
+        cands = [path] if exact else [path + e for e in CONFIG_EXTS] + [_rel(path, i) for i in CONFIG_INDEX] + \
+            [path[:-len(js)] + ts for js, ts in TS_SWAPS if path.endswith(js)]
+        found = False
+        for c in dict.fromkeys(c for c in cands if c):
+            if c in seen:
+                found = True
+                continue
+            data = read_file(c)
+            if data is None:
+                if shipped(c) is not False:
+                    return True      # there but not a regular file (a symlink, a dir...), or unknown
+                continue
+            found = True
+            seen.add(c)
+            if len(seen) > CONFIG_MAX_FILES:
+                return True
+            text = data.decode("utf-8", "replace")
+            if CONFIG_BASE_RE.search(text):
+                return True
+            todo += [(_rel(os.path.dirname(c) or ".", m), False) for m in CONFIG_IMPORT_RE.findall(text)]
+        if not found:
+            return True
+    return False
+
+
+def reads_base(argv, relcwd, read_file):
+    """-> True when the (cacheable) command may compare the tree against a git ref, so the base
+    branches pushed with it are part of what decides its result; False for tsc / eslint / plain
+    vitest / jest. Unknown (an npm script or a config it cannot read) = True. read_file.names(dir) ->
+    the file names directly in a repo-relative dir as shipped (None = unknown)."""
+    words, run_dirs = list(argv), [relcwd or ""]
+    if argv and os.path.basename(argv[0]) == "npm":
+        name, scripts, why = _npm_scripts(argv, relcwd, read_file)
+        more = None if why else _script_words(scripts, name)
+        if more is None:
+            return True
+        words += more
+        run_dirs.append(npm_pkg_dir(argv, relcwd))
+    if any(BASE_ARG_RE.search(w) for w in words):
+        return True
+    if not any(re.sub(r"\.[cm]?js$", "", os.path.basename(w)) in ("vitest", "jest") for w in words):
+        return False                     # tsc / vue-tsc / eslint: no git-ref mode
+    names = getattr(read_file, "names", None)
+    if names is None or None in run_dirs:
+        return True
+    return _configs_read_base(words, sorted(set(run_dirs)), read_file, names)
 
 
 def env_files_why(tar, env_files):
@@ -250,9 +408,10 @@ def runner_digest():
 
 
 def content_id(sha, base_specs, tar, env_files, deleted, env, deps):
-    """sha256 of everything a worker receives that decides its files and environment."""
+    """sha256 of everything a worker receives that decides its files and environment. base_specs =
+    the base branches pushed, or [] for a command that does not read them (Run.base_for)."""
     h = hashlib.sha256()
-    head = {"v": FORMAT, "sha": sha, "base": sorted(base_specs), "env_files": sorted(env_files),
+    head = {"v": FORMAT, "kv": KEY_VERSION, "sha": sha, "base": sorted(base_specs), "env_files": sorted(env_files),
             "deleted": sorted(deleted), "env": sorted(env.items()), "deps": list(deps),
             "runner": runner_digest()}
     h.update(json.dumps(head, sort_keys=True).encode("utf-8", "surrogateescape") + b"\0")
@@ -263,7 +422,7 @@ def content_id(sha, base_specs, tar, env_files, deleted, env, deps):
 
 
 def key(cid, argv, relcwd, cls):
-    raw = json.dumps({"v": FORMAT, "content": cid, "argv": list(argv), "relcwd": relcwd, "cls": cls})
+    raw = json.dumps({"v": FORMAT, "kv": KEY_VERSION, "content": cid, "argv": list(argv), "relcwd": relcwd, "cls": cls})
     return hashlib.sha256(raw.encode("utf-8", "surrogateescape")).hexdigest()
 
 
@@ -313,8 +472,9 @@ class Run:
     """One cacheable rrun in flight: what it must have shipped (content id), what it printed, how
     each attempt ended. save() stores it only when every check passed."""
 
-    def __init__(self, k, cid):
+    def __init__(self, k, cid, keys_base=True):
         self.key, self.cid = k, cid
+        self.keys_base = keys_base   # reads_base: the base branches are part of cid
         self.rec = Recorder()
         self.sharded, self.expect = False, 1
         self.finished, self.bad = [], None
@@ -324,6 +484,10 @@ class Run:
     def taint(self, why):
         with self.lock:
             self.bad = self.bad or why
+
+    def base_for(self, base_specs):
+        """The base refspecs content_id hashes for this run: all of them, or none (reads_base)."""
+        return list(base_specs) if self.keys_base else []
 
     def shipped(self, cid):
         if cid != self.cid:

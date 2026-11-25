@@ -1004,6 +1004,125 @@ class Tune(unittest.TestCase):
         self.assertNotIn("volume prune", calls)
         self.assertNotIn("until=10m", calls)
 
+    # a fake docker over a JSON table of images and containers: answers what pin_keep_images reads, applies
+    # its container create / rm to the table, and logs every call
+    FAKE_DOCKER_TABLE = r"""#!/usr/bin/python3 -I
+import json, os, sys
+p = os.environ["FAKE_TABLE"]
+st = json.load(open(p))
+a = sys.argv[1:]
+open(os.environ["FAKE_LOG"], "a").write(" ".join(a) + "\n")
+imgs, cons = st["images"], st["containers"]
+def save():
+    json.dump(st, open(p, "w"))
+if a[:2] == ["image", "ls"]:
+    repo = a[-1]
+    print("\n".join("%s %s" % (r, i["id"]) for i in imgs for r in i["refs"] if r.rsplit(":", 1)[0] == repo))
+elif a[:2] == ["container", "inspect"]:
+    c = [c for c in cons if c["name"] == a[-1]]
+    if not c:
+        sys.exit(1)
+    print("%s|%s|%s|" % (c[0]["id"], c[0]["image"], c[0].get("labels", {}).get("rdocker.pin", "")))
+elif a[:2] == ["container", "rm"]:
+    st["containers"] = [c for c in cons if c["id"] != a[2]]
+    save()
+elif a[:2] == ["container", "create"]:
+    name = a[a.index("--name") + 1]
+    if any(c["name"] == name for c in cons):
+        sys.exit(1)
+    labels = dict(a[i + 1].split("=", 1) for i in range(len(a)) if a[i] == "--label")
+    iid = [i["id"] for i in imgs if a[-1] in i["refs"]][0]
+    cons.append(dict(id="cid-" + name, name=name, image=iid, labels=labels))
+    save()
+"""
+
+    def pin(self, images, containers=(), **env):
+        import json
+        bin_ = os.path.join(self.tmp, "fakebin")
+        os.makedirs(bin_, exist_ok=True)
+        p = os.path.join(bin_, "docker")
+        with open(p, "w") as f:
+            f.write(self.FAKE_DOCKER_TABLE)
+        os.chmod(p, 0o755)
+        table, log = os.path.join(self.tmp, "table.json"), os.path.join(self.tmp, "dlog")
+        if images is not None:
+            with open(table, "w") as f:
+                json.dump({"images": images, "containers": list(containers)}, f)
+        os.path.exists(log) and os.unlink(log)
+        e = rdmods.child_env(self.tmp, bin_, RD_CONF=self.conf(), RD_RR_ROOT=self.rr, FAKE_TABLE=table,
+                             FAKE_LOG=log, **env)
+        e["PATH"] = bin_ + ":" + e["PATH"]
+        r = subprocess.run(["/bin/bash", "-c", '. "$0" --source; pin_keep_images; echo "rc=$?"', TUNE], env=e,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.last_out = r.stdout
+        with open(table) as f:
+            st = json.load(f)
+        calls = read(log).splitlines() if os.path.exists(log) else []
+        return {c["name"]: (c["image"], c.get("labels", {})) for c in st["containers"]}, calls, st
+
+    def test_db_images_are_pinned_so_dockers_own_prune_keeps_them(self):
+        """2026-11-24: `image prune -a --filter until=72h` tests the BUILD date, so postgres:17 (two weeks
+        old upstream) went at every prune and every next DB job re-pulled ~450 MB. A stopped pin container
+        per DB image makes docker's own prune keep it."""
+        imgs = [dict(id="sha256:pg17", refs=["postgres:17"]), dict(id="sha256:pg16", refs=["postgres:16-alpine"]),
+                dict(id="sha256:node", refs=["node:20"]), dict(id="sha256:dig", refs=["postgres:<none>"])]
+        other = dict(id="c-other", name="someones-app", image="sha256:node", labels={})
+        cons, calls, _ = self.pin(imgs, [other])
+        self.assertEqual(cons["rd-pin-postgres-17"], ("sha256:pg17", {"rdocker.keep": "1", "rdocker.pin": "postgres:17"}))
+        self.assertEqual(cons["rd-pin-postgres-16-alpine"][0], "sha256:pg16")
+        self.assertEqual(sorted(cons), ["rd-pin-postgres-16-alpine", "rd-pin-postgres-17", "someones-app"])
+        create = [c for c in calls if c.startswith("container create")]
+        self.assertTrue(all("--pull never --network none" in c for c in create), create)
+        self.assertIn("rc=0", self.last_out)
+        # again: nothing to do (no create, no rm)
+        cons2, calls, _ = self.pin(None)
+        self.assertEqual(cons2, cons)
+        self.assertFalse([c for c in calls if c.startswith(("container create", "container rm"))], calls)
+
+    def test_a_moved_tag_is_repinned_and_a_foreign_container_is_never_touched(self):
+        imgs = [dict(id="sha256:new17", refs=["postgres:17"]), dict(id="sha256:old17", refs=[]),
+                dict(id="sha256:pg16", refs=["postgres:16"]), dict(id="sha256:pg15", refs=["postgres:15"])]
+        ours = dict(id="c-ours", name="rd-pin-postgres-17", image="sha256:old17",
+                    labels={"rdocker.keep": "1", "rdocker.pin": "postgres:17"})
+        squat = dict(id="c-squat", name="rd-pin-postgres-16", image="sha256:x", labels={"rdocker.pin": "something-else"})
+        padded = dict(id="c-pad", name="rd-pin-postgres-15", image="sha256:y", labels={"rdocker.pin": " postgres:15 "})
+        cons, calls, _ = self.pin(imgs, [ours, squat, padded])
+        self.assertEqual(cons["rd-pin-postgres-17"][0], "sha256:new17")       # the old image is now prunable
+        self.assertEqual(cons["rd-pin-postgres-16"], ("sha256:x", {"rdocker.pin": "something-else"}))
+        self.assertEqual(cons["rd-pin-postgres-15"], ("sha256:y", {"rdocker.pin": " postgres:15 "}))   # not ours
+        self.assertIn("container rm c-ours", calls)                           # by the id it checked
+        self.assertFalse([c for c in calls if c.startswith("container rm") and c != "container rm c-ours"], calls)
+        # the squatted name leaves postgres:16 unpinned: status 1, so the caller skips the image prune
+        self.assertIn("rc=1", self.last_out)
+        self.assertIn("rd-tune: pin postgres:16: the name rd-pin-postgres-16 is taken", self.last_out)
+
+    def test_keep_image_repos_is_configurable(self):
+        imgs = [dict(id="sha256:pg", refs=["postgres:17"]), dict(id="sha256:r", refs=["redis:7"])]
+        cons, _calls, _ = self.pin(imgs, KEEP_IMAGE_REPOS="redis")
+        self.assertEqual(sorted(cons), ["rd-pin-redis-7"])
+
+    def test_no_image_prune_when_a_pin_cannot_be_made(self):
+        sock, log = self.fake_docker()
+        fake = os.path.join(self.bin, "docker")            # every call logs; `container create` fails
+        src = read(fake).replace("exit 0\n", '[ "$1 $2" = "container create" ] && exit 1\n'
+                                 '[ "$1 $2" = "image ls" ] && echo "postgres:17 sha256:pg"\nexit 0\n')
+        with open(fake, "w") as f:
+            f.write(src)
+        self.mac_prune(0, RD_DOCKER_SOCK=sock)
+        calls = " | ".join(self.docker_calls(log))
+        self.assertIn("container create", calls)
+        self.assertIn("container prune", calls)
+        self.assertNotIn("image prune", calls)
+
+    def test_pins_are_made_before_the_prunes(self):
+        sock, log = self.fake_docker()
+        self.mac_prune(0, RD_DOCKER_SOCK=sock)
+        calls = self.docker_calls(log)
+        pin = [i for i, c in enumerate(calls) if " image ls " in c and c.endswith(" postgres")]
+        prune = [i for i, c in enumerate(calls) if " prune " in c]
+        self.assertTrue(pin and prune and max(pin) < min(prune), calls)
+
     def test_bench_writes_speed_relative_to_reference(self):
         node = os.path.join(self.bin, "node")
         with open(node, "w") as f:
