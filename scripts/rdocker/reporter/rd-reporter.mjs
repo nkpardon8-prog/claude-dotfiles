@@ -1423,7 +1423,6 @@ function addTokens(state, day, prov, u) {
   const d = (state.days[day] ??= {});
   const p = (d[prov] ??= { ...ZERO[prov] });
   for (const k of Object.keys(p)) p[k] += u[k];
-  if (!state.since || day < state.since) state.since = day;
 }
 
 /** Count one candidate line into `state` (rec = the file's state record; codex keeps its last running total there). */
@@ -1554,6 +1553,7 @@ export async function scanAgentTokens({ claudeDir, codexDir, stateFile, now = Da
   }
   const cutoff = localDay(now - AGENT_TOKENS_DAYS * 86_400_000);
   state.days = Object.fromEntries(Object.entries(state.days).filter(([d]) => d > cutoff).sort(([a], [b]) => (a < b ? -1 : 1)));
+  state.since = Object.keys(state.days)[0] ?? null; // the first day the totals cover
   const out = snapshot(files);
   saveTokenState(stateFile, out);
   return { files: read, bytes, ms: Date.now() - t0, agentTokens: agentTokensPayload(out) };

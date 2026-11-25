@@ -127,7 +127,7 @@ test('days older than AGENT_TOKENS_DAYS are dropped; local-day bucketing', async
   fs.writeFileSync(path.join(t.c, 'sess.jsonl'), [claude('msg_old', [0, 0, 0, 1], old), claude('msg_new', [0, 0, 0, 2])].join('\n') + '\n');
   const res = await scan(t);
   assert.deepEqual(Object.keys(res.agentTokens.days), [day]);
-  assert.equal(res.agentTokens.since, r.localDay(Date.parse(old))); // since = first day ever seen
+  assert.equal(res.agentTokens.since, day); // since = the first day the kept totals cover
   assert.match(r.localDay(Date.parse(T)), /^\d{4}-\d{2}-\d{2}$/);
 });
 
