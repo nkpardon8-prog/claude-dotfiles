@@ -80,8 +80,8 @@ net, never piecemeal across unrelated work. Surface the timing call.
   at 75%.
 - Any handoff or state dump before compaction goes through `/pre-compact`, never a freeform document.
 - `implementer` workers compact on their own near 270k tokens and keep a note file in
-  `~/.claude/worker-notes/`. Give a worker its whole task in the prompt, and build or fix work goes to
-  a worker type that keeps notes. Never count on a worker remembering an earlier exchange.
+  `~/.claude/worker-notes/`. Give a worker its whole task in the prompt; never count on a worker
+  remembering an earlier exchange.
 - AskUserQuestion: end every question text with the current context % (e.g. "(context: 58%)"), read
   from that file right before asking; the user cannot see the statusline while the popup is open.
 - `/mission` is opt-in, for large multi-part builds. New missions and rebaselines run budgeted
