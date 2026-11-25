@@ -52,10 +52,20 @@ if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPU
   # detail missing from both the summary and the note is looked up, never guessed.
   _W_LOG=$(printf '%s' "$INPUT" | jq -r '((.transcript_path // "") | sub("\\.jsonl$"; "")) + "/subagents/agent-" + .agent_id + ".jsonl"' 2>/dev/null)
   _W_MORE=""
+  _W_NOTE=""
   if [ -n "$_W_LOG" ] && [ -f "$_W_LOG" ]; then
     _W_MORE=" Your full earlier conversation is still on disk at $_W_LOG - if a decision or detail is missing from both the summary and your note, search that file (grep for a keyword, read around the hit) before you guess or redo work."
+    # The worker's own note is the first worker-notes path in ITS transcript (the mktemp output), so
+    # it is exact even when many workers write notes at once; summaries can drop the path.
+    _W_NOTE=$(grep -a -o -E '/[^ "\\]*/\.claude/worker-notes/[0-9]{4}-[0-9]{2}-[0-9]{2}-[A-Za-z0-9]{8}' "$_W_LOG" 2>/dev/null | head -n 1)
+    [ -n "$_W_NOTE" ] && [ -f "$_W_NOTE" ] || _W_NOTE=""
   fi
-  jq -nc --arg ctx "You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done.${_W_MORE}" \
+  if [ -n "$_W_NOTE" ]; then
+    _W_FIRST="Your note file is $_W_NOTE. Your FIRST command must be: head -n 30 '$_W_NOTE'; tail -n 40 '$_W_NOTE'; git status --short - even if the recent messages seem to show where you were."
+  else
+    _W_FIRST="Before your next action read your note file (its path is in the summary or in your earlier messages under ~/.claude/worker-notes/): its top (task, constraints) and its last 40 lines, then run git status --short."
+  fi
+  jq -nc --arg ctx "You are a worker whose conversation was just compacted. ${_W_FIRST} Then continue from Left without redoing Done.${_W_MORE}" \
     '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$ctx}}'
   exit 0
 fi
