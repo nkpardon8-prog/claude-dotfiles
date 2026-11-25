@@ -371,7 +371,8 @@ def main() -> int:
     if mode == "session-start" and isinstance(agent_id, str) and agent_id:
         # A worker's compaction: SessionStart(compact) with the PARENT's session_id plus agent_id.
         # Give the worker the same note SubagentStart gives it; the parent's baseline is not ours.
-        note = worker_note(data, cwd, sid)
+        # An oversized note spills to a worker-keyed file, never to the parent's own spill file.
+        note = worker_note(data, cwd, f"{sid}-worker")
         if note:
             print(note)
         return 0
