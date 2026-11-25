@@ -678,6 +678,48 @@ class ProbeSnippet(unittest.TestCase):
         self.assertEqual(self.run_probe(dict(req, slug="../x"))["warm_git"], 0)   # never a path
 
 
+class HpCap(unittest.TestCase):
+    """hp's measured cap (2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower; 5 -> 8 slots added
+    ~15 % throughput for +30 % per-job latency): fleet.json's 6 slots / 3 heavy ride in every request header
+    (host_for: pool, --host and warm plans alike), win over hp's rd-tune slots.cap (8), and the placement's
+    queue estimate counts 6."""
+    setUp, run_probe = ProbeSnippet.setUp, ProbeSnippet.run_probe     # same fake ~/rr + /proc
+
+    def hp(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(rd_pool.__file__)), "fleet.json")) as f:
+            return next(m for m in json.load(f)["machines"] if m["name"] == "hp")
+
+    def test_the_fleet_cap_reaches_the_worker_and_beats_its_slots_cap(self):
+        hp = self.hp()
+        self.assertEqual((hp["max_slots"], hp["heavy_slots"]), (6, 3))
+        h = rd_pool.host_for(dict(rd_common.DEFAULTS), hp)
+        self.assertEqual(h.cfg["rr_slots"], 6)
+        test_run.wfile(os.path.join(self.root, "slots.cap"), "8\n")       # hp's rd-tune MAX_SLOTS
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 25165824 kB\nMemAvailable: 16777216 kB\n")
+        o = self.run_probe({"slots": h.cfg["rr_slots"], "heavy_slots": hp["heavy_slots"]})
+        self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (6, 3))
+
+    def test_placement_and_queue_estimate_use_six_slots(self):
+        hp = self.hp()
+        pu = PlanUnit("setUp")
+        pu.setUp()
+        self.addCleanup(pu.doCleanups)
+
+        def hp_probe(busy):
+            return dict(probe(slots_cap=6, slots_busy=busy, heavy_cap=3, ncpu=8, mem_mb=16000),
+                        held=[[i, 30] for i in range(busy)], ages=[30] * busy, waiting=0)
+        machines = [hp, worker("b", 0.3)]
+        p, m = pu.plan(machines, {"rd-hp": hp_probe(5), "b": probe(slots_busy=2)})
+        reqs = {c.args[0].name: c.args[1] for c in m.call_args_list}
+        self.assertEqual((reqs["hp"]["slots"], reqs["hp"]["heavy_slots"]), (6, 3))   # the header the runner caps on
+        h = next(x for x in p.hosts if x.name == "hp")
+        self.assertEqual((h.state, h.queue_s), ("free", 0.0))                         # 5 of 6 held: one open
+        p, _ = pu.plan(machines, {"rd-hp": hp_probe(6), "b": probe(slots_busy=2)})
+        h = next(x for x in p.hosts if x.name == "hp")
+        self.assertEqual(h.state, "busy")                                             # 6 of 6: it queues
+        self.assertGreater(h.queue_s, 0.0)
+
+
 class ProbeShareSwitch(unittest.TestCase):
     """The PROBE's share switch: RR_SHARE_FILE / ~/rr/share; Colima stop on a Mac worker."""
     setUp, run_probe = ProbeSnippet.setUp, ProbeSnippet.run_probe     # same fake ~/rr + /proc

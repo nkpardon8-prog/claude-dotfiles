@@ -619,6 +619,103 @@ class FinishPlacement(unittest.TestCase):
         self.assertEqual(rt.run_probe({"slots": 1})["waiting"], 1)
 
 
+class Scope(unittest.TestCase):
+    """2026-11-24: mini-b ran a full `npm run test:db` for 7.7 h; the `kind` evidence mixed full suites with
+    runs of named files of the same script. KINDS now splits them (a "-files" kind: a positional argument
+    names files / a filter, _names_file - the rule shardable uses; dirs and globs still mean the suite), the
+    probe's kind median follows the split and its ratio table (pk) spans the family."""
+    setUp = test_pool.PlanUnit.setUp
+    plan = test_pool.PlanUnit.plan
+
+    def test_kinds_split_full_suites_from_named_files(self):
+        for sig, want in (
+                ("npm run test:db", "test-db"), ("bash -c cd server && npm run test:db", "test-db"),
+                ("npm run test:db -- --hookTimeout=1 --testTimeout=1", "test-db"),
+                ("npm run test:db -- src/__tests__/lib/", "test-db"),                  # a dir: still the suite
+                ("npm run test:db -- src/__tests__/lib/harness", "test-db"),
+                ("npm run test:db -- src/**/*.db.test.ts", "test-db"),                 # a glob too
+                ("npm run test:db > /tmp/full.log 2>&1", "test-db"),                   # a redirect is no argument
+                ("npm run test:db -- --reporter verbose", "test-db"),                  # nor a flag's value
+                ("npm run test:db -- src/a.db.test.ts", "test-db-files"),
+                ("npm --prefix server run test:db:rls -- odSameDatabase", "test-db-files"),   # a name filter
+                ("npm run test:db -- --maxWorkers=<redacted> src/a.db.test.ts", "test-db-files"),
+                ("npm run test:db -- --shard=2/3", "test-db-files"),
+                ("npm run test:db -- -t careHold", "test-db-files"),                   # a test-name filter
+                ("npm run test:db -- --testNamePattern=<redacted>", "test-db-files"),
+                ("bash -c npm run test:db 2>&1 | tail -n40", "test-db"),               # "2" is a redirect
+                ("npm run test:db 2>/dev/null", "test-db"),
+                ("bash -c npm test -- src/a.test.ts>/dev/null", "npm-test-files"),     # glued to a redirect
+                ("node scripts/test-with-db.mjs src/x.db.test.ts", "test-db-files"),
+                ("npx vitest run src/a.db.test.ts", "test-db-files"),
+                ("npx vitest run src/x --exclude **/*.db.test.ts", "vitest-dirs"),      # not a DB run at all
+                ("npm test", "npm-test"), ("npm run test -- src/a.test.ts", "npm-test-files"),
+                ("npx vitest run src/a.test.ts", "vitest-files"), ("npx tsc --noEmit", "tsc")):
+            self.assertEqual(rd_pool.kind_of(sig), want, sig)
+        self.assertEqual((rd_pool.family_of("test-db-files"), rd_pool.family_of("test-db")), ("test-db", "test-db"))
+        self.assertEqual(rd_pool.family_of("vitest-files"), "vitest-files")
+        for a, want in (("a.test.ts", True), ("src/a.ts", True), ("odSame", True), ("src/lib/", False),
+                        ("src/lib", False), ("src/*.ts", False)):
+            self.assertEqual(rd_pool._names_file(a), want, a)                   # runs.log: no cwd
+
+    def test_the_worker_classifies_exactly_like_the_client(self):
+        """KINDS is one table read by two engines: rd_pool here, the PROBE's perl on runs.log bytes there."""
+        import json
+        sigs = ["npm run test:db", "npm run test:db -- src/a.db.test.ts", "npm run test:db -- -t x",
+                "bash -c npm run test:db 2>&1 | tail -n40", "npm run test:db -- --reporter=a\u00a0b",
+                "npm run test:db -- --maxWorkers=<redacted> odSame", "npm test -- src/", "npx tsc --noEmit",
+                "npx vitest run src/a.test.ts", "npm run test:db -- src/__tests__/a/b.db.te..."]
+        pl = (r'use JSON::PP; local $/; my $q = decode_json(<STDIN>); utf8::encode($_) for @{ $q->{sigs} };'   # raw bytes, as runs.log
+              r'my @kre = map { [$_->[0], qr/$_->[1]/, $_->[2] // $_->[0]] } @{ $q->{kinds} };'
+              r'print encode_json([map { my $s = $_; my ($k) = map { @$_[0, 2] } grep { $s =~ $_->[1] } @kre;'
+              r' [$k // "other"] } @{ $q->{sigs} }]);')
+        p = subprocess.run(["/usr/bin/perl", "-e", pl], capture_output=True, timeout=30, check=True,
+                           input=json.dumps({"kinds": [list(k) for k in rd_pool.KINDS], "sigs": sigs},
+                                            ensure_ascii=False).encode("utf-8"))
+        self.assertEqual([k for [k] in json.loads(p.stdout)], [rd_pool.kind_of(x) for x in sigs])
+
+    def probe_world(self):
+        """mini-b's runs.log: only runs of named files (55 s median); the real PROBE builds its evidence
+        from the request plan() sends."""
+        rt = test_pool.ProbeSnippet("setUp")
+        rt.setUp()
+        self.addCleanup(rt.doCleanups)
+
+        def line(cmd, argv):
+            return ("2026-11-11T11:00:00+0000 repo=a wt=b sha=c outcome=rc=0 prepare_s=1 cmd_s=%s argv=%s"
+                    "\trun=x owner=- cls=db wait_s=0 exit_reason=pass setup=warm client=- pv=1\n" % (cmd, argv))
+        test_run.wfile(os.path.join(rt.root, "log", "runs.log"), "".join(
+            [line(60, "npm run test:db -- src/a.db.test.ts")] * 3 + [line(50, "npm run test:db -- src/b.db.test.ts")] * 3))
+        return rt
+
+    def plan_on(self, rt, argv):
+        def fake(host, req, timeout):
+            if host.cfg["host"] == "mini-b":
+                return dict(test_pool.probe(), ev=rt.run_probe(dict(req, now=NOW))["ev"]), 0.01
+            return test_pool.probe(), 0.01
+        test_pool.write_fleet(self.fleet, [worker("hp", 1.52), worker("mini-b", 0.31)])
+        with mock.patch.object(rd_pool, "probe_one", side_effect=fake):
+            p = rd_pool.plan(self.cfg, rd_pool.classify(argv), slug="a")
+        return p, {h.name: h for h in p.hosts}
+
+    def test_a_full_suite_is_never_priced_from_targeted_runs(self):
+        rt = self.probe_world()
+        p, by = self.plan_on(rt, ["npm", "run", "test:db"])
+        b = by["mini-b"]
+        self.assertEqual(b.src, "default")              # not "kind" from the 55 s file runs
+        self.assertAlmostEqual(b.pred_s, rd_pool.default_cost(self.cfg, "db") / 0.31)
+        self.assertAlmostEqual(b.rank_s, b.run_s * rd_pool.UNCERTAIN_X["default"])
+        self.assertEqual(p.hosts[0].name, "hp")         # the slow worker is no longer ranked as fast
+        # the probe still sends both scopes' commands for the ratios (the family)
+        e = rt.run_probe({"slots": 2, "slug": "a", "sig": "npm run test:db", "kind": "test-db", "fam": "test-db",
+                          "kinds": [list(k) for k in rd_pool.KINDS], "now": NOW})["ev"]
+        self.assertEqual((e["kind"], len(e["pk"])), ([0, None], 2))
+
+    def test_a_targeted_run_keeps_its_kind_estimate(self):
+        rt = self.probe_world()
+        _, by = self.plan_on(rt, ["npm", "run", "test:db", "--", "src/c.db.test.ts"])
+        self.assertEqual((by["mini-b"].src, by["mini-b"].pred_s), ("kind", 55))
+
+
 class MoverUnit(unittest.TestCase):
     def test_a_refused_move_changes_nothing_and_says_nothing(self):
         """The session got its slot between the re-plan and the request: no move, ctx.plan untouched,

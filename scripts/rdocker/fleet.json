@@ -43,8 +43,8 @@
         "worker"
       ],
       "speed": 1.52,
-      "max_slots": 8,
-      "heavy_slots": 4,
+      "max_slots": 6,
+      "heavy_slots": 3,
       "mem_gb": 24,
       "enabled": true,
       "ts_key_expiry": "2027-05-09",

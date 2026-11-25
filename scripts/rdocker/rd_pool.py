@@ -707,9 +707,11 @@ $o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 #   sig   this job's exact command in this repo (q.slug, q.sig): completed (rc 0/1) seconds, newest last (<= 30)
 #   miss  [n, max cmd_s] of this command's started runs here that took over q.miss_x (5) x their pred_s
 #         (and 30 s more): wild misses, any outcome (a cap kill too), fed back into the next prediction
-#   kind  [n, median] of completed command seconds of the job's kind in this repo (kinds = q.kinds: first match)
+#   kind  [n, median] of completed command seconds of the job's kind in this repo (kinds = q.kinds: first match;
+#         a full suite and a run of named files are different kinds: KINDS)
 #   kany  [n, median] of the same kind across every repo (a weaker fallback)
-#   pk    {sha1(repo TAB sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
+#   pk    {sha1(repo TAB sig)[0,8]: [n, median]} for the commands of the kind's family (q.fam, KINDS' third
+#         field: both scopes) in this repo (paired-command ratios across workers)
 #   all   [n, median] of every completed command
 #   hold  [n, median] of every completed run's slot hold (prepare_s + cmd_s): a slot holder's typical hold
 #         (queue estimate; the prepare holds the slot too)
@@ -726,8 +728,9 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     my $lo = $now - 86400 * (($q->{days} // "") =~ /^\d+$/ ? $q->{days} : 14);
     $lo = $since if $since > $lo;
     my $cap = ($q->{rows} // "") =~ /^\d+$/ ? $q->{rows} : 300;
-    my @kre = map { my $r = eval { qr/$_->[1]/ }; [$_->[0], $r] } grep { ref eq "ARRAY" } @{ $q->{kinds} };
-    my $kof = sub { for (@kre) { return $_->[0] if defined $_->[1] && $_[0] =~ $_->[1] } "other" };
+    my @kre = map { my $r = eval { qr/$_->[1]/ }; [$_->[0], $r, $_->[2] // $_->[0]] } grep { ref eq "ARRAY" } @{ $q->{kinds} };
+    my $kof = sub { for (@kre) { return @$_[0, 2] if defined $_->[1] && $_[0] =~ $_->[1] } ("other", "other") };
+    my $fam = $q->{fam} // $q->{kind};
     my @text;
     for my $f ("$R/log/runs.log", "$R/log/runs.log.1") {
         next if -l $f || !sysopen(my $lf, $f, O_RDONLY | O_NOFOLLOW);
@@ -780,11 +783,13 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     if (my $v = $by{"$slug\t$js"}) { $ev{sig} = [@$v > 30 ? @$v[-30 .. -1] : @$v] }
     for my $key (keys %by) {
         my ($r, $sig) = split /\t/, $key, 2;
-        next unless $kof->($sig) eq $q->{kind};
+        my ($k, $kf) = $kof->($sig);
+        next unless $kf eq $fam;
+        $ev{pk}{substr(Digest::SHA::sha1_hex($key), 0, 8)} = [scalar @{ $by{$key} }, $med->(@{ $by{$key} })]
+            if $r eq $slug;
+        next unless $k eq $q->{kind};
         push @ka, @{ $by{$key} };
-        next unless $r eq $slug;
-        push @kc, @{ $by{$key} };
-        $ev{pk}{substr(Digest::SHA::sha1_hex($key), 0, 8)} = [scalar @{ $by{$key} }, $med->(@{ $by{$key} })];
+        push @kc, @{ $by{$key} } if $r eq $slug;
     }
     $ev{kind} = [scalar @kc, $med->(@kc)];
     $ev{kany} = [scalar @ka, $med->(@ka)];
@@ -988,21 +993,64 @@ def _median(xs):
 #   risk_s   p_infra x (setup + run / 2 lost + a rerun on the best other worker); p_infra = infra
 #            outcomes / runs that got a fair start, over the last EV_ROWS, with a weak prior
 #            (PRIOR_P over PRIOR_N runs) so 0 of 3 is not "never fails"
-# The kind of a command (KINDS, first match) groups commands for ratios and the kind median; the
-# worker applies the same table (it is sent with the probe), so there is one definition.
+# The kind of a command (KINDS, first match) groups commands for the kind median; its family (the
+# third field, default the kind) groups them for the per-worker ratios. The worker applies the same table
+# (it is sent with the probe), so there is one definition.
+#
+# Scope (2026-11-24): a full suite and a run of named files of the same script are different work (mini-b
+# ran a full `npm run test:db` for 7.7 h). A "-files" kind is the targeted run: some positional argument
+# after the script names files / a filter (_names_file, the rule shardable uses; dirs and globs still mean
+# the suite), a -t test-name filter, or a --shard of it. The full suite is the plain kind, so its kind median never comes from
+# targeted runs; both share a family, so a worker's learned ratio still covers both.
+# vitest flags that take a separate value (`--project x`): the value is not a file filter
+_VITEST_VALUE_FLAGS = {"-c", "--config", "-r", "--root", "--dir", "-t", "--testNamePattern", "--project",
+                       "--environment", "--pool", "--mode", "--exclude", "--maxWorkers", "--minWorkers",
+                       "--retry", "--bail", "--testTimeout", "--hookTimeout", "--reporter",
+                       "--sequence.seed"}
+_GLOB_CHARS = "*?[{"
+
+
+def _names_file(arg, cwd=None):
+    """A positional argument of a test run -> True when it narrows the run (a file, a name filter), False
+    for a glob or a directory: ends in "/", or is one under cwd; without cwd (a runs.log argv: the
+    worker's history), a path with a "/" and no extension. _SCOPE_ARG_RE is this rule as the regex the
+    probe applies to runs.log, without cwd."""
+    if any(c in arg for c in _GLOB_CHARS) or arg.endswith("/"):
+        return False
+    if cwd is not None:
+        return not os.path.isdir(os.path.join(cwd, arg))
+    return "/" not in arg or "." in arg.rsplit("/", 1)[1]
+
+
+# a word of a runs.log argv (words are joined with " ": run_sig; never \s, which Python and perl's bytes read
+# differently): a |, ;, &, < or > ends the command's arguments; runs.log's "<redacted>" is part of a word
+_TOK = r"(?:<redacted>|[^ |;&<>])"
+_NOGLOB = r"[^ |;&<>*?\[{]"                  # ... with no glob character
+_SEG = r"[^ |;&<>*?\[{/]"                    # ... of one path component
+_VALUE_FLAG = r"(?:%s)" % "|".join(re.escape(f) for f in sorted(_VITEST_VALUE_FLAGS, key=len, reverse=True))
+# after the script: any words (a value flag with its value), then a --shard, a test-name filter (-t /
+# --testNamePattern: a few tests of every file) or a word that _names_file (cwd=None): no "-", no glob, a bare
+# name or a last path component with an extension, up to a space or the command's end (a file descriptor -
+# the "2" of "2>&1" - is a redirect, not an argument)
+_SCOPE_ARG_RE = (r"(?: +(?:{vf} +{t}+|(?!{vf}(?: |$)){t}+))*? +"
+                 r"(?:--shard|(?:-t|--testNamePattern)(?:[ =]|$)|(?!-|[0-9]+[<>])(?:(?:{ng}*/)?{sg}*\.{sg}*|{sg}+)(?=[ |;&<>]|$))").format(
+                     vf=_VALUE_FLAG, t=_TOK, ng=_NOGLOB, sg=_SEG)
 KINDS = (
     ("tsc", r"(^|[ /])tsc( |$)|typecheck|type-check"),
-    ("test-db", r"test:db|test-with-db|\.db\.(test|spec)\."),
+    ("test-db-files", r"(test:db|test-with-db)[^ ]*" + _SCOPE_ARG_RE + r"|(^| )[^ *?\[{]*\.db\.(test|spec)\.", "test-db"),
+    ("test-db", r"test:db|test-with-db"),
     ("vitest-shard", r"--shard"),
     ("vitest-files", r"(vitest|jest) run [^ ]+\.(test|spec)\.[a-z]+"),
     ("vitest-dirs", r"(vitest|jest) run [^ -]"),
     ("vitest-suite", r"vitest|jest"),
+    ("npm-test-files", r"npm (run )?test[^ ]*" + _SCOPE_ARG_RE, "npm-test"),
     ("npm-test", r"npm (run )?test"),
     ("lint", r"lint|eslint"),
     ("build", r"(^| )build( |$)|run build"),
     ("check", r"check|verify"),
 )
-_KIND_RES = [(k, re.compile(r)) for k, r in KINDS]
+_KIND_RES = [(k[0], re.compile(k[1])) for k in KINDS]
+_FAMILY = {k[0]: (k[2] if len(k) > 2 else k[0]) for k in KINDS}
 EV_DAYS, EV_ROWS = 14, 300   # recency window: last EV_DAYS days; rates over the last EV_ROWS runs of it
 OWN_MIN = 3                  # completed runs before a worker's own median counts
 RATIO_MIN = 3                # paired commands before a worker's per-kind ratio counts
@@ -1027,6 +1075,11 @@ def kind_of(sig):
         if r.search(sig or ""):
             return k
     return "other"
+
+
+def family_of(kind):
+    """The kind's family (KINDS' third field): the commands a worker's per-kind ratio is learned over."""
+    return _FAMILY.get(kind, kind)
 
 
 def sig_key(sig, slug=""):
@@ -1670,7 +1723,8 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
         return p
     home = home_of(hosts) if rcache else None
     req = {"slug": slug, "deps": [list(d) for d in deps], "sig": job.get("sig") or "",
-           "kind": kind_of(job.get("sig") or ""), "kinds": [list(k) for k in KINDS],
+           "kind": kind_of(job.get("sig") or ""), "fam": family_of(kind_of(job.get("sig") or "")),
+           "kinds": [list(k) for k in KINDS],
            "days": int(_num(cfg.get("rr_history_days"), EV_DAYS)), "rows": int(_num(cfg.get("rr_history_rows"), EV_ROWS)),
            "isa_days": isa_days(cfg), "miss_x": _num(cfg.get("rr_miss_x"), MISS_X)}
 
@@ -1735,12 +1789,6 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
 # ---------------------------------------------------------------------------- shards
 
 SHARD_MAX = 8                # at most this many vitest shards per run (rr_shard_max)
-# vitest flags that take a separate value (`--project x`): the value is not a file filter
-_VITEST_VALUE_FLAGS = {"-c", "--config", "-r", "--root", "--dir", "-t", "--testNamePattern", "--project",
-                       "--environment", "--pool", "--mode", "--exclude", "--maxWorkers", "--minWorkers",
-                       "--retry", "--bail", "--testTimeout", "--hookTimeout", "--reporter",
-                       "--sequence.seed"}
-
 
 def shard_mode(cfg, environ=None):
     """RRUN_SHARD: "0" = never, n >= 2 = force n shards, unset/other = auto (rr_shard, default on)."""
@@ -1782,9 +1830,7 @@ def shardable(argv, job, cwd=None, forced=False):
     if forced:
         return True, ""
     for f in files:
-        glob = any(c in f for c in "*?[{")
-        isdir = f.endswith("/") or (cwd is not None and os.path.isdir(os.path.join(cwd, f)))
-        if not (glob or isdir):
+        if _names_file(f, cwd):
             return False, "names files / filters (%s)" % f
     return True, ""
 
