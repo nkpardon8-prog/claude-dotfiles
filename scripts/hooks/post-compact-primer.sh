@@ -47,7 +47,15 @@ INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 _SUBAGENT_LIB="$ROOT/lib/subagent-event.sh"
 [ -f "$_SUBAGENT_LIB" ] && . "$_SUBAGENT_LIB"
 if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPUT"; then
-  jq -nc --arg ctx "You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done." \
+  # Nothing a worker said is erased by compaction: its own log stays on disk beside the parent's
+  # (<parent transcript minus .jsonl>/subagents/agent-<agent_id>.jsonl). Name it when it exists, so a
+  # detail missing from both the summary and the note is looked up, never guessed.
+  _W_LOG=$(printf '%s' "$INPUT" | jq -r '((.transcript_path // "") | sub("\\.jsonl$"; "")) + "/subagents/agent-" + .agent_id + ".jsonl"' 2>/dev/null)
+  _W_MORE=""
+  if [ -n "$_W_LOG" ] && [ -f "$_W_LOG" ]; then
+    _W_MORE=" Your full earlier conversation is still on disk at $_W_LOG - if a decision or detail is missing from both the summary and your note, search that file (grep for a keyword, read around the hit) before you guess or redo work."
+  fi
+  jq -nc --arg ctx "You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done.${_W_MORE}" \
     '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$ctx}}'
   exit 0
 fi
