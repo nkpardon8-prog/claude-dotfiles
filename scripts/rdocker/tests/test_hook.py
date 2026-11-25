@@ -30,6 +30,7 @@ POSITIVE = [
     ("npm run release:rehearse:migrations", "rrun npm run release:rehearse:migrations"),
     ("npm run check:db-all 2>&1 | tail -20", "rrun npm run check:db-all 2>&1 | tail -20"),
     ("heavy-slot.sh node scripts/run-guard-tier.mjs needs-install", "rrun node scripts/run-guard-tier.mjs needs-install"),
+    ("node scripts/run-guard-tier.mjs needs-install --shard 2/3", "rrun node scripts/run-guard-tier.mjs needs-install --shard 2/3"),
     ("npm run check:server-test-typecheck", "rrun npm run check:server-test-typecheck"),
     ("cd server && npx tsc --noEmit -p tsconfig.json 2>&1 | head", "cd server && rrun npx tsc --noEmit -p tsconfig.json 2>&1 | head"),
     ("npx tsc -p tsconfig.vitest.json --noEmit", "rrun npx tsc -p tsconfig.vitest.json --noEmit"),
@@ -170,6 +171,8 @@ OPT_OUT = [
     "npm run test:db # real-od/ harness",
     "doctor-drive npm run test:db",
     "npm run test:db -- --approve=browser",
+    "node scripts/run-guard-tier.mjs needs-install --fanout 3",   # a local coordinator: its shards are rrun jobs
+    "node scripts/run-guard-tier.mjs no-install --fanout=4",
 ]
 
 
