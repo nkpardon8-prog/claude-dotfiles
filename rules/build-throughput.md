@@ -51,3 +51,10 @@ Every step re-reads the whole conversation, so steps spent checking are not free
 - Start a long job with ONE background run and wait for its completion notice. No sleep-and-check
   loops on a log file (measured 2026-11-24: about 6% of all usage went to them).
 - Batch small checks into one command instead of one step each.
+
+## 8. Watch for diminishing returns
+Before another round, retry, re-check or wait, ask: will this step change the outcome? Signs it will
+not: the same result twice in a row, a review round that finds only nits, re-reading what you already
+know, polling something you cannot speed up, re-running a check nothing has changed under. Then stop
+repeating: land, report, or change approach. This never lowers the bar: every check the project
+requires still runs, and a real doubt about correctness is a reason to keep going, not to stop.
