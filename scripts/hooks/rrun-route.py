@@ -1301,6 +1301,9 @@ def decide(cmd, cwd, h):
         return "skipped", "already-rrun" if marker == "rrun" else "marker:" + marker.rstrip("/"), None
     if os.environ.get("RRUN_REMOTE"):
         return "skipped", "remote", None
+    if FANOUT_RE.search(cmd):
+        # dentall's guard-tier fan-out runs here and starts its own `rrun ... --shard k/N` jobs
+        return "skipped", "fanout", None
     rrun_real = rrun_installed(h)
     if not rrun_real:
         return "skipped", "no-rrun", None
