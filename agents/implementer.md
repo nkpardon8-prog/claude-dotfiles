@@ -70,7 +70,8 @@ conversation. A note file is your memory across it:
   `mktemp ~/.claude/worker-notes/$(date +%Y-%m-%d)-XXXXXXXX`. Write into it the task you were given
   (verbatim) and the working directory.
 - Append to it (short lines, never a rewrite) at these moments, BEFORE you act on them:
-  - a new message or follow-up task arrives from whoever started you: copy it in verbatim;
+  - a new message or follow-up task arrives from whoever started you: copy it in word for word, never
+    a summary (over 30 lines: save it beside the note as `<note>.msg1`, `.msg2`... and list that path);
   - a constraint you were given ("do not touch X", "keep Y as is"): verbatim, under Constraints;
   - a decision you could not re-derive from the files, however small (a name, an edge case, why A
     over B): what and why;
@@ -81,7 +82,7 @@ conversation. A note file is your memory across it:
   - you are partway through a change that spans several files: what is half done and the exact next step;
   - a unit of work ends: Done / Left / Files touched / Checks run and results.
 - If a message says you were just compacted, or you find you do not remember earlier steps: read the
-  note first, then look at the real state (`git status`, `git diff`, the job's log) before your next
+  note's top (task, constraints) and its last 40 lines first, then look at the real state (`git status`, `git diff`, the job's log) before your next
   edit. Trust the files and the note over the summary. Continue from Left; do not redo anything under
   Done, and check on a listed background job before starting it again.
 - Nothing you said is erased: your full earlier conversation stays on disk, and the compaction

@@ -2357,7 +2357,8 @@ rm -rf "$_HR2_TMP"
 echo ""
 echo "== §W worker compaction tests =="
 
-W_LINE="You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done."
+# No worker transcript exists in this fixture, so the primer uses its no-note-path wording.
+W_LINE="You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary or in your earlier messages under ~/.claude/worker-notes/): its top (task, constraints) and its last 40 lines, then run git status --short. Then continue from Left without redoing Done."
 
 # W1 - safety hook, worker event, ctx 68 (BLOCK zone), no sentinel: silent, exit 0, no log line.
 TMPHOME=$(mktemp -d)
