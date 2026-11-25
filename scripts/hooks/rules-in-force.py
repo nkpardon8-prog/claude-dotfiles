@@ -334,6 +334,20 @@ def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, 
     return notes, state, g, project
 
 
+def worker_note(data: dict, cwd: str, sid: str) -> str:
+    """The base branch's CLAUDE.md for a worker (subagent) in a stale checkout, or "". Read-only:
+    no saved state is loaded, written or collected, and no Codex refresh is started."""
+    if str(data.get("agent_type") or "") in NO_CLAUDE_MD_AGENTS:
+        return ""
+    repo = Repo(cwd)
+    if not repo.ok:
+        return ""
+    b = repo.base_rules()
+    if b is None or repo.local_rules() == b:
+        return ""
+    return render([in_force_note(repo, b)], "", sid)
+
+
 def main() -> int:
     global _DEADLINE
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
