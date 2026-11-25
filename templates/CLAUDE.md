@@ -47,8 +47,8 @@ add a new violation.
 - Watch your own context budget. The statusline brokers live context-used % to
   `~/.claude/progress/ctx-<sid>.txt` (0–100; `<sid>` = this session's id, the basename of its
   transcript `.jsonl`). Checkpoint with `/pre-compact` around 400-450k tokens (40-45% of a 1M
-  window), at a natural stopping point, never mid-edit; the forced line stays at 75%. Note: the sidecar is intentionally
-  invalidated at a compact/clear boundary, and a missing value means "context unknown," NOT high —
+  window), at a natural stopping point, never mid-edit; the forced line stays at 75%.
+  Note: the sidecar is intentionally invalidated at a compact/clear boundary, and a missing value means "context unknown," NOT high —
   right after a compaction your real context is genuinely low, so distrust any high reading on the
   first post-compact turn.
 - Spec → read → verify. Pull the relevant doc before guessing at unfamiliar behavior. `/script`

@@ -3,8 +3,8 @@
 
 PURPOSE. Token-saving changes (agent model/effort, subagent cache TTL, the /mission 3300s wake
 cap, smaller /implement chunks) must be VERIFIED from the session logs, not assumed. This script
-reads one project's Claude Code transcripts (~/.claude/projects/<encoded-cwd>/) and prints the
-same breakdown the 2026-09-26 token-usage brief was built on, so a run before a change and a run
+reads one project's Claude Code transcripts (~/.claude/projects/<encoded-cwd>/), or every project
+with --all-projects, and prints the same breakdown the 2026-09-26 token-usage brief was built on, so a run before a change and a run
 after it can be compared line for line.
 
 WHAT IT READS. <project-dir>/<sid>.jsonl (main sessions) and <project-dir>/<sid>/subagents/*.jsonl
@@ -21,11 +21,23 @@ first call in a log, other) | cache-write TTL split (ephemeral_5m vs ephemeral_1
 loop-tick gap buckets (the API call answering an "Autonomous loop tick" / "MISSION WAKE" prompt,
 bucketed by the gap since the previous call: <55m / 55-60m / 60-65m / >65m, with avg cache-write).
 A tick landing past the 1h prompt-cache TTL re-caches the whole context; one landing inside it
-re-caches ~1k. stdlib only.
+re-caches ~1k.
+Then (context of a step = input + cache-write + cache-read tokens of that API call):
+per agent type (runs, steps, avg context per step, median/max peak context per run, spend, share,
+spend per finished worker job from meta.json finished=true, unfinished runs) | wait steps: check
+loops (a Bash sleep/until/while-sleep loop) and wake-ups (ScheduleWakeup, stop=true ignored), count
+and share by what is waited on (push gate, Codex, tests/typecheck/build, another agent, other;
+classified on the command / wake-up reason with absolute-path directories stripped) | main-window
+checkpoints (a step under 60% of the previous step's context while that one was > 150k: count,
+context before median/min/max, after median) | main steps at >= 400k context and how many had no
+human-typed prompt since the previous step (after an injected prompt vs mid-turn), i.e. whether a
+UserPromptSubmit hook gets a chance to fire. stdlib only.
 
-USAGE. token-usage-report.py [--project-dir DIR] [--days N]
-  --project-dir  default: ~/.claude/projects/<current cwd with every non-alphanumeric -> '-'>
-  --days         default 3 (API calls whose timestamp is within the last N days)
+USAGE. token-usage-report.py [--project-dir DIR | --all-projects] [--days N]
+  --project-dir   default: ~/.claude/projects/<current cwd with every non-alphanumeric -> '-'>
+  --all-projects  aggregate every directory under ~/.claude/projects
+  --days          default 3 (API calls whose timestamp is within the last N days; logs not
+                  modified within N days are skipped unread)
 """
 from __future__ import annotations
 
@@ -33,6 +45,7 @@ import argparse
 import json
 import os
 import re
+import statistics
 import sys
 import time
 from collections import defaultdict
@@ -43,6 +56,35 @@ W_INPUT, W_READ, W_WRITE, W_OUTPUT = 1.0, 0.1, 2.0, 5.0
 BIG_REWRITE = 50_000
 TICK_MARKERS = ("Autonomous loop tick", "MISSION WAKE", "mission wake")
 HOUR, FIVE_MIN = 3600.0, 300.0
+UNATTENDED_CTX = 400_000  # 40% of a 1M context window
+CKPT_PREV_MIN, CKPT_RATIO = 150_000, 0.6
+CHECK_LOOP = re.compile(r"\bsleep\s+\d|until\s.+;\s*do|while\s.+sleep")
+WAIT_CAUSES = (
+    ("push gate", re.compile(r"safe-push|safe_push")),
+    ("Codex", re.compile(r"codex")),
+    (
+        "tests/typecheck/build",
+        re.compile(r"rrun|tsc|vitest|jest|playwright|test:db|npm (run |test)|check:|docker|build"),
+    ),
+    ("another agent", re.compile(r"agent|helper|worker|workflow|implementer|review")),
+)
+# The directory part of an absolute path ("/Users/x/", "~/.claude/") - stripped before classifying
+# so a word inside a path ("Users", "build/") never decides the cause; the basename is kept.
+ABS_DIRS = re.compile(r"(?<![\w.~-])~?/(?:[^\s/'\"`;|&()<>]+/)*")
+INJECTED_MARKERS = (
+    "<system-reminder>",
+    "<task-notification>",
+    "<cross-session-message",
+    "Autonomous loop tick",
+    "Autonomous loop check",
+    "MISSION WAKE",
+    "<command-name>",
+    "<local-command-",
+    "This session is being continued",
+    "[Request interrupted",
+    "Stop hook feedback",
+    "prior /loop wakeup",
+)
 
 
 def default_project_dir() -> Path:
@@ -74,6 +116,58 @@ def user_text(msg: object) -> str:
     return ""
 
 
+def prompt_kind(d: dict) -> str | None:
+    """'human' for a prompt a person typed, 'injected' for a harness-made one (wake-up, task
+    notification, peer message, hook/skill text, compact summary), None for a tool_result row.
+    Explicit row metadata wins (promptSource 'typed' / origin.kind 'human' - a typed slash command
+    counts as human); the text markers are the fallback for rows without it."""
+    msg = d.get("message")
+    c = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
+        return None
+    origin = d.get("origin")
+    okind = origin.get("kind") if isinstance(origin, dict) else None
+    if d.get("promptSource") == "typed" or okind == "human":
+        return "human"
+    if d.get("promptSource") == "system" or okind or d.get("isMeta") or d.get("isCompactSummary"):
+        return "injected"
+    text = user_text(msg)
+    if not text.strip():
+        return None
+    return "injected" if any(mk in text for mk in INJECTED_MARKERS) else "human"
+
+
+def wait_cause(text: str) -> str:
+    s = ABS_DIRS.sub("", text.lower())
+    for name, rx in WAIT_CAUSES:
+        if rx.search(s):
+            return name
+    return "other"
+
+
+def wait_tag(content: object) -> str | None:
+    """'check loop: <cause>' / 'wake-up: <cause>' for the first waiting tool_use in an assistant
+    row's content, else None."""
+    if not isinstance(content, list):
+        return None
+    for b in content:
+        if not isinstance(b, dict) or b.get("type") != "tool_use":
+            continue
+        inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+        if b.get("name") == "Bash":
+            cmd = str(inp.get("command") or "")
+            if CHECK_LOOP.search(cmd):
+                return "check loop: " + wait_cause(cmd)
+        elif b.get("name") == "ScheduleWakeup" and not inp.get("stop"):
+            why = str(inp.get("reason") or "") or str(inp.get("prompt") or "")[:200]
+            return "wake-up: " + wait_cause(why)
+    return None
+
+
+def median(xs: list[float]) -> float:
+    return statistics.median(xs) if xs else 0
+
+
 def cost(u: dict) -> float:
     return (
         u["input"] * W_INPUT + u["read"] * W_READ + u["write"] * W_WRITE + u["output"] * W_OUTPUT
@@ -94,12 +188,14 @@ def norm_usage(u: dict) -> dict:
 
 def read_calls(path: Path) -> list[dict]:
     """One record per distinct assistant message.id, in log order, with the context needed to
-    classify it: gap since the previous call, compact_boundary in between, tick prompt before it."""
+    classify it: gap since the previous call, compact_boundary in between, tick prompt before it,
+    the kind of prompt since the previous call (human > injected > none), and its waiting tool call."""
     calls: dict[str, dict] = {}
     order: list[str] = []
     prev_ts: float | None = None
     compact_pending = False
     last_user_is_tick = False
+    saw_human = saw_injected = False
     try:
         fh = open(path, "rb")
     except OSError:
@@ -121,6 +217,9 @@ def read_calls(path: Path) -> list[dict]:
                     compact_pending = True
                 continue
             if t == "user":
+                pk = prompt_kind(d)
+                saw_human = saw_human or pk == "human"
+                saw_injected = saw_injected or pk == "injected"
                 text = user_text(d.get("message"))
                 if text or not isinstance((d.get("message") or {}).get("content"), list):
                     last_user_is_tick = any(m in text for m in TICK_MARKERS)
@@ -138,6 +237,7 @@ def read_calls(path: Path) -> list[dict]:
                 continue
             if mid in calls:  # later block of the same streamed message: keep the latest usage
                 calls[mid]["u"] = norm_usage(u)
+                calls[mid]["wait"] = calls[mid]["wait"] or wait_tag(m.get("content"))
                 continue
             ts = parse_ts(d.get("timestamp"))
             calls[mid] = {
@@ -148,31 +248,37 @@ def read_calls(path: Path) -> list[dict]:
                 "gap": (ts - prev_ts) if (ts is not None and prev_ts is not None) else None,
                 "after_compact": compact_pending,
                 "tick": last_user_is_tick,
+                "prompt": "human" if saw_human else ("injected" if saw_injected else None),
+                "wait": wait_tag(m.get("content")),
             }
             order.append(mid)
             compact_pending = False
             last_user_is_tick = False
+            saw_human = saw_injected = False
             if ts is not None:
                 prev_ts = ts
     return [calls[i] for i in order]
 
 
-def discover(project_dir: Path, cutoff: float) -> list[tuple[Path, str]]:
-    """(path, agent kind) for every log touched since cutoff. kind = 'main' or the agentType."""
-    out: list[tuple[Path, str]] = []
+def discover(project_dir: Path, cutoff: float) -> list[tuple[Path, str, bool | None]]:
+    """(path, agent kind, finished) for every log touched since cutoff. kind = 'main' or the
+    agentType; finished = the meta.json flag for a subagent (False when absent), None for main."""
+    out: list[tuple[Path, str, bool | None]] = []
     for p in project_dir.glob("*.jsonl"):
         if p.stat().st_mtime >= cutoff:
-            out.append((p, "main"))
+            out.append((p, "main", None))
     for p in project_dir.glob("*/subagents/**/*.jsonl"):
         if p.stat().st_mtime < cutoff:
             continue
-        kind = "subagent:?"
+        kind, finished = "subagent:?", False
         meta = p.with_suffix(".meta.json")
         try:
-            kind = json.loads(meta.read_text()).get("agentType") or kind
+            md = json.loads(meta.read_text())
+            kind = md.get("agentType") or kind
+            finished = md.get("finished") is True
         except (OSError, ValueError, AttributeError):
             pass
-        out.append((p, kind))
+        out.append((p, kind, finished))
     return out
 
 
@@ -191,9 +297,16 @@ def fmt(n: float) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--project-dir", type=Path, default=None)
+    ap.add_argument("--all-projects", action="store_true")
     ap.add_argument("--days", type=float, default=3.0)
     args = ap.parse_args()
-    pdir = (args.project_dir or default_project_dir()).expanduser()
+    if args.all_projects and args.project_dir:
+        print("token-usage-report: --all-projects and --project-dir are exclusive", file=sys.stderr)
+        return 2
+    if args.all_projects:
+        pdir = Path.home() / ".claude" / "projects"
+    else:
+        pdir = (args.project_dir or default_project_dir()).expanduser()
     if not pdir.is_dir():
         print(f"token-usage-report: no such project dir: {pdir}", file=sys.stderr)
         return 2
@@ -209,11 +322,22 @@ def main() -> int:
     ticks = {k: {"n": 0, "write": 0} for k in ("<55m", "55-60m", "60-65m", ">65m", "no-gap")}
     total = 0.0
     n_calls = 0
-    files = discover(pdir, cutoff)
+    pdirs = sorted(d for d in pdir.iterdir() if d.is_dir()) if args.all_projects else [pdir]
+    files = [f for d in pdirs for f in discover(d, cutoff)]
+    # New sections: per-type runs, wait steps, main checkpoints, main high-context steps.
+    types = defaultdict(
+        lambda: {"runs": 0, "steps": 0, "ctx_sum": 0, "peaks": [], "cost": 0.0,
+                 "fin_n": 0, "fin_cost": 0.0, "unfin": 0}
+    )
+    waits = defaultdict(lambda: {"n": 0, "cost": 0.0})
+    ckpt_before: list[int] = []
+    ckpt_after: list[int] = []
+    high = {"n": 0, "human": 0, "injected": 0, "midturn": 0}
 
-    for path, kind in files:
+    for path, kind, finished in files:
         side = "main" if kind == "main" else "sub"
         run_cost, peak, run_calls = 0.0, 0, 0
+        run_ctx_sum, prev_ctx = 0, None
         for c in read_calls(path):
             if c["id"] in seen or c["ts"] is None or c["ts"] < cutoff:
                 continue
@@ -226,7 +350,20 @@ def main() -> int:
             n_calls += 1
             run_calls += 1
             run_cost += cst
-            peak = max(peak, u["input"] + u["read"] + u["write"])
+            ctx = u["input"] + u["read"] + u["write"]
+            peak = max(peak, ctx)
+            run_ctx_sum += ctx
+            if c["wait"]:
+                waits[c["wait"]]["n"] += 1
+                waits[c["wait"]]["cost"] += cst
+            if side == "main":
+                if prev_ctx is not None and prev_ctx > CKPT_PREV_MIN and ctx < CKPT_RATIO * prev_ctx:
+                    ckpt_before.append(prev_ctx)
+                    ckpt_after.append(ctx)
+                prev_ctx = ctx
+                if ctx >= UNATTENDED_CTX:
+                    high["n"] += 1
+                    high[{"human": "human", "injected": "injected"}.get(c["prompt"], "midturn")] += 1
             comp["input"] += u["input"] * W_INPUT
             comp["cache-read"] += u["read"] * W_READ
             comp["cache-write"] += u["write"] * W_WRITE
@@ -274,6 +411,17 @@ def main() -> int:
             k["cost"] += run_cost
             k["peak_sum"] += peak
             k["calls"] += run_calls
+            ty = types[kind]
+            ty["runs"] += 1
+            ty["steps"] += run_calls
+            ty["ctx_sum"] += run_ctx_sum
+            ty["peaks"].append(peak)
+            ty["cost"] += run_cost
+            if finished:
+                ty["fin_n"] += 1
+                ty["fin_cost"] += run_cost
+            elif finished is False:
+                ty["unfin"] += 1
 
     print(f"token-usage-report  dir={pdir}")
     print(
@@ -331,6 +479,47 @@ def main() -> int:
             continue
         avg = fmt(t["write"] / t["n"]) if t["n"] else "-"
         print(f"  {b:<8} {t['n']:>6} {avg:>16}")
+
+    print("\n== Per agent type: context and spend per finished worker job")
+    print(
+        f"  {'kind':<28} {'runs':>5} {'steps':>6} {'avg ctx':>8} {'med peak':>9} {'max peak':>9} "
+        f"{'spend':>8} {'share':>7} {'per fin job':>12} {'unfin':>6}"
+    )
+    for kind, ty in sorted(types.items(), key=lambda kv: -kv[1]["cost"]):
+        per_job = fmt(ty["fin_cost"] / ty["fin_n"]) if ty["fin_n"] else "-"
+        unfin = "-" if kind == "main" else str(ty["unfin"])
+        print(
+            f"  {kind[:28]:<28} {ty['runs']:>5} {ty['steps']:>6} "
+            f"{fmt(ty['ctx_sum'] / ty['steps']):>8} {fmt(median(ty['peaks'])):>9} "
+            f"{fmt(max(ty['peaks'])):>9} {fmt(ty['cost']):>8} {pct(ty['cost'], total):>7} "
+            f"{per_job:>12} {unfin:>6}"
+        )
+
+    print("\n== Wait steps (check loops and wake-ups) by what is waited on")
+    w_n = sum(w["n"] for w in waits.values())
+    w_cost = sum(w["cost"] for w in waits.values())
+    print(f"  all wait steps: {w_n}  {pct(w_cost, total).strip()} of spend")
+    print(f"  {'step: waiting on':<40} {'steps':>6} {'share':>7}")
+    for tag, w in sorted(waits.items(), key=lambda kv: (-kv[1]["cost"], kv[0])):
+        print(f"  {tag:<40} {w['n']:>6} {pct(w['cost'], total):>7}")
+
+    print(
+        f"\n== Main-window checkpoints (context < {CKPT_RATIO:.0%} of the previous step, "
+        f"previous > {CKPT_PREV_MIN // 1000}k)"
+    )
+    print(f"  count: {len(ckpt_before)}")
+    if ckpt_before:
+        print(
+            f"  context before: median {fmt(median(ckpt_before))}  min {fmt(min(ckpt_before))}  "
+            f"max {fmt(max(ckpt_before))}   after: median {fmt(median(ckpt_after))}"
+        )
+
+    print(f"\n== Main steps at >= {UNATTENDED_CTX // 1000}k context: was a prompt typed before them?")
+    print(f"  steps >= {UNATTENDED_CTX // 1000}k: {high['n']}")
+    print(f"  with no human-typed prompt since the previous step: {high['injected'] + high['midturn']}")
+    print(f"    after an injected prompt (wake-up, notification, hook text): {high['injected']}")
+    print(f"    mid-turn (only tool results since the previous step): {high['midturn']}")
+    print(f"  after a human-typed prompt: {high['human']}")
     return 0
 
 
