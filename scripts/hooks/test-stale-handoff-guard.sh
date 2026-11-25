@@ -138,6 +138,14 @@ if [ -f "$R/CLAUDE.local.md" ] && [ ! -d "$R/.handoff-archive" ] && [ -z "$out" 
 else
   bad "worker event: stale handoff left in place, silent (out=$out)"
 fi
+# Control: the SAME fixture without agent_id is quarantined, so the case above is not vacuous.
+printf '{"cwd":"%s","session_id":"test-sid-000","source":"compact"}' "$R" | bash "$GUARD" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -f "$R/CLAUDE.local.md" ]; then
+  ok "worker control: same fixture without agent_id is quarantined"
+else
+  bad "worker control: same fixture without agent_id is quarantined (rc=$rc)"
+fi
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"

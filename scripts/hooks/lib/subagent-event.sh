@@ -16,7 +16,9 @@
 
 # hook_is_subagent_event <hook-json> - 0 when the event carries a non-empty string agent_id.
 hook_is_subagent_event() {
-  local id
-  id=$(printf '%s' "${1:-}" | jq -er '.agent_id | strings | select(length>0)' 2>/dev/null) || return 1
-  [ -n "$id" ]
+  # -s: the input must be exactly ONE JSON document (a stream like `{..} {}` is not a worker event);
+  # -e: the exit status is the verdict, so nothing passes through command substitution.
+  printf '%s' "${1:-}" \
+    | jq -es 'length == 1 and (.[0] | type == "object") and (.[0].agent_id | type == "string" and length > 0)' \
+      >/dev/null 2>&1
 }
