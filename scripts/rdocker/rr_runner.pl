@@ -491,12 +491,12 @@ sub read_stdin {
 #                                 most memory (GB) they may use together (no cpu= = 100, no ram= = no cap)
 #   preset   cpu   RAM cap (share of the memory of this machine)
 #   low       25 %   25 %
-#   medium    50 %   50 %
+#   medium    75 %   50 %
 #   high     100 %   75 %
 # No file = no switch: every slot, no cap (a Linux worker, as before). A file that is not a small regular
 # file, or says anything else, = off (the intent of the owner wins).
 # (tables live in subs: the runner calls main() before any file-level assignment below it has run)
-sub share_presets { (low => [25, 25], medium => [50, 50], high => [100, 75]) }
+sub share_presets { (low => [25, 25], medium => [75, 50], high => [100, 75]) }
 sub share_aliases { (some => "medium", max => "high") }
 # -> undef (no file) or its text ("" when it cannot be read safely: off). Never through a symlink, never a
 # FIFO or a device (opened non-blocking, must be a regular file), at most 64 bytes.

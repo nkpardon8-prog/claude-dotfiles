@@ -6,7 +6,7 @@ bar or the command line:
 ```sh
 rdocker-share off       # no new jobs (running ones finish); the Docker VM stops once idle
 rdocker-share low       # 25 % of the cores, jobs may use up to 25 % of the memory together
-rdocker-share medium    # 50 % of the cores, up to 50 % of the memory      (old word: some)
+rdocker-share medium    # 75 % of the cores, up to 50 % of the memory      (old word: some)
 rdocker-share high      # all the cores, up to 75 % of the memory          (old word: max)
 rdocker-share cpu 75    # custom: 75 % of the cores (keeps the RAM cap you have)
 rdocker-share ram 4     # custom: jobs may use at most 4 GB together (keeps the CPU share)

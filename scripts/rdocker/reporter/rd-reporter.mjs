@@ -290,7 +290,7 @@ export function parsePower(text, nowMs, maxAgeS = 30) {
 // ---- lend: a Mac worker lent by its owner (dashboard/shared/protocol.ts Lend) --------------------
 
 /** The share-spec presets (rr_runner.pl share_presets: CPU % per level) and its old words. */
-const SHARE_CPU = { low: 25, medium: 50, high: 100 };
+const SHARE_CPU = { low: 25, medium: 75, high: 100 };
 const SHARE_ALIAS = { some: 'medium', max: 'high' };
 
 /**

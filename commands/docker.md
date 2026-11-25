@@ -851,7 +851,7 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
 - **What each level means:** `off` = no new jobs (running ones finish): the probe reports state `off`
   (`rrun --where` shows it, plus a `share` column), it is tried last, and its runner refuses at once
   (exit 73 + `UNAVAIL share=off`, also when switched off while a job waits for a slot), so rrun moves to
-  the next worker. Presets: `low` = 25 % of the cores + a RAM cap of 25 % of the memory, `medium` = 50 % +
+  the next worker. Presets: `low` = 25 % of the cores + a RAM cap of 25 % of the memory, `medium` = 75 % +
   50 %, `high` = all + 75 %; custom = the given CPU % and GB. The CPU % scales the slots and heavy slots
   (floor, min 1) and the cores the jobs share (fair CPU share above); the RAM cap allows one job per 2 GB
   and one heavy job per 6 GB (0 = no heavy job there: heavy-ineligible like fleet `heavy_slots: 0`, and the

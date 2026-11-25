@@ -1396,9 +1396,9 @@ class RunnerTest(unittest.TestCase):
                 open(os.path.join(self.root, "slots", "1"), "a") as l1:
             fcntl.flock(l0, fcntl.LOCK_EX)
             fcntl.flock(l1, fcntl.LOCK_EX)
-            for level, rc in (("high", 0), ("medium", 73), ("cpu=75", 0), ("cpu=75 ram=4", 73), ("cpu=50 ram=6", 73)):
+            for level, rc in (("high", 0), ("medium", 0), ("cpu=75", 0), ("cpu=75 ram=4", 73), ("cpu=50 ram=6", 73)):
                 r = self.run_runner(["true"], slots=4, wait_min=0.02, env_extra=self.share(level, self.AIR))
-                self.assertEqual(r.rc, rc, (level, r.err))     # 4 slots: high 4, medium 2, 75 % 3, 4 GB 2, 50 % 2
+                self.assertEqual(r.rc, rc, (level, r.err))     # 4 slots: high 4, medium 3, 75 % 3, 4 GB 2, 50 % 2
         with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
             hv = dict(slots=4, heavy_slots=2, cls="heavy", wait_min=0.02)
@@ -1472,7 +1472,7 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("interrupted rc=", self.runs_log()[-1])
 
     def test_mac_colima_on_the_air_is_sized_to_its_cores_and_ram_cap(self):
-        for level, want in (("medium", "--cpu 5 --memory 8"), ("high", "--cpu 10 --memory 8"),
+        for level, want in (("medium", "--cpu 7 --memory 8"), ("high", "--cpu 10 --memory 8"),
                             ("cpu=75 ram=4", "--cpu 7 --memory 4"), ("low", "--cpu 2 --memory 4")):
             kw = dict(self.mac_docker(), **self.share(level, self.AIR))
             if os.path.exists(os.path.join(self.d, "engine-up")):
@@ -1489,8 +1489,8 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 0, r.err)
         self.assertTrue(os.path.exists(marker))
         self.assertEqual(self.mac_calls("colima"),
-                         ["colima start --cpu 6 --memory 12 --disk 20 --vm-type vz --vz-rosetta"])
-        self.assertIn("starting Colima (6 CPU, 12 GB", r.err)
+                         ["colima start --cpu 9 --memory 18 --disk 20 --vm-type vz --vz-rosetta"])
+        self.assertIn("starting Colima (9 CPU, 18 GB", r.err)
         self.assertTrue(os.path.exists(os.path.join(self.root, "state", "colima.started")))
         self.assertFalse(os.path.exists(os.path.join(self.root, "colima.lock")))
         # already running (also: started by hand): nothing to do

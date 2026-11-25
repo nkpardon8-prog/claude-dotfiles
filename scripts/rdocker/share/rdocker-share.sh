@@ -4,7 +4,7 @@
 # Lends this Mac's compute to the rdocker pool (jobs run as the separate, non-admin `rd` user; nothing here
 # touches your account or files). The pool reads the setting live before every job (no reinstall):
 #   off                 no new jobs (running ones finish); the Docker VM stops once the worker is idle
-#   low | medium | high presets: 25 % of the cores + 25 % of the memory / 50 % + 50 % / all + 75 %
+#   low | medium | high presets: 25 % of the cores + 25 % of the memory / 75 % + 50 % / all + 75 %
 #   cpu <10-100>        custom: this percent of the cores (keeps the RAM cap you have)
 #   ram <1-256>         custom: jobs may use at most this many GB together (keeps the CPU share)
 #   stop                off now AND stop the jobs running here (rd-worker-mac stops them within 15 s)
@@ -35,12 +35,12 @@ PL='use strict; use warnings; use Fcntl;
 #                                 most memory (GB) they may use together (no cpu= = 100, no ram= = no cap)
 #   preset   cpu   RAM cap (share of the memory of this machine)
 #   low       25 %   25 %
-#   medium    50 %   50 %
+#   medium    75 %   50 %
 #   high     100 %   75 %
 # No file = no switch: every slot, no cap (a Linux worker, as before). A file that is not a small regular
 # file, or says anything else, = off (the intent of the owner wins).
 # (tables live in subs: the runner calls main() before any file-level assignment below it has run)
-sub share_presets { (low => [25, 25], medium => [50, 50], high => [100, 75]) }
+sub share_presets { (low => [25, 25], medium => [75, 50], high => [100, 75]) }
 sub share_aliases { (some => "medium", max => "high") }
 # -> undef (no file) or its text ("" when it cannot be read safely: off). Never through a symlink, never a
 # FIFO or a device (opened non-blocking, must be a regular file), at most 64 bytes.

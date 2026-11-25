@@ -367,7 +367,7 @@ test('share level -> level + CPU % lent (mirror of rr_runner.pl share_spec)', ()
   assert.deepEqual(r.parseShareLevel(null), { level: 'max', cpu: 100 }); // no file = everything
   assert.deepEqual(r.parseShareLevel('off\n'), { level: 'off', cpu: 0 });
   assert.deepEqual(r.parseShareLevel('low'), { level: 'low', cpu: 25 });
-  assert.deepEqual(r.parseShareLevel(' some '), { level: 'medium', cpu: 50 });
+  assert.deepEqual(r.parseShareLevel(' some '), { level: 'medium', cpu: 75 });
   assert.deepEqual(r.parseShareLevel('max'), { level: 'high', cpu: 100 });
   assert.deepEqual(r.parseShareLevel('cpu=75 ram=4'), { level: 'custom', cpu: 75 });
   assert.deepEqual(r.parseShareLevel('ram=4'), { level: 'custom', cpu: 100 });

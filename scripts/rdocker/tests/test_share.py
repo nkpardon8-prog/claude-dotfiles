@@ -35,8 +35,8 @@ SPECS = [
     (None, ("max", 100, None, None)),
     ("off\n", ("off", 100, None, None)),
     ("low", ("low", 25, None, 25)),
-    ("medium\n", ("medium", 50, None, 50)),
-    (" some\r\n", ("medium", 50, None, 50)),          # old word
+    ("medium\n", ("medium", 75, None, 50)),
+    (" some\r\n", ("medium", 75, None, 50)),          # old word
     ("high", ("high", 100, None, 75)),
     ("max\n", ("high", 100, None, 75)),               # old word
     ("cpu=75 ram=4\n", ("custom", 75, 4, None)),
@@ -108,19 +108,20 @@ class Block(unittest.TestCase):
                     % (spec, slots, "undef" if heavy is None else heavy, ncpu, tot_gb * 1024))
         return tuple(c)
 
-    def test_cap_math_keeps_nicks_macbook_exactly_as_before(self):
-        # nickmbp: fleet 8 slots / 6 heavy, M5 Max (18 threads), 64 GB. some = half the slots + VM 6 / 12,
+    def test_cap_math_on_nicks_macbook(self):
+        # nickmbp: fleet 8 slots / 6 heavy, M5 Max (18 threads), 64 GB. some (= medium, 75 % CPU since
+        # 2026-11-25) = 3/4 of the slots + VM 9 / 18,
         # max = everything + VM 12 / 24 (the old %VM table); the RAM cap of the preset never bites there
-        for text, want in (("some", (4, 3, 9, 32768, 6, 12)), ("max", (8, 6, 18, 49152, 12, 24)),
+        for text, want in (("some", (6, 4, 13, 32768, 9, 18)), ("max", (8, 6, 18, 49152, 12, 24)),
                            (None, (8, 6, 18, None, 12, 24))):
             self.assertEqual(self.caps(text, 8, 6, 18, 64), want, text)
         self.assertEqual(self.caps("some", 1, 1, 18, 64)[:2], (1, 1))       # floor, at least 1
-        self.assertEqual(self.caps("some", 3, 0, 18, 64)[:2], (1, 0))       # 0 heavy stays 0
+        self.assertEqual(self.caps("some", 3, 0, 18, 64)[:2], (2, 0))       # 0 heavy stays 0
 
     def test_cap_math_on_the_air(self):
         # airm4: fleet 4 slots / 1 heavy, 10 cores, 16 GB
         for text, want in (("low", (1, 0, 2, 4096, 2, 4)),           # no heavy job under 6 GB
-                           ("medium", (2, 1, 5, 8192, 5, 8)),
+                           ("medium", (3, 1, 7, 8192, 7, 8)),
                            ("high", (4, 1, 10, 12288, 10, 8)),        # VM: at most half the machine
                            ("cpu=75 ram=4", (2, 0, 7, 4096, 7, 4)),   # 3 slots by CPU, 2 by RAM
                            ("ram=2", (1, 0, 10, 2048, 10, 2)),
@@ -204,7 +205,7 @@ class ShareScript(unittest.TestCase):
         self.assertNotIn("Jobs running", r.stdout)                     # slots unreadable: level only
         for word, level, line in (("off", "off", "Sharing is OFF"),
                                   ("low", "low", "Sharing is LOW: jobs may use 25 % of the cores (2 of 10) and up to 4 GB"),
-                                  ("medium", "medium", "Sharing is MEDIUM: jobs may use 50 % of the cores (5 of 10) and up to 8 GB"),
+                                  ("medium", "medium", "Sharing is MEDIUM: jobs may use 75 % of the cores (7 of 10) and up to 8 GB"),
                                   ("high", "high", "Sharing is HIGH: jobs may use 100 % of the cores (10 of 10) and up to 12 GB"),
                                   ("some", "medium", "Sharing is MEDIUM"), ("max", "high", "Sharing is HIGH")):
             r = self.share(word)
@@ -244,7 +245,7 @@ class ShareScript(unittest.TestCase):
         i = self.info()
         self.assertEqual((i["level"], i["cpu"], i["ram_gb"], i["cores"], i["ncpu"], i["mem_gb"]),
                          ("custom", "100", "6", "10", "10", "16"))
-        self.assertEqual((i["p_low"], i["p_medium"], i["p_high"]), ("25 4", "50 8", "100 12"))
+        self.assertEqual((i["p_low"], i["p_medium"], i["p_high"]), ("25 4", "75 8", "100 12"))
 
     def test_stop_turns_off_and_asks_the_root_daemon_to_stop_the_jobs(self):
         self.share("medium")
@@ -308,7 +309,7 @@ class ShareScript(unittest.TestCase):
         presets = [l for l in out if l.startswith(("Off - ", "Low - ", "Medium - ", "High - "))]
         self.assertEqual([p.split(" |")[0] for p in presets],
                          ["Off - no new jobs (running ones finish)", "Low - 2 cores, up to 4 GB",
-                          "Medium - 5 cores, up to 8 GB", "High - all 10 cores, up to 12 GB"])
+                          "Medium - 7 cores, up to 8 GB", "High - all 10 cores, up to 12 GB"])
         for p, word in zip(presets, ("off", "low", "medium", "high")):
             self.assertRegex(p, r" \| %s param1=%s terminal=false refresh=true$" % (cmd, word))   # one click
         self.assertFalse(any("checked=true" in p for p in presets))    # custom: no preset ticked
@@ -345,11 +346,11 @@ class ShareScript(unittest.TestCase):
         with open(st, "w") as f:
             f.write("jobs=2\nts=%d\n" % time.time())
         out = self.plugin()
-        self.assertEqual(out[0], "⚙ 50% · 8G · 2▶ | color=#36D399")
+        self.assertEqual(out[0], "⚙ 75% · 8G · 2▶ | color=#36D399")
         self.assertIn("Team jobs running here now: 2 | color=gray", out)
         self.assertTrue(any(l.startswith("Medium - ") and l.endswith("checked=true") for l in out))
         out = self.plugin(RR_SYSCTL_kern_memorystatus_vm_pressure_level="2")
-        self.assertEqual(out[0], "⚙ 50% · 8G · 2▶ ⏸ | color=#F5A623")
+        self.assertEqual(out[0], "⚙ 75% · 8G · 2▶ ⏸ | color=#F5A623")
         self.assertTrue(any(l.startswith("Paused for memory: macOS memory pressure is up") for l in out))
         self.share("off")
         out = self.plugin()
