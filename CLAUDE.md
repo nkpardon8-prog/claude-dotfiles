@@ -36,7 +36,7 @@ When there is an opportunity to use a spine or harness, use it; if one should ex
 - **Blocked means stop.** When the next step needs a decision only the user can make, park it with the
   question written down and go idle. Do not burn tokens guessing.
 
-These apply to top-level replies only, never to subagents.
+This section applies to main windows only, never to subagents.
 
 ## Messaging other agents
 You can message other agent windows, on this Mac or another one over Remote Control, by their `/line`
@@ -74,15 +74,16 @@ working code that predates it. Classify each one as new-code-only, fix-now, or a
 net, never piecemeal across unrelated work. Surface the timing call.
 
 ## Context, compaction and /mission
-- The statusline writes your live context-used % to `~/.claude/progress/ctx-<sid>.txt` (`<sid>` = the
+- Main windows: the statusline writes your live context-used % to `~/.claude/progress/ctx-<sid>.txt` (`<sid>` = the
   basename of this session's transcript `.jsonl`). Checkpoint with `/pre-compact` around 400-450k
   tokens (40-45% of a 1M window), at a natural stopping point, never mid-edit; the forced line stays
   at 75%.
-- Any handoff or state dump before compaction goes through `/pre-compact`, never a freeform document.
-- `implementer` workers compact on their own near 270k tokens and keep a note file in
-  `~/.claude/worker-notes/`. Give a worker its whole task in the prompt; never count on a worker
-  remembering an earlier exchange.
-- AskUserQuestion: end every question text with the current context % (e.g. "(context: 58%)"), read
+- Main windows: any handoff or state dump before compaction goes through `/pre-compact`, never a
+  freeform document. A subagent never runs `/pre-compact`.
+- `implementer` workers compact on their own near 270k tokens and keep their own note file in
+  `~/.claude/worker-notes/` (their agent file says how). Give a worker its whole task in the prompt;
+  never count on a worker remembering an earlier exchange.
+- AskUserQuestion (main windows): end every question text with the current context % (e.g. "(context: 58%)"), read
   from that file right before asking; the user cannot see the statusline while the popup is open.
 - `/mission` is opt-in, for large multi-part builds. New missions and rebaselines run budgeted
   `proto=2`; a legacy mission stays on its frozen playbook until it is rebaselined. If you were
@@ -120,6 +121,6 @@ generating `.env.example`, use the catalog's names.
 ## Browser and desktop
 - Browser tasks go to whichever devtools agent is online: SendMessage it by its `/line` name, with a URL
   it can reach (a deploy or preview URL, or a dev server on `--host 0.0.0.0` at this machine's Tailscale
-  name). Do not run devtools locally.
+  name). Do not run devtools locally unless you are that agent or its worker.
 - For a GUI surface no CLI, MCP or native tool can reach (macOS permission dialogs, app modals), use
   `/desktop` instead of asking the user to click.
