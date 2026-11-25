@@ -94,6 +94,20 @@ requirement, only Terminal Automation permission).
 - Diagnostic log: `~/.claude/logs/auto-compact.log` (mode 600, bounded ring at ~64KB)
 - Pruned: stale sentinels + claim files >12h via `scripts/progress/on-session-start-cleanup.sh`
 
+### Worker (subagent) compactions
+
+A worker's auto-compaction fires `PreCompact` and `SessionStart(source=compact)` with the
+PARENT window's `session_id` plus a non-empty string `agent_id`. The user-level compact-path hooks
+ignore those events (`lib/subagent-event.sh`, `hook_is_subagent_event`, checked right after stdin is
+read): the safety hook never blocks a worker, the primer prints one reminder line telling the worker
+to re-read its note file and touches none of the parent's sentinel, sidecar or transfer notice, the
+stale-handoff guard, `/line` hooks and `prod-ledger.py inject` stay silent, and `rules-in-force.py
+session-start` prints the same rules note `subagent` mode gives without touching saved state.
+Malformed input or a missing, empty or non-string `agent_id` runs the normal main-window path.
+Project-level hooks, the age-based cleanup and the dotfiles pull still run on a worker compaction.
+Tests: the `§W` cases in `test-ctx-gate.sh`, `7w` in `test-rules-in-force.sh`, case 9 in
+`test-stale-handoff-guard.sh`.
+
 ### Running the tests
 
 ```sh
