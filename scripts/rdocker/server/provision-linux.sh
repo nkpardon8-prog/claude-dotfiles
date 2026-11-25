@@ -369,6 +369,8 @@ fi
 say resilience
 if [ "$DRY" = 1 ]; then echo "+ rd-resilience.sh"; else
   put_file /usr/local/bin/rd-verify 755 < "$SRC/rd-verify.sh" || true
+  # the owner of the box can take everything off again without us: `sudo bash /usr/local/bin/rd-unprovision`
+  put_file /usr/local/bin/rd-unprovision 755 < "$SRC/unprovision-linux.sh" || true
   HOME_FLAG=(); [ "$IS_HOME" = 1 ] && HOME_FLAG=(--home)
   bash "$SRC/rd-resilience.sh" --user "$RD_USER" --wsl "$IS_WSL" --distro "$ID" --codename "$CODENAME" --src "$SRC" "${HOME_FLAG[@]}"
 fi

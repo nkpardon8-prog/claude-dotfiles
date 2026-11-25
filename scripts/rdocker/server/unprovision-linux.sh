@@ -700,4 +700,8 @@ echo "     sudo tailscale set --auto-update=false   # if provision turned auto-u
 echo "     sudo tailscale logout"
 [ "${#FAILED[@]}" -eq 0 ] || exit 1
 if [ "$RERUN" = 1 ] && [ "$DRY" != 1 ]; then echo "RDUNPROV incomplete: re-run once the kept items above are dealt with"; exit 3; fi
+# the installed copy of this script goes last, only on a complete run (a re-run can still use it)
+if [ "$DRY" != 1 ] && [ -f /usr/local/bin/rd-unprovision ] && sed -n 2p /usr/local/bin/rd-unprovision | grep -q '^# unprovision-linux.sh'; then
+  rm -f /usr/local/bin/rd-unprovision && echo "removed /usr/local/bin/rd-unprovision (this script)"
+fi
 echo "RDUNPROV ok"

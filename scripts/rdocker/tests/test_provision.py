@@ -456,6 +456,8 @@ class Unprovision(unittest.TestCase):
             base = os.path.basename(path)
             if path.startswith("/etc/systemd/system/") and path.count("/") == 4:
                 self.assertIn(base, units, path)
+            elif path == "/usr/local/bin/rd-unprovision":   # the uninstaller itself: removed last, on a full run
+                self.assertIn("rm -f /usr/local/bin/rd-unprovision", u, path)
             elif path.startswith("/usr/local/bin/"):
                 self.assertIn(base, tools, path)
             elif path.startswith("/etc/systemd/system/"):
