@@ -206,7 +206,7 @@ if [ "$DOCKER_OK" = 1 ]; then
     ov=$(grep -c '^OTHER' <<< "$V_ROWS" || true)
     FOREIGN=$((oc + ov + on))
     [ "$oc" -gt 0 ] && kept "$oc container(s) that are not ours - never touched"
-    [ "$ov" -gt 0 ] && kept "$ov docker volume(s) without a pool label - never touched: $(awk '$1 == "OTHER" {print $2}' <<< "$V_ROWS" | head -5 | xargs)"
+    [ "$ov" -gt 0 ] && kept "$ov docker volume(s) without a pool label - never touched: $(awk '$1 == "OTHER" {print $2}' <<< "$V_ROWS" | xargs)"
     [ "$on" -gt 0 ] && kept "$on docker network(s) that are not ours - never touched"
   fi
 fi
@@ -214,10 +214,14 @@ fi
 # --- 3. the capped docker data disk (ext4 loop image at /var/lib/docker) ---------------------------------------
 say "step docker-disk"
 DISK_REMOVED=0
-unmount_all() {   # every mount stacked on $1 (a lazy umount when one is busy)
-  local i
+unmount_all() {   # unmount_all DIR [lazy]: every mount stacked on DIR. A busy one fails it - except with "lazy",
+  local i          # which only docker's own leftover self-bind of a plain directory may use (never one of our images)
   if [ "$DRY" = 1 ]; then echo "+ umount $1 (every layer)" >&3; return 0; fi
-  for i in 1 2 3 4 5 6 7 8; do mountpoint -q "$1" || return 0; umount "$1" 2>/dev/null || umount -l "$1" || return 1; done
+  for i in 1 2 3 4 5 6 7 8; do
+    mountpoint -q "$1" || return 0
+    umount "$1" 2>/dev/null || { [ "${2:-}" = lazy ] && umount -l "$1"; } || return 1
+  done
+  return 1
 }
 detach_loops() {   # the loop devices of image $1; one a process still maps (a service's private mount view)
   local dev           # is only marked to detach: its space comes back when that process ends (at the latest, a reboot)
@@ -227,9 +231,11 @@ detach_loops() {   # the loop devices of image $1; one a process still maps (a s
   losetup -j "$1" 2>/dev/null | grep -q . && kept "$1: deleted, but a running service still maps it - its disk space returns at the next reboot"
   return 0
 }
-img_still_mounted() {   # is any loop device of image $1 mounted anywhere (this mount namespace)?
-  local d
-  for d in $(losetup -j "$1" -nO NAME 2>/dev/null); do findmnt -rn -S "$d" >/dev/null && return 0; done
+img_still_mounted() {   # is any loop device of image $1 mounted (this mount namespace)? Unknown counts as yes.
+  local d devs
+  devs=$(losetup -j "$1" -nO NAME 2>/dev/null) || return 0
+  [ -r /proc/self/mounts ] || return 0
+  for d in $devs; do awk -v d="$d" '$1 == d { f = 1 } END { exit !f }' /proc/self/mounts && return 0; done
   return 1
 }
 # is MOUNTPOINT mounted from IMAGE's loop device?
@@ -318,17 +324,6 @@ fi
 
 # --- 6. config files -----------------------------------------------------------------------------------------------
 say "step config"
-# The way back in (sshd listener/port, ufw, our client keys) goes only in a run that finishes everything else:
-# an incomplete run (RERUN) must leave the re-run able to log in exactly as this one did.
-SSHD_CHANGED=0
-if [ "$RERUN" = 1 ]; then
-  kept "sshd config, ufw rules and our client keys: kept until a re-run finishes the rest (it must still get in)"
-else
-  for f in /etc/ssh/sshd_config.d/10-rdocker.conf /etc/ssh/sshd_config.d/05-rdocker-hardening.conf \
-           /etc/ssh/sshd_config.d/05-rdocker-hardening.conf.rdbak; do
-    [ -e "$f" ] && SSHD_CHANGED=1; rm_file "$f" "sshd config"
-  done
-fi
 rm_file /etc/sysctl.d/90-rdocker.conf "sysctl (nonlocal bind, swappiness)"
 rm_file /etc/sysctl.d/91-rdocker-panic.conf "sysctl (reboot on panic)"
 J=/etc/systemd/journald.conf.d/50-rdocker.conf; JCH=0; [ -e "$J" ] && JCH=1; rm_file "$J" "journald 50M cap"
@@ -366,14 +361,6 @@ restore_shared() {   # restore_shared PATH WHAT
 restore_shared /etc/apt/apt.conf.d/20auto-upgrades "automatic apt updates"
 grep -qi microsoft /proc/version 2>/dev/null && { restore_shared /etc/wsl.conf "WSL settings" && kept "WSL settings apply after: wsl --shutdown (from Windows)"; }
 
-# apply what changed: sshd only once its config checks out (an ssh session must never be cut by a bad file)
-if [ "$SSHD_CHANGED" = 1 ] && [ "$DRY" != 1 ]; then
-  # reload, never restart: sshd re-execs on SIGHUP (new listeners, new config) and every open session lives on
-  if sshd -t 2>/dev/null || /usr/sbin/sshd -t 2>/dev/null; then
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null \
-      || kept "sshd not reloaded (not running?): the restored config applies at its next start"
-  else FAILED+=("sshd -t rejects the box's own sshd config: ssh NOT reloaded (fix it, then: sudo systemctl reload ssh)"); fi
-fi
 if [ "$HAVE_PRIOR" = 1 ] && [ "$DRY" != 1 ]; then
   for v in net.ipv4.ip_nonlocal_bind vm.swappiness kernel.panic kernel.panic_on_oops; do
     var="PRIOR_SYSCTL_$(echo "$v" | tr '.' '_')"; val=${!var:-}
@@ -385,35 +372,8 @@ fi
 [ "$CHRONY_CH" = 1 ] && pkg_installed chrony && act systemctl restart chrony
 [ "$WCH" = 1 ] && act systemctl daemon-reexec
 
-# --- 7. firewall + the services rd-harden turned off ---------------------------------------------------------------
-say "step firewall"
-drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6 copy of each
-  local r
-  local rules=("allow in on tailscale0 to any port $PORT proto tcp" "allow 41641/udp")
-  [ "$PORT" = 22 ] || rules+=("allow in on tailscale0 to any port 22 proto tcp")
-  grep -q '^PRIOR_UFW_RULES=' "$PRIOR" 2>/dev/null || { kept "ufw rules (the record has no snapshot of the box's own rules)"; return 0; }
-  for r in "${rules[@]}"; do
-    grep -qxF "ufw $r" <<< "$PRIOR_UFW_RULES" && continue      # the box had this rule itself
-    # shellcheck disable=SC2086  # word-split on purpose: a ufw rule
-    ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
-  done
-}
-ufw_defaults() { (. /etc/default/ufw 2>/dev/null && for v in "${DEFAULT_INPUT_POLICY:-}" "${DEFAULT_OUTPUT_POLICY:-}"; do
-  case "$v" in DROP) echo deny ;; ACCEPT) echo allow ;; REJECT) echo reject ;; esac; done | xargs); }
-if [ "$RERUN" = 1 ] || ! command -v ufw >/dev/null 2>&1; then :
-elif [ "$HAVE_PRIOR" = 1 ]; then
-  if [ "$PRIOR_UFW_ACTIVE" = 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
-  fi
-  drop_ufw_rules    # either way (when ufw was already on, the box had its own way in)
-  if [ -n "$PRIOR_UFW_DEFAULTS" ] && [ "$(ufw_defaults)" != "$PRIOR_UFW_DEFAULTS" ]; then   # rd-harden: deny in / allow out
-    read -r din dout <<< "$PRIOR_UFW_DEFAULTS"
-    act ufw default "$din" incoming >/dev/null && act ufw default "$dout" outgoing >/dev/null \
-      && gone "ufw default policies (back to $din incoming, $dout outgoing)"
-  fi
-elif ufw status 2>/dev/null | grep -q '^Status: active'; then
-  kept "ufw on with rdocker's rules (no record whether ufw was on before; undo: sudo ufw --force disable)"
-fi
+# --- 7. DOCKER-USER rules + the services rd-harden turned off ---------------------------------------------------------------
+say "step services-restore"
 # rd-docker-user's exact rule set (rd-docker-user.sh), removed only when all of it is there - never a flush
 DU_RULES=("-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" "-i lo -j RETURN" "-i tailscale0 -j RETURN"
           "-i docker+ -j RETURN" "-i br-+ -j RETURN" "-j DROP")
@@ -427,12 +387,14 @@ if command -v iptables >/dev/null 2>&1 && quiet iptables -S DOCKER-USER; then
     gone "DOCKER-USER firewall rules of rd-docker-user"
   fi
   # the box's own rules, which rd-docker-user's rebuild had dropped (live until the box's own tooling rewrites them)
+  # (iptables-save lines, replayed whole and in order by iptables-restore: quoting kept, no flush, no chain
+  # declaration). Only into a chain that is empty now - anything else there is not ours to merge with.
   if [ "$HAVE_PRIOR" = 1 ] && [ -n "$PRIOR_DOCKER_USER" ]; then
-    while read -r _a _chain rule; do
-      [ "$_a" = -A ] && [ "$_chain" = DOCKER-USER ] && [ -n "$rule" ] || continue
-      # shellcheck disable=SC2086  # word-split on purpose: an iptables rule
-      quiet iptables -C DOCKER-USER $rule || { act iptables -A DOCKER-USER $rule && gone "DOCKER-USER rule of the box put back: $rule"; }
-    done <<< "$PRIOR_DOCKER_USER"
+    if [ "$DRY" = 1 ]; then echo "+ iptables-restore --noflush: the box's own DOCKER-USER rules" >&3
+    elif [ -z "$(iptables -S DOCKER-USER 2>/dev/null | grep '^-A ' | grep -vx -- '-A DOCKER-USER -j RETURN')" ]; then
+      printf '*filter\n%s\nCOMMIT\n' "$PRIOR_DOCKER_USER" | iptables-restore --noflush \
+        && gone "the box's own DOCKER-USER rules (put back)" || FAILED+=("putting back the box's own DOCKER-USER rules")
+    else kept "the box's own DOCKER-USER rules from before provision: the chain is not empty now, so not merged (they are listed in $PRIOR)"; fi
   fi
 fi
 if [ "$HAVE_PRIOR" = 1 ]; then
@@ -524,42 +486,12 @@ if [ -n "$RD_UID" ]; then
   fi
 fi
 
-# --- 11. our client keys in other logins ------------------------------------------------------------------------------
-say "step keys"
-drop_keys() {   # drop_keys USER BLOB...: remove authorized_keys lines whose key blob is one of ours
-  local u=$1; shift
-  local home ak n
-  home=$(getent passwd "$u" | cut -d: -f6) || return 0
-  ak="$home/.ssh/authorized_keys"; [ -f "$ak" ] || return 0
-  n=$(awk -v bl=" $* " 'BEGIN{c=0} { for (i = 1; i <= NF; i++) if ($i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ && index(bl, " " $(i+1) " ")) { c++; break } } END{print c}' "$ak")
-  [ "$n" -gt 0 ] || return 0
-  if [ "$DRY" = 1 ]; then echo "+ remove $n rdocker client key(s) from $ak"
-  else
-    # rewritten AS that user (never root through a path the user controls); cat >: keeps the file's inode and mode
-    runuser -u "$u" -- sh -c 'f=$1; t=$(mktemp "$f.XXXXXX") || exit 1
-      awk -v bl="$2" "{ for (i = 1; i <= NF; i++) if (\$i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ && index(bl, \" \" \$(i+1) \" \")) next; print }" "$f" > "$t" \
-        && cat "$t" > "$f"; rc=$?; rm -f "$t"; exit $rc' _ "$ak" " $* " \
-      || { FAILED+=("removing our client keys from $ak"); return 1; }
-  fi
-  gone "$n rdocker client key(s) from $u's authorized_keys"
-}
-if [ "$RERUN" = 1 ]; then :      # kept for the re-run (see step 6)
-elif [ -f "$STATE_DIR/added-keys" ]; then
-  for u in $(awk '{print $1}' "$STATE_DIR/added-keys" | sort -u); do
-    [ "$u" = "$RD_USER" ] && [ "$USER_OURS" = 1 ] && continue
-    # shellcheck disable=SC2046
-    drop_keys "$u" $(awk -v u="$u" '$1 == u {print $2}' "$STATE_DIR/added-keys")
-  done
-# --keys only on a box with no record at all: the ledger names exactly the keys provision added
-elif [ "$HAVE_PRIOR" != 1 ] && [ -n "$KEYS" ] && [ "$ADMIN_USER" != "$RD_USER" ]; then
-  # shellcheck disable=SC2046
-  drop_keys "$ADMIN_USER" $(awk '/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ {print $2}' "$KEYS")
-fi
-
-# --- 12. packages (--purge-packages only) ------------------------------------------------------------------------
+# --- 11. packages (--purge-packages only; only in a run where everything else worked) ------------------------------------------------------------------------
 say "step packages"
 DOCKER_PURGED=0
-if [ "$PURGE" = 1 ]; then
+if [ "$PURGE" = 1 ] && [ "$DRY" != 1 ] && { [ "$RERUN" = 1 ] || [ "${#FAILED[@]}" -gt 0 ]; }; then
+  kept "packages: not purged in a run that failed or has to be re-run (a complete run with --purge-packages does it)"
+elif [ "$PURGE" = 1 ]; then
   if [ "$HAVE_PRIOR" = 1 ] && [ ! -s "$STATE_DIR/prior/packages" ]; then
     kept "packages: the record has no package list, none purged"
   elif [ "$HAVE_PRIOR" != 1 ]; then
@@ -606,22 +538,27 @@ if [ "$PURGE" = 1 ]; then
       done
     fi
     # docker that provision installed and that is gone now (this run's purge, or an earlier one): its leftovers go
-    [ "$DOCKER_PURGED" = 1 ] && [ "$DRY" != 1 ] && : > "$STATE_DIR/docker-purged"   # a re-run may finish the cleanup
-    if { [ "$DOCKER_PURGED" = 1 ] || [ -f "$STATE_DIR/docker-purged" ]; } && [ ! -f "$DOCKER_IMG" ] \
-       && ! mounted_from /var/lib/docker "$DOCKER_IMG"; then
+    # only in the run that verifiably purged docker-ce (installed by provision), never while our image exists
+    if [ "$DOCKER_PURGED" = 1 ] && [ ! -f "$DOCKER_IMG" ]; then
       for f in /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc; do prior_file "$f" || rm_file "$f" "docker apt repo"; done
       # runtime data: docker's only when the box had none before; containerd's only when we installed containerd
       if [ "$PRIOR_DOCKER_DATA" = 0 ] && [ ! -d /var/lib/docker.pre-rdocker ] && [ -d /var/lib/docker ]; then
         # dockerd bind-mounts its root onto itself; that bind outlives the purged daemon (never our image here:
         # step 3 removed that, and kept docker installed while it stayed)
-        if mountpoint -q /var/lib/docker && ! mounted_from /var/lib/docker "$DOCKER_IMG" \
-           && [ "$(findmnt -no SOURCE /var/lib/docker | head -1 | sed 's/.*\[\(.*\)\]$/\1/')" = /var/lib/docker ]; then
-          unmount_all /var/lib/docker || FAILED+=("umount /var/lib/docker (docker's own bind of its root)")
+        if mountpoint -q /var/lib/docker \
+           && [ "$(findmnt -no SOURCE /var/lib/docker | sed 's/.*\[\(.*\)\]$/\1/' | sort -u)" = /var/lib/docker ]; then
+          unmount_all /var/lib/docker lazy || FAILED+=("umount /var/lib/docker (docker's own bind of its root)")
         fi
-        act rm -rf /var/lib/docker && gone "/var/lib/docker (docker installed by provision, purged)"
+        # nothing may be mounted at or below it: a recursive delete must never cross into another filesystem
+        if [ "$DRY" != 1 ] && findmnt -rn -R /var/lib/docker >/dev/null 2>&1; then
+          FAILED+=("/var/lib/docker still has mounts at or below it: not deleted")
+        else
+          act rm -rf --one-file-system /var/lib/docker && gone "/var/lib/docker (docker installed by provision, purged)"
+        fi
       fi
       if has containerd.io "$P" && ! pkg_installed containerd.io && [ -d /var/lib/containerd ]; then
-        act rm -rf /var/lib/containerd && gone "/var/lib/containerd (containerd installed by provision, purged)"
+        if [ "$DRY" != 1 ] && findmnt -rn -R /var/lib/containerd >/dev/null 2>&1; then FAILED+=("/var/lib/containerd still has mounts: not deleted")
+        else act rm -rf --one-file-system /var/lib/containerd && gone "/var/lib/containerd (containerd installed by provision, purged)"; fi
       fi
       rmdir_empty /etc/docker
       for d in /opt/containerd/bin /opt/containerd/lib /opt/containerd; do rmdir_empty "$d"; done
@@ -643,7 +580,83 @@ if [ "$DOCKER_PURGED" != 1 ] && command -v docker >/dev/null 2>&1 \
   fi
 fi
 
-# --- 13. our state ----------------------------------------------------------------------------------------------
+# --- 13. the way back in: sshd, ufw, our client keys - LAST, and only in a run where everything else worked --------
+# A run that failed or has to be re-run (RERUN) leaves them exactly as they are, so the retry still gets in the same way.
+say "step access"
+SSHD_CHANGED=0
+if [ "$DRY" != 1 ] && { [ "$RERUN" = 1 ] || [ "${#FAILED[@]}" -gt 0 ]; }; then
+  kept "sshd config, ufw rules and our client keys: kept until a run finishes everything else (the retry must still get in)"
+else
+  for f in /etc/ssh/sshd_config.d/10-rdocker.conf /etc/ssh/sshd_config.d/05-rdocker-hardening.conf \
+           /etc/ssh/sshd_config.d/05-rdocker-hardening.conf.rdbak; do
+    [ -e "$f" ] && SSHD_CHANGED=1; rm_file "$f" "sshd config"
+  done
+  # apply what changed: sshd only once its config checks out (an ssh session must never be cut by a bad file)
+  if [ "$SSHD_CHANGED" = 1 ] && [ "$DRY" != 1 ]; then
+    # reload, never restart: sshd re-execs on SIGHUP (new listeners, new config) and every open session lives on
+    if sshd -t 2>/dev/null || /usr/sbin/sshd -t 2>/dev/null; then
+      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null \
+        || kept "sshd not reloaded (not running?): the restored config applies at its next start"
+    else FAILED+=("sshd -t rejects the box's own sshd config: ssh NOT reloaded (fix it, then: sudo systemctl reload ssh)"); fi
+  fi
+  drop_ufw_rules() {   # the three rules rd-harden adds; ufw deletes the v4 and v6 copy of each
+    local r
+    local rules=("allow in on tailscale0 to any port $PORT proto tcp" "allow 41641/udp")
+    [ "$PORT" = 22 ] || rules+=("allow in on tailscale0 to any port 22 proto tcp")
+    grep -q '^PRIOR_UFW_RULES=' "$PRIOR" 2>/dev/null || { kept "ufw rules (the record has no snapshot of the box's own rules)"; return 0; }
+    for r in "${rules[@]}"; do
+      grep -qxF "ufw $r" <<< "$PRIOR_UFW_RULES" && continue      # the box had this rule itself
+      # shellcheck disable=SC2086  # word-split on purpose: a ufw rule
+      ufw show added 2>/dev/null | grep -qxF "ufw $r" && act ufw delete $r >/dev/null && gone "ufw rule: $r"
+    done
+  }
+  ufw_defaults() { (. /etc/default/ufw 2>/dev/null && for v in "${DEFAULT_INPUT_POLICY:-}" "${DEFAULT_OUTPUT_POLICY:-}"; do
+    case "$v" in DROP) echo deny ;; ACCEPT) echo allow ;; REJECT) echo reject ;; esac; done | xargs); }
+  if ! command -v ufw >/dev/null 2>&1; then :
+  elif [ "$HAVE_PRIOR" = 1 ]; then
+    if [ "$PRIOR_UFW_ACTIVE" = 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
+      act ufw --force disable >/dev/null && gone "ufw firewall (was off before provision)"
+    fi
+    drop_ufw_rules    # either way (when ufw was already on, the box had its own way in)
+    if [ -n "$PRIOR_UFW_DEFAULTS" ] && [ "$(ufw_defaults)" != "$PRIOR_UFW_DEFAULTS" ]; then   # rd-harden: deny in / allow out
+      read -r din dout <<< "$PRIOR_UFW_DEFAULTS"
+      act ufw default "$din" incoming >/dev/null && act ufw default "$dout" outgoing >/dev/null \
+        && gone "ufw default policies (back to $din incoming, $dout outgoing)"
+    fi
+  elif ufw status 2>/dev/null | grep -q '^Status: active'; then
+    kept "ufw on with rdocker's rules (no record whether ufw was on before; undo: sudo ufw --force disable)"
+  fi
+  drop_keys() {   # drop_keys USER BLOB...: remove authorized_keys lines whose key blob is one of ours
+    local u=$1; shift
+    local home ak n
+    home=$(getent passwd "$u" | cut -d: -f6) || return 0
+    ak="$home/.ssh/authorized_keys"; [ -f "$ak" ] || return 0
+    n=$(awk -v bl=" $* " 'BEGIN{c=0} { for (i = 1; i <= NF; i++) if ($i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ && index(bl, " " $(i+1) " ")) { c++; break } } END{print c}' "$ak")
+    [ "$n" -gt 0 ] || return 0
+    if [ "$DRY" = 1 ]; then echo "+ remove $n rdocker client key(s) from $ak"
+    else
+      # rewritten AS that user (never root through a path the user controls); cat >: keeps the file's inode and mode
+      runuser -u "$u" -- sh -c 'f=$1; t=$(mktemp "$f.XXXXXX") || exit 1
+        awk -v bl="$2" "{ for (i = 1; i <= NF; i++) if (\$i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ && index(bl, \" \" \$(i+1) \" \")) next; print }" "$f" > "$t" \
+          && cat "$t" > "$f"; rc=$?; rm -f "$t"; exit $rc' _ "$ak" " $* " \
+        || { FAILED+=("removing our client keys from $ak"); return 1; }
+    fi
+    gone "$n rdocker client key(s) from $u's authorized_keys"
+  }
+  if [ -f "$STATE_DIR/added-keys" ]; then
+    for u in $(awk '{print $1}' "$STATE_DIR/added-keys" | sort -u); do
+      [ "$u" = "$RD_USER" ] && [ "$USER_OURS" = 1 ] && continue
+      # shellcheck disable=SC2046
+      drop_keys "$u" $(awk -v u="$u" '$1 == u {print $2}' "$STATE_DIR/added-keys")
+    done
+  # --keys only on a box with no record at all: the ledger names exactly the keys provision added
+  elif [ "$HAVE_PRIOR" != 1 ] && [ -n "$KEYS" ] && [ "$ADMIN_USER" != "$RD_USER" ]; then
+    # shellcheck disable=SC2046
+    drop_keys "$ADMIN_USER" $(awk '/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)/ {print $2}' "$KEYS")
+  fi
+fi
+
+# --- 14. our state ----------------------------------------------------------------------------------------------
 say "step state"
 for p in /run/rdocker /run/rdocker-tune /run/rdocker-doctor /run/rdocker-netcheck.count /run/rd-rrfs.lock; do
   [ -e "$p" ] && act rm -rf "$p"
