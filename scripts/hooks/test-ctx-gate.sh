@@ -187,7 +187,7 @@ fi
 rm -rf "$TMPHOME"
 
 # 3c-8 — UserPromptSubmit, ctx=65, sentinel ARMED and fresh: IMPORTANT is SUPPRESSED by sentinel-fresh skip
-# Under 2026-05-28 tuning ctx=65 is IMPORTANT (not SOFT); sentinel-fresh suppresses both SOFT and
+# ctx=65 is IMPORTANT (50-74 under 2026-11-24 tuning); sentinel-fresh suppresses both SOFT and
 # IMPORTANT alike (FORCE is the only nudge that overrides sentinel-fresh skip).
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"

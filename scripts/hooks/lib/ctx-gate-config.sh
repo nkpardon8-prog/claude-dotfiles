@@ -12,7 +12,7 @@
 _CTX_GATE_CONFIG_LOADED=1
 
 # ---------------------------------------------------------------------------
-# Thresholds (2026-05-28 tuning: 50 SOFT / 65 IMPORTANT / 75 FORCE — code-quality-first)
+# Thresholds (2026-11-24 tuning: 40 SOFT / 50 IMPORTANT / 75 FORCE; was 50/65/75 from 2026-05-28)
 # ---------------------------------------------------------------------------
 # Rationale: LLM accuracy degrades meaningfully past ~70% ctx; original 75/85 thresholds
 # let the most critical wrap-up work happen in the worst-quality zone. With the chain
