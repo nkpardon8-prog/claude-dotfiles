@@ -431,6 +431,10 @@ def main():
     if sub == "inject":
         try:
             d = json.loads(sys.stdin.read() or "{}")
+            # A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id:
+            # the ledger is main-window context, so a worker event gets nothing.
+            if isinstance(d.get("agent_id"), str) and d["agent_id"]:
+                return
             cwd = d.get("cwd") or os.getcwd()
             ents = recent(project_slug(cwd), 8)
             if not ents:

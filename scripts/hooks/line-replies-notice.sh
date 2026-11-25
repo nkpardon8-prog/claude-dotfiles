@@ -37,6 +37,11 @@ command -v python3 >/dev/null 2>&1 || exit 0
 SID=""
 if [ ! -t 0 ]; then
   INPUT=$(head -c 1048576 2>/dev/null)
+  # A worker's (subagent's) compaction carries the PARENT's session_id plus agent_id: the replies
+  # are the main window's, so a worker is told nothing.
+  _subagent_lib="$(dirname "$0")/lib/subagent-event.sh"
+  [ -f "$_subagent_lib" ] && . "$_subagent_lib"
+  if declare -F hook_is_subagent_event >/dev/null && hook_is_subagent_event "$INPUT"; then exit 0; fi
   if command -v jq >/dev/null 2>&1; then
     SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
   fi
