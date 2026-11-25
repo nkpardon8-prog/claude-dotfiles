@@ -121,7 +121,7 @@ BENCH_REF_S = 4.0            # bench seconds that score speed 1.0 (rr_bench_ref_
 # test:db and every test:db:<x> variant (test:db:rls, test:db:migrated: 30 runs on 2026-11-11 were
 # classed "normal" - no DB placement, a 30-min cap instead of 90)
 _DB_RE = re.compile(r"(^|\s)(test:db(:[\w.-]+)*|release:rehearse:migrations|check:db-all)(\s|$)"
-                    r"|(^|[\s/])(test-with-db|run-guard-tier)\.mjs(\s|$)")
+                    r"|(^|[\s/])test-with-db\.mjs(\s|$)")   # guard tiers: no DB (heavy, see classify)
 _TYPECHECK_RE = re.compile(r"(^|[\s/])tsc(\s|$)|(^|\s)(typecheck|type-check)(:[\w:.-]*)?(\s|$)"
                            r"|(^|\s)check:server-test-typecheck(\s|$)")
 _BIGHEAP_RE = re.compile(r"--max-old-space-size=[0-9]{4,}")
@@ -146,12 +146,14 @@ def classify(argv, outputs=None, cwd=None, pg=None):
     cwd: where the command runs - a vitest/jest run there may need a test DB (needs_db).
     pg: its rr_pg_lanes spec (rd_pnpm.pg_lane) - a db job that gets a run-local Postgres (job["pg"])."""
     s = " ".join(argv)
-    db = bool(pg) or bool(_DB_RE.search(s) or _GUARD_RE.search(s)) or needs_db(argv, cwd)
+    db = bool(pg) or bool(_DB_RE.search(s)) or needs_db(argv, cwd)
     if db:
         cls = "db"
     elif outputs:
         cls = "build"
-    elif _TYPECHECK_RE.search(s) or _BIGHEAP_RE.search(s):
+    elif _TYPECHECK_RE.search(s) or _BIGHEAP_RE.search(s) or _GUARD_RE.search(s):
+        # a guard tier type-checks but needs no database (dentall's 132 needs-install members verified
+        # DB-, Docker- and network-free, 2026-11-24): heavy, so a worker without Docker may take it
         cls = "heavy"
     elif _LINT_RE.search(s) or _CHECK_RE.search(s):
         cls = "light"
@@ -160,8 +162,8 @@ def classify(argv, outputs=None, cwd=None, pg=None):
     retry_ok = not db and (cls == "build" or bool(_TYPECHECK_RE.search(s) or _LINT_RE.search(s)
                                                    or _SUITE_RE.search(s)))
     need = NEED_GB[cls]
-    if db and (_GUARD_RE.search(s) or _TYPECHECK_ANY_RE.search(s)):
-        need = NEED_GB_DB_TYPECHECK
+    if _GUARD_RE.search(s) or (db and _TYPECHECK_ANY_RE.search(s)):
+        need = NEED_GB_DB_TYPECHECK      # a full server tsc peaks near 7 GB: 8 GB, never the 8-8.5 GB workers
     job = {"cls": cls, "db": db, "need_gb": need, "retry_ok": retry_ok,
            "local_ok": cls == "light", "never_local": cls in ("db", "heavy"), "sig": run_sig(argv)}
     if pg:

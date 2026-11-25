@@ -83,12 +83,15 @@ class Classify(unittest.TestCase):
         guard = rd_pool.classify(["sh", "-c", "node scripts/run-guard-tier.mjs needs-install"])
         both = rd_pool.classify(["sh", "-c", "npx tsc --noEmit && npm run test:db"])
         plain = rd_pool.classify(["npm", "run", "test:db"])
-        self.assertEqual((guard["cls"], guard["need_gb"]), ("db", 8))
+        self.assertEqual((guard["cls"], guard["db"], guard["need_gb"]), ("heavy", False, 8))   # no DB in a tier
         self.assertEqual(both["need_gb"], 8)
         self.assertEqual(plain["need_gb"], 2)
-        for cmd in ("npm run test:db && npx tsc; true", """node "./scripts/run-guard-tier.mjs" needs-install"""):
-            j = rd_pool.classify(["sh", "-c", cmd])
-            self.assertEqual((j["cls"], j["need_gb"]), ("db", 8), cmd)    # quotes / ; never slip past
+        j = rd_pool.classify(["sh", "-c", "npm run test:db && npx tsc; true"])
+        self.assertEqual((j["cls"], j["need_gb"]), ("db", 8))              # ; never slips past
+        j = rd_pool.classify(["sh", "-c", """node "./scripts/run-guard-tier.mjs" needs-install"""])
+        self.assertEqual((j["cls"], j["need_gb"]), ("heavy", 8))           # quotes never slip past
+        j = rd_pool.classify(["sh", "-c", "node scripts/run-guard-tier.mjs no-install && npm run test:db"])
+        self.assertEqual((j["cls"], j["need_gb"]), ("db", 8))              # a tier chained with a DB job stays db
         small = rd_pool.Host("laptop", {"host": "laptop"},
                              {"mem_gb": 8.5, "classes": ["light", "normal", "db", "heavy"]})
         big = rd_pool.Host("hp", {"host": "hp"}, {"mem_gb": 24})

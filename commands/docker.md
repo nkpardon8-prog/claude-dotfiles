@@ -695,6 +695,9 @@ fleet.json) is used once it answers.
   also type-checks (any `run-guard-tier.mjs`, or tsc / typecheck in the same command) plans **8 GB**, and a
   worker whose fleet `mem_gb` minus 1 is under a job's need never takes it (`--where`: "needs about 8 GB; it
   has 8.5 GB"). A guard tier placed as a 2 GB db job swapped the 8.5 GB laptop to load 37 for 90 minutes.
+  Since 2026-11-24 a guard tier (`run-guard-tier.mjs`) is a **heavy** job, not db: dentall verified its
+  needs-install members use no database, Docker or outside network, so a worker without Docker may take it.
+  It still plans 8 GB; chained with a DB command it stays db.
 - **Eligibility first, and hard (2026-11-11).** Optional fleet.json fields per worker: `classes` (the
   job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest
   predicted command it should take, in seconds on that worker: the evidence prediction below, no
