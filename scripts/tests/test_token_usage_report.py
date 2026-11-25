@@ -159,6 +159,8 @@ class TokenUsageReport(unittest.TestCase):
         self.assertIn("after an injected prompt (wake-up, notification, hook text): 1", s)
         self.assertIn("mid-turn (only tool results since the previous step): 1", s)
         self.assertIn("after a human-typed prompt: 1", s)
+        self.assertIn("2  typed 1  injected 1", s)
+        self.assertIn("climbs past 400k: 2  with a prompt boundary between 400k and 500k: 2", s)
 
     def test_single_project_mode_matches(self):
         out = run(self.home, "--project-dir", str(self.proj), "--days", "1")

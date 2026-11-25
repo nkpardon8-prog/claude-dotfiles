@@ -30,8 +30,9 @@ and share by what is waited on (push gate, Codex, tests/typecheck/build, another
 classified on the command / wake-up reason with absolute-path directories stripped) | main-window
 checkpoints (a step under 60% of the previous step's context while that one was > 150k: count,
 context before median/min/max, after median) | main steps at >= 400k context and how many had no
-human-typed prompt since the previous step (after an injected prompt vs mid-turn), i.e. whether a
-UserPromptSubmit hook gets a chance to fire. stdlib only.
+human-typed prompt since the previous step (after an injected prompt vs mid-turn), then the same
+question per prompt boundary (typed or injected; each is one chance for a UserPromptSubmit hook to
+fire) and per climb past 400k (did a boundary arrive before 500k). stdlib only.
 
 USAGE. token-usage-report.py [--project-dir DIR | --all-projects] [--days N]
   --project-dir   default: ~/.claude/projects/<current cwd with every non-alphanumeric -> '-'>
