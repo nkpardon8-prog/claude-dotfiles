@@ -213,9 +213,9 @@ rm -rf "$TMPHOME"
 # 3c-9 (bucket-skip-same, SOFT): two invocations same-bucket → first fires SOFT, second silent.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '41\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-printf '53\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '43\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 \
    && [ -z "$OUT2" ]; then
@@ -225,12 +225,12 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c-10 (bucket-fire-on-transition, SOFT): ctx=51 (bucket 10) then ctx=55 (bucket 11) both fire SOFT.
+# 3c-10 (bucket-fire-on-transition, SOFT): ctx=41 (bucket 8) then ctx=45 (bucket 9) both fire SOFT.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '41\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '45\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 # Seam-opportunistic SOFT regression lock (2026-05-28): OUT1 must (a) be a SOFT message,
 # (b) contain the new seam-checkpointing guidance ("act at the next seam"), and (c) NOT contain
