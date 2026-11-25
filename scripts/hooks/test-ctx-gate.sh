@@ -3,7 +3,7 @@
 #
 # Baseline (R2 redesign): ~31 tests after PreToolUse deletion + 7 new nudge-threshold tests.
 # PreToolUse hook deleted (N4 locked decision) — all pretooluse.sh tests removed.
-# UserPromptSubmit nudge thresholds (2026-05-28 tuning): 50 SOFT / 65 IMPORTANT / 75 FORCE.
+# UserPromptSubmit nudge thresholds (2026-11-24 tuning): 40 SOFT / 50 IMPORTANT / 75 FORCE.
 # SOFT and IMPORTANT are rate-limited to 5% bucket transitions; FORCE fires every turn.
 #
 # Usage:
@@ -283,8 +283,8 @@ fi
 rm -rf "$TMPHOME"
 
 # 3c-13 (bucket-reset-after-silent-exit): ctx=70 → IMPORTANT (writes bucket=14); ctx=35 → silent
-# (silent-zone exit at line 82-84 BEFORE bucket-write at line 91+ — marker stays at 14); ctx=51 →
-# SOFT (BUCKET=10 != LAST=14 → fires). The intermediate marker assertion is the load-bearing part.
+# (silent-zone exit at line 82-84 BEFORE bucket-write at line 91+ — marker stays at 14); ctx=41 →
+# SOFT (BUCKET=8 != LAST=14 → fires). The intermediate marker assertion is the load-bearing part.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 BUCKET_FILE="$TMPHOME/.claude/progress/.ctx-zone-bucket-foo"
@@ -294,7 +294,7 @@ MARKER_AFTER1=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
 printf '35\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 MARKER_AFTER2=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
-printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '41\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT3=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 F1=$(printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1 && echo 1 || echo 0)
 F3=$(printf '%s' "$OUT3" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 && echo 1 || echo 0)
@@ -1285,7 +1285,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "== §NEW-3 UserPromptSubmit never blocks =="
-for NB_PCT in 49 50 55 74 75 84 85 95; do
+for NB_PCT in 39 40 49 50 74 75 84 85 95; do
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   printf '%d\n' "$NB_PCT" > "$TMPHOME/.claude/progress/ctx-nbtest.txt"
