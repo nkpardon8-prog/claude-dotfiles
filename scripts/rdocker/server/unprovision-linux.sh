@@ -108,6 +108,15 @@ PORT=${PORT:-22}
 USER_OURS=0
 [ -n "$RD_UID" ] && [ "$HAVE_PRIOR" = 1 ] && [ "$PRIOR_USER_NAME" = "$RD_USER" ] && [ "$PRIOR_USER_EXISTED" = 0 ] && USER_OURS=1
 
+# a box with no trace of rdocker (never provisioned, or already given back): nothing to do, and no "no record" hints
+traces=0
+for f in "$STATE_DIR" /etc/sudoers.d/rd-docker "$DOCKER_IMG" "$RR_IMG" /etc/ssh/sshd_config.d/10-rdocker.conf \
+         /etc/ssh/sshd_config.d/05-rdocker-hardening.conf /var/lib/docker.pre-rdocker; do [ -e "$f" ] && traces=1; done
+for u in $UNITS; do [ -e "$SD/$u" ] && traces=1; done
+for t in $TOOLS; do [ -e "/usr/local/bin/$t" ] && traces=1; done
+grep -qsF "$DOCKER_IMG" /etc/fstab && traces=1
+if [ "$traces" = 0 ]; then echo "RDUNPROV nothing of rdocker's found on $(hostname): nothing to do"; echo "RDUNPROV ok"; exit 0; fi
+
 say "user=$RD_USER (delete: $([ "$USER_OURS" = 1 ] && echo yes || echo no)) prior-record=$([ "$HAVE_PRIOR" = 1 ] && echo yes || echo no) purge-packages=$PURGE dry-run=$DRY"
 if [ "$DRY" != 1 ] && [ "$YES" != 1 ]; then
   [ -r /dev/tty ] || die "no terminal to confirm on: re-run with --yes (or --dry-run first)"
