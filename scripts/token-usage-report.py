@@ -57,6 +57,7 @@ BIG_REWRITE = 50_000
 TICK_MARKERS = ("Autonomous loop tick", "MISSION WAKE", "mission wake")
 HOUR, FIVE_MIN = 3600.0, 300.0
 UNATTENDED_CTX = 400_000  # 40% of a 1M context window
+CLIMB_BAND = 100_000  # a prompt boundary this soon after crossing counts as a timely nudge chance
 CKPT_PREV_MIN, CKPT_RATIO = 150_000, 0.6
 CHECK_LOOP = re.compile(r"\bsleep\s+\d|until\s.+;\s*do|while\s.+sleep")
 WAIT_CAUSES = (
@@ -367,6 +368,14 @@ def main() -> int:
                 if ctx >= UNATTENDED_CTX:
                     high["n"] += 1
                     high[{"human": "human", "injected": "injected"}.get(c["prompt"], "midturn")] += 1
+                    if not climb_open:
+                        climb_open, climb_hit = True, False
+                        climbs["n"] += 1
+                    if c["prompt"] and ctx < UNATTENDED_CTX + CLIMB_BAND and not climb_hit:
+                        climb_hit = True
+                        climbs["with_boundary"] += 1
+                else:
+                    climb_open = False
             comp["input"] += u["input"] * W_INPUT
             comp["cache-read"] += u["read"] * W_READ
             comp["cache-write"] += u["write"] * W_WRITE
@@ -523,6 +532,15 @@ def main() -> int:
     print(f"    after an injected prompt (wake-up, notification, hook text): {high['injected']}")
     print(f"    mid-turn (only tool results since the previous step): {high['midturn']}")
     print(f"  after a human-typed prompt: {high['human']}")
+    lo, hi = UNATTENDED_CTX // 1000, (UNATTENDED_CTX + CLIMB_BAND) // 1000
+    print(
+        f"  prompt boundaries at >= {lo}k (each is one chance for a prompt hook to fire): "
+        f"{high['human'] + high['injected']}  typed {high['human']}  injected {high['injected']}"
+    )
+    print(
+        f"  climbs past {lo}k: {climbs['n']}  with a prompt boundary between {lo}k and {hi}k: "
+        f"{climbs['with_boundary']}"
+    )
     return 0
 
 
