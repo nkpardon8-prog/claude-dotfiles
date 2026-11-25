@@ -119,6 +119,9 @@ PREFILTER = ("test:db", "rehearse:migrations", "test-with-db", "check:db-all", "
              "type-check", "verify", "test", "jest", "eslint", "max-old-space-size", "build", "tsc",
              "npm t")
 SKIP_MARKERS = ("rrun", "RRUN=0", "real-od/", "doctor-drive", "--approve=browser")
+# A local coordinator that fans its own work out to the pool (dentall `run-guard-tier.mjs <tier> --fanout N`):
+# it must stay on the agent's machine; its children are explicit `rrun ... --shard k/N` jobs.
+FANOUT_RE = re.compile(r"(^|[\s/])run-guard-tier\.mjs(\s+\S+)*\s+--fanout(=|\s+)\d+(\s|$)")
 HEADS = {"npm", "node", "npx", "pnpm", "yarn", "bun", "tsc", "vitest", "jest", "eslint"}   # also ./node_modules/.bin/<x>
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 VALUE_RE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")   # fullmatch
