@@ -35,7 +35,7 @@ Review the plan to understand: implementation phases, task checklist, technical 
 
 1. **Identify Independent Units**: Group related tasks that can be completed together
 2. **Respect Dependencies**: Schema before API, backend before frontend, types before implementations
-3. **Chunk Size**: 1-3 tightly related tasks with clear boundaries; prefer more, smaller chunks (small-context implementers measured ~4x cheaper per turn than ones that grow past ~600k)
+3. **Chunk Size**: 1-3 tightly related tasks with clear boundaries; prefer more, smaller chunks: split any chunk a worker cannot finish in about 150 steps (measured 2026-11-24: the 13% of workers that grew past 300k made 47% of all usage)
 
 ```
 Phase 1: Foundation (Sequential) → Schema, types
