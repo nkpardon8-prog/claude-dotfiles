@@ -69,6 +69,22 @@ has   "7 subagent gets JSON context" "$o" '"hookEventName": "SubagentStart"'
 has   "7 subagent context is origin's" "$o" "project v2"
 o=$(run subagent s2 "$T/clone" ',"agent_type":"Explore"')
 [ -z "$o" ] && ok "7 Explore skipped" || bad "7 Explore skipped" "$o"
+o=$(run subagent s2 "$T/clone" ',"agent_type":"general-purpose","agent_id":"a1"')
+has   "7 subagent with agent_id unchanged" "$o" '"hookEventName": "SubagentStart"'
+
+# 7w. a WORKER's compaction: SessionStart compact with the PARENT's sid plus agent_id. It gets the
+#     rules note subagent mode gives, and the parent's saved state is left byte-identical.
+cp "$RIF_STATE_DIR/s2.json" "$T/s2.before"
+o=$(run session-start s2 "$T/clone" ',"source":"compact","agent_id":"a1","agent_type":"implementer"')
+has   "7w worker compact gets RULES IN FORCE" "$o" "RULES IN FORCE"
+has   "7w worker note is origin's"           "$o" "project v2"
+hasnt "7w no session status line"            "$o" "Rules loaded"
+cmp -s "$RIF_STATE_DIR/s2.json" "$T/s2.before" && ok "7w parent state byte-identical" \
+  || bad "7w parent state byte-identical" "$(diff "$T/s2.before" "$RIF_STATE_DIR/s2.json")"
+o=$(run session-start w9 "$T/clone" ',"source":"compact","agent_id":"a1"')
+[ ! -e "$RIF_STATE_DIR/w9.json" ] && ok "7w worker creates no state" || bad "7w worker creates no state" "$o"
+o=$(run session-start w8 "$T/clone" ',"source":"compact","agent_id":""')
+[ -e "$RIF_STATE_DIR/w8.json" ] && ok "7w empty agent_id runs as a main window" || bad "7w empty agent_id runs as a main window" "$o"
 git -C "$T/clone" pull -q
 o=$(run subagent s2 "$T/clone" ',"agent_type":"general-purpose"')
 [ -z "$o" ] && ok "7 current checkout: subagent untouched" || bad "7 current checkout: subagent untouched" "$o"
