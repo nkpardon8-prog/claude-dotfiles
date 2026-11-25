@@ -2426,7 +2426,7 @@ if ! _w2_intact; then
   fail "W2: primer worker event" "parent state was consumed: $(ls -A "$TMPHOME/.claude/progress" | tr '\n' ' ')"
 elif [ "$RC" -ne 0 ] || [ "$W2_CTX" != "$W_LINE" ] || [ "$W2_LINES" -ne 1 ]; then
   fail "W2: primer worker event" "expected exactly the worker line, got rc=$RC out=$OUT"
-elif [ -f "$TMPHOME/.claude/logs/handoff.log" ] && grep -q 'oldsid' "$TMPHOME/.claude/logs/handoff.log"; then
+elif grep -rqs 'oldsid' "$TMPHOME/.claude/logs"; then
   fail "W2: primer worker event" "logged against the parent's sid"
 else
   pass "W2: primer leaves parent state untouched and prints only the worker line"
