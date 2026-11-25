@@ -1,6 +1,6 @@
 # Global Rules
 
-Rules version: 2026-11-17. This file loads in every window on every machine. It says how we work;
+Rules version: 2026-11-24. This file loads in every window on every machine. It says how we work;
 each project's own CLAUDE.md holds that project's facts and hard rules.
 
 ## Ownership
@@ -75,7 +75,9 @@ net, never piecemeal across unrelated work. Surface the timing call.
 
 ## Context, compaction and /mission
 - The statusline writes your live context-used % to `~/.claude/progress/ctx-<sid>.txt` (`<sid>` = the
-  basename of this session's transcript `.jsonl`). Past about 75%, checkpoint with `/pre-compact`.
+  basename of this session's transcript `.jsonl`). Checkpoint with `/pre-compact` around 400-450k
+  tokens (40-45% of a 1M window), at a natural stopping point, never mid-edit; the forced line stays
+  at 75%.
 - Any handoff or state dump before compaction goes through `/pre-compact`, never a freeform document.
 - AskUserQuestion: end every question text with the current context % (e.g. "(context: 58%)"), read
   from that file right before asking; the user cannot see the statusline while the popup is open.

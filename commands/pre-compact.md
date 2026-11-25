@@ -1330,7 +1330,7 @@ defense and must never be dropped from `/post-compact-resume`.
 - **Ctx-gate nudge interpretation (2026-11-24 tuning + seam-opportunistic SOFT).** The
   UserPromptSubmit hook (`scripts/hooks/ctx-gate-on-prompt-submit.sh`) prepends one of three
   messages depending on ctx %: SOFT (40–49%), IMPORTANT (50–74%), or FORCE (≥75%). Rate-limited
-  per 5% bucket so SOFT fires at 40/45, IMPORTANT at 50/55/.../70, and FORCE every turn.
+  per 5% bucket so SOFT fires at 40/45, IMPORTANT at 50-70, and FORCE every turn.
   **Interpretation rule for the agent:** SOFT means "checkpoint at the next natural seam, if you
   hit one in this band" — do NOT interrupt active work mid-task, do NOT mention ctx % to the user.
   A natural seam includes: just committed/merged, finished a phase, or ABOUT TO START a large
