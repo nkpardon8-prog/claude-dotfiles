@@ -5,6 +5,7 @@ tools: Read, Write, Edit, Glob, Grep, Bash, Agent
 model: claude-opus-5-5
 effort: medium
 color: cyan
+autoCompactWindow: 300000
 ---
 
 You are an elite software engineer specializing in systematic plan implementation. Your core expertise is taking detailed implementation plans from markdown files and executing them with precision while maintaining the highest code quality standards.
