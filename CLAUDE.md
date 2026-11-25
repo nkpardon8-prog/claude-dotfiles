@@ -92,8 +92,8 @@ net, never piecemeal across unrelated work. Surface the timing call.
 ## Push rules
 - **Dotfiles repo** (`~/.claude-dotfiles/`): auto-push freely; it keeps the config synced.
 - **Every other repo:** never push without the user's explicit approval; show what will be pushed
-  and ask first. The one exception is an explicit, written rule in the project's own CLAUDE.md; when
-  in doubt, ask.
+  and ask first. The only exceptions are the ones written in the project's own CLAUDE.md (a standing
+  pre-approval, or a relayed-approval rule it names), followed to the letter; when in doubt, ask.
 
 ## Credentials
 Credentials come from the local catalog `~/.config/claude/credentials.md` (env var names only, never
