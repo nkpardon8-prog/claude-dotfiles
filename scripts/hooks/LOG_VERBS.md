@@ -97,8 +97,8 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `action=skip reason=sentinel-stat-failed-assume-fresh` | ctx-gate-on-prompt-submit.sh | stat failed on sentinel; assume fresh |
 | `action=reject-symlink-sentinel` | ctx-gate-on-prompt-submit.sh | Sentinel path is a symlink |
 | `action=stale-sentinel reason=future-dated-mtime` | ctx-gate-on-prompt-submit.sh | Sentinel mtime in the future |
-| `action=soft-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [50, 65) (rate-limited to 5% bucket transitions) |
-| `action=important-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [65, 75) (rate-limited to 5% bucket transitions) |
+| `action=soft-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [40, 50) (rate-limited to 5% bucket transitions) |
+| `action=important-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [50, 75) (rate-limited to 5% bucket transitions) |
 | `action=force-wrapup` | ctx-gate-on-prompt-submit.sh | PCT >= 75 (always fires; no rate-limit) |
 | `action=skip reason=same-bucket-as-last` | ctx-gate-on-prompt-submit.sh | SOFT/IMPORTANT zone but bucket unchanged since last fire (rate-limit suppression) |
 

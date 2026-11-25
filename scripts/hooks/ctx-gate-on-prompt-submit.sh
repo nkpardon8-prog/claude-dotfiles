@@ -5,13 +5,13 @@
 # It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
 #
 # Threshold model (2026-05-28 tuning — code-quality-first):
-#   <50%   → silent (no output)
-#   50-64% → SOFT nudge (seam-opportunistic; checkpoint at a natural seam, don't interrupt mid-task)
-#   65-74% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
+#   <40%   → silent (no output)
+#   40-49% → SOFT nudge (seam-opportunistic; checkpoint at a natural seam, don't interrupt mid-task)
+#   50-74% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
 #   ≥75%   → FORCE nudge (FIRST action MUST be Skill(pre-compact) — context-critical)
 #
 # **Zone-bucket rate-limit (2026-05-28):** SOFT and IMPORTANT fire only when the 5% bucket
-# changes (50/55/60/65/70 etc.), not on every user prompt. FORCE always fires every turn
+# changes (40/45/50/55 etc.), not on every user prompt. FORCE always fires every turn
 # (action-required; persistent reminder is correct). Marker file at
 # `~/.claude/progress/.ctx-zone-bucket-<sid>` records the last bucket the hook fired in;
 # per-session, GC'd by the existing 720-min cleanup glob on `~/.claude/progress/`.
@@ -85,7 +85,7 @@ fi
 
 # Zone-bucket rate-limit (SOFT + IMPORTANT only; FORCE already returned above).
 # Fire only when the 5% bucket changes. This collapses ~30 SOFT pings during a long
-# 50-64% stretch into ~3 (50/55/60), and keeps IMPORTANT to ~2 (65/70). Bucket = PCT/5;
+# 40-49% stretch into ~2 (40/45), and keeps IMPORTANT to ~5 (50..70). Bucket = PCT/5;
 # marker stores the last bucket fired. If current != last → fire + update. This handles
 # both forward progress (climbing ctx) and resets (post-compact drops bucket below last).
 BUCKET=$((PCT / 5))
