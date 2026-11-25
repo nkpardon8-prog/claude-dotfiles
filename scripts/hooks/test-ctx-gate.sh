@@ -2348,6 +2348,147 @@ fi
 rm -rf "$_HR2_TMP"
 
 # ---------------------------------------------------------------------------
+# §W worker compactions (2026-11-24). A subagent's auto-compaction fires PreCompact and
+# SessionStart(source=compact) with the PARENT window's session_id plus a non-empty string
+# agent_id (real shape: tmp/usage-audit/worker-trial-evidence/worker-trial/hook-log.jsonl in
+# dentall). The compact-path hooks must leave the parent's state alone on those events and must
+# behave exactly as before on anything that is not a well-formed worker event.
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §W worker compaction tests =="
+
+W_LINE="You are a worker whose conversation was just compacted. Before your next action read your note file (its path is in the summary; if not, the newest file you wrote under the worker-notes folder) and continue from Left without redoing Done."
+
+# W1 - safety hook, worker event, ctx 68 (BLOCK zone), no sentinel: silent, exit 0, no log line.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '68\n' > "$TMPHOME/.claude/progress/ctx-w1.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"w1","trigger":"auto","hook_event_name":"PreCompact","agent_id":"a1","agent_type":"implementer"}' 2>/dev/null)
+RC=$?
+if [ -z "$OUT" ] && [ "$RC" -eq 0 ] && ! grep -q 'sid=w1' "$TMPHOME/.claude/logs/ctx-gate.log" 2>/dev/null; then
+  pass "W1: precompact-safety ignores a worker compaction (no block, no log)"
+else
+  fail "W1: precompact-safety worker event" "expected silent exit 0, got rc=$RC out=$OUT"
+fi
+rm -rf "$TMPHOME"
+
+# W1-main - same input with agent_type but NO agent_id is a main window: still blocks.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '68\n' > "$TMPHOME/.claude/progress/ctx-w1.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"w1","trigger":"auto","hook_event_name":"PreCompact","agent_type":"implementer"}' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  pass "W1-main: agent_type without agent_id is a main window (block)"
+else
+  fail "W1-main: agent_type without agent_id" "expected block, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# W1-malformed - a valid {"agent_id":...} prefix followed by garbage is NOT a worker event: blocks as today.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '68\n' > "$TMPHOME/.claude/progress/ctx-w1.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"w1","trigger":"auto","agent_id":"a1"} }garbage{' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  pass "W1-malformed: malformed-prefix JSON is not treated as a worker event (block as today)"
+else
+  fail "W1-malformed: malformed-prefix JSON" "expected block, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# W2 fixture: the valid sid/cwd/sentinel/handoff fixture of 3l-compact-sentinel-consumed plus the
+# sentinel's .attempts file, the ctx sidecar and a one-shot transfer-arrived notice.
+_w2_fixture() {
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+  printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=oldsid nonce=test-worker-nonce -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
+  printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
+  printf '1\n' > "$TMPHOME/.claude/progress/auto-compact-oldsid.json.attempts"
+  printf '42\n' > "$TMPHOME/.claude/progress/ctx-oldsid.txt"
+  : > "$TMPHOME/.claude/progress/transfer-arrived-oldsid"
+}
+_w2_intact() {
+  [ -f "$TMPHOME/.claude/progress/auto-compact-oldsid.json" ] \
+    && [ -f "$TMPHOME/.claude/progress/auto-compact-oldsid.json.attempts" ] \
+    && [ -f "$TMPHOME/.claude/progress/ctx-oldsid.txt" ] \
+    && [ -f "$TMPHOME/.claude/progress/transfer-arrived-oldsid" ]
+}
+
+# W2 - primer, worker event: parent's sentinel, attempts, sidecar and transfer notice untouched;
+# output is exactly the one worker line.
+_w2_fixture
+JSON="{\"session_id\":\"oldsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\",\"agent_id\":\"a1\",\"agent_type\":\"implementer\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+RC=$?
+W2_CTX=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
+W2_LINES=$(printf '%s\n' "$OUT" | grep -c .)
+if ! _w2_intact; then
+  fail "W2: primer worker event" "parent state was consumed: $(ls -A "$TMPHOME/.claude/progress" | tr '\n' ' ')"
+elif [ "$RC" -ne 0 ] || [ "$W2_CTX" != "$W_LINE" ] || [ "$W2_LINES" -ne 1 ]; then
+  fail "W2: primer worker event" "expected exactly the worker line, got rc=$RC out=$OUT"
+elif [ -f "$TMPHOME/.claude/logs/handoff.log" ] && grep -q 'oldsid' "$TMPHOME/.claude/logs/handoff.log"; then
+  fail "W2: primer worker event" "logged against the parent's sid"
+else
+  pass "W2: primer leaves parent state untouched and prints only the worker line"
+fi
+rm -rf "$TMPHOME"
+
+# W2-main - the SAME input without agent_id still retires the sentinel (main-window compaction).
+_w2_fixture
+JSON="{\"session_id\":\"oldsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if [ ! -f "$TMPHOME/.claude/progress/auto-compact-oldsid.json" ] && [ ! -f "$TMPHOME/.claude/progress/ctx-oldsid.txt" ]; then
+  pass "W2-main: without agent_id the primer still retires the sentinel and sidecar"
+else
+  fail "W2-main: main-window compaction" "sentinel or sidecar survived: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# W2-type-only - agent_type but no agent_id is a main window: sentinel retired.
+_w2_fixture
+JSON="{\"session_id\":\"oldsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\",\"agent_type\":\"implementer\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if [ ! -f "$TMPHOME/.claude/progress/auto-compact-oldsid.json" ]; then
+  pass "W2-type-only: agent_type without agent_id runs as a main window"
+else
+  fail "W2-type-only: agent_type without agent_id" "sentinel survived: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# W3 - direct unit test of the helper (subshell: sourcing must not leak into this suite).
+if [ -f "$_SELFDIR/lib/subagent-event.sh" ]; then
+  W3_OUT=$(
+    . "$_SELFDIR/lib/subagent-event.sh"
+    r() { if hook_is_subagent_event "$1"; then printf 'Y'; else printf 'N'; fi; }
+    r '{"agent_id":"a1","agent_type":"implementer","session_id":"s"}'
+    r '{"session_id":"s"}'
+    r '{"agent_type":"implementer"}'
+    r '{"agent_id":""}'
+    r '{"agent_id":null}'
+    r '{"agent_id":5}'
+    r '{"agent_id":["a1"]}'
+    r '{"agent_id":"a1"} }garbage{'
+    r '[1]'
+    r ''
+    r 'not json'
+    (PATH=/nonexistent; r '{"agent_id":"a1"}')
+  )
+  if [ "$W3_OUT" = "YNNNNNNNNNNN" ]; then
+    pass "W3: hook_is_subagent_event true only for a well-formed non-empty string agent_id"
+  else
+    fail "W3: hook_is_subagent_event truth table" "expected YNNNNNNNNNNN, got $W3_OUT"
+  fi
+  W3_SRC=$(bash -c '. "$1"; echo rc=$?' _ "$_SELFDIR/lib/subagent-event.sh" 2>&1)
+  if [ "$W3_SRC" = "rc=0" ]; then
+    pass "W3-source: sourcing the helper prints nothing and succeeds"
+  else
+    fail "W3-source: sourcing the helper" "got: $W3_SRC"
+  fi
+else
+  fail "W3: lib/subagent-event.sh missing"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
