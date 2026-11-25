@@ -13,6 +13,8 @@ Modes (argv[1]); each reads the hook's JSON on stdin:
                  branch's copy as "RULES IN FORCE". Always prints one "Rules loaded" line.
                  startup/clear/compact load the rule files fresh from disk, so they set the baseline.
                  resume may not: it is judged like a prompt (diff against the saved baseline).
+                 A worker's compaction (agent_id present, the PARENT's session_id) gets the subagent
+                 note only: the parent's saved state is never loaded, written or collected.
   prompt         UserPromptSubmit. No network wait (fetch runs in the background, throttled).
                  When the global rules or the base branch's CLAUDE.md changed since this session
                  loaded them, injects only the changed lines as "RULES CHANGED": a small diff, never

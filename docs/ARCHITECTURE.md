@@ -261,6 +261,14 @@ one deterministic per-repo location, so any number of agents — across worktree
 resolution failure degrades to "refuse / no-handoff," never a wrong-load. The `.gitignore` update is
 guarded by an atomic `mkdir` lock under the shared git common dir plus an idempotent converge.
 
+**Worker compactions are ignored:** a worker (subagent) that auto-compacts fires `PreCompact` and
+`SessionStart(source=compact)` with its PARENT window's `session_id` plus a non-empty `agent_id`. The
+user-level compact-path hooks check for that (`scripts/hooks/lib/subagent-event.sh`) and leave the
+main window's state alone: no blocked compaction, no consumed sentinel, sidecar or transfer notice, no
+handoff resume. The primer prints one reminder line (re-read your note file, continue from Left), and
+the rules hook prints the rules note without touching saved state. Project-level hooks, the age-based
+cleanup and the dotfiles pull still run.
+
 **Overnight autonomy — chain primitives:** each `/pre-compact` ALSO updates per-session chain state
 at `~/.claude/chains/<session_id>.{json,log}`. The manifest (slim 9-field JSON, atomic `tmp+rename`)
 holds the chain's `started_at`, `current_seq`, `north_star` (the immutable original goal cached
