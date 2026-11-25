@@ -94,7 +94,10 @@ def build(home):
             "while true; do sleep 5; cat /Users/x/build/safe.txt; done")),
     ])
     sub = proj / "s1" / "subagents"
-    write_jsonl(sub / "agent-a.jsonl", [asst(2, "m8", 10_000, 100), asst(3, "m9", 30_000, 200)])
+    # a compact_boundary row between two steps = one compaction for that run (compacted column 1/1)
+    write_jsonl(sub / "agent-a.jsonl", [asst(2, "m8", 10_000, 100),
+                                        {"type": "system", "subtype": "compact_boundary"},
+                                        asst(3, "m9", 30_000, 200)])
     (sub / "agent-a.meta.json").write_text(json.dumps({"agentType": "implementer", "finished": True}))
     write_jsonl(sub / "agent-b.jsonl", [asst(4, "m10", 20_000, 100), asst(4, "m10", 20_000, 100)])
     (sub / "agent-b.meta.json").write_text(json.dumps({"agentType": "implementer"}))
@@ -134,10 +137,10 @@ class TokenUsageReport(unittest.TestCase):
         rows = {ln.split()[0]: ln.split()[1:] for ln in s.strip().splitlines()[1:]}
         # main: avg ctx 1980k/7, peaks 450k (s1) and 410k (s2)
         self.assertEqual(rows["main"],
-                         ["2", "7", "282.9k", "430.0k", "450.0k", "233.0k", "96.7%", "-", "-"])
+                         ["2", "7", "282.9k", "430.0k", "450.0k", "233.0k", "96.7%", "-", "-", "0/0"])
         # implementer: finished run a = 5.5k; run b has no finished flag -> unfinished
         self.assertEqual(rows["implementer"],
-                         ["2", "3", "20.0k", "25.0k", "30.0k", "8.0k", "3.3%", "5.5k", "1"])
+                         ["2", "3", "20.0k", "25.0k", "30.0k", "8.0k", "3.3%", "5.5k", "1", "1/1"])
 
     def test_wait_steps(self):
         s = section(self.out, "Wait steps")

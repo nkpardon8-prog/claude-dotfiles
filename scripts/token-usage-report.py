@@ -329,7 +329,7 @@ def main() -> int:
     # New sections: per-type runs, wait steps, main checkpoints, main high-context steps.
     types = defaultdict(
         lambda: {"runs": 0, "steps": 0, "ctx_sum": 0, "peaks": [], "cost": 0.0,
-                 "fin_n": 0, "fin_cost": 0.0, "unfin": 0}
+                 "fin_n": 0, "fin_cost": 0.0, "unfin": 0, "compactions": 0, "compacted_runs": 0}
     )
     waits = defaultdict(lambda: {"n": 0, "cost": 0.0})
     ckpt_before: list[int] = []
@@ -342,6 +342,7 @@ def main() -> int:
         side = "main" if kind == "main" else "sub"
         run_cost, peak, run_calls = 0.0, 0, 0
         run_ctx_sum, prev_ctx = 0, None
+        run_compactions = 0
         climb_open = climb_hit = False
         for c in read_calls(path):
             if c["id"] in seen or c["ts"] is None or c["ts"] < cutoff:
@@ -358,6 +359,7 @@ def main() -> int:
             ctx = u["input"] + u["read"] + u["write"]
             peak = max(peak, ctx)
             run_ctx_sum += ctx
+            run_compactions += 1 if c["after_compact"] else 0
             if c["wait"]:
                 waits[c["wait"]]["n"] += 1
                 waits[c["wait"]]["cost"] += cst
@@ -430,6 +432,8 @@ def main() -> int:
             ty["ctx_sum"] += run_ctx_sum
             ty["peaks"].append(peak)
             ty["cost"] += run_cost
+            ty["compactions"] += run_compactions
+            ty["compacted_runs"] += 1 if run_compactions else 0
             if finished:
                 ty["fin_n"] += 1
                 ty["fin_cost"] += run_cost
@@ -496,7 +500,7 @@ def main() -> int:
     print("\n== Per agent type: context and spend per finished worker job")
     print(
         f"  {'kind':<28} {'runs':>5} {'steps':>6} {'avg ctx':>8} {'med peak':>9} {'max peak':>9} "
-        f"{'spend':>8} {'share':>7} {'per fin job':>12} {'unfin':>6}"
+        f"{'spend':>8} {'share':>7} {'per fin job':>12} {'unfin':>6} {'compacted':>10}"
     )
     for kind, ty in sorted(types.items(), key=lambda kv: -kv[1]["cost"]):
         per_job = fmt(ty["fin_cost"] / ty["fin_n"]) if ty["fin_n"] else "-"
@@ -505,7 +509,7 @@ def main() -> int:
             f"  {kind[:28]:<28} {ty['runs']:>5} {ty['steps']:>6} "
             f"{fmt(ty['ctx_sum'] / ty['steps']):>8} {fmt(median(ty['peaks'])):>9} "
             f"{fmt(max(ty['peaks'])):>9} {fmt(ty['cost']):>8} {pct(ty['cost'], total):>7} "
-            f"{per_job:>12} {unfin:>6}"
+            f"{per_job:>12} {unfin:>6} {str(ty['compacted_runs']) + '/' + str(ty['compactions']):>10}"
         )
 
     print("\n== Wait steps (check loops and wake-ups) by what is waited on")
