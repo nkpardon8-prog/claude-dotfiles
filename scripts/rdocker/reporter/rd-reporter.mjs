@@ -13,6 +13,7 @@
 //     "reach": true,                       // optional (agent hosts): probe each pool worker's sshd (default on)
 //     "shareControl": true,                // optional (lent Macs, OWNER's reporter only): let dashboard admins
 //                                          //   change this Mac's share switch (see share control below)
+//     "agentTokens": false,                // optional (agent hosts): stop counting local AI-agent tokens (default on)
 //     "controlOnly": true }                // optional, needs shareControl: a control-only helper for a Mac whose
 //                                          //   stats reporter runs as another user (ethanair: rd). Sends no stats;
 //                                          //   key = the separate MACHINE_CTL_KEY_<NAME> secret (see below)
@@ -46,12 +47,15 @@
 //   root's rd-worker-mac status file /Users/Shared/rdocker/status ("jobs=N ts=EPOCH": pool jobs running
 //   here) and the pool user's (rd) CPU from ps. All three are readable by the owner, whose reporter
 //   cannot read rd's ~/rr (the Air: reporter `air` runs as the owner). Sent only where the status file exists.
+// Agent hosts (agentTokens, every 10 min in a niced child): Claude Code + Codex token usage per local day
+//   from ~/.claude/projects and ~/.codex/sessions, read incrementally (see agent tokens below).
 // Agent hosts (reach, about once a minute): a plain TCP connect to every enabled pool worker's rd sshd
 //   (fleet.json ip:port), closed at once, median of 3, 2 s timeout each, + direct/relay from tailscale
 //   status. Runs in the background; each frame carries the latest result. No bandwidth test, by design.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version,
+//   --scan-agent-tokens [--claude-dir d --codex-dir d --state f] (one incremental token scan, JSON out),
 //   --share-check (print whether this config's share control would accept orders here: ok or why).
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
@@ -61,7 +65,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.6.0'; // 1.6.0: controlOnly (a share-control helper for a Mac whose stats reporter is another user); 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
+export const VERSION = '1.7.0'; // 1.7.0: agentTokens (agent hosts: Claude Code + Codex tokens per local day, incremental background scan); 1.6.0: controlOnly (a share-control helper for a Mac whose stats reporter is another user); 1.5.0: reach (agent hosts: TCP connect time to each pool worker's sshd); 1.4.0: share control (owner opt-in shareControl; lend.ram); 1.3.0: lend (Mac share level, pool jobs here + last job, pool user CPU), route.last; 1.2.0: queued from <rrRoot>/wait (every OS), health wait1h/setup1h/day, route; 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -953,6 +957,7 @@ export function validateConfig(c) {
   if (c.notify !== undefined && typeof c.notify !== 'boolean') errs.push('notify: true or false');
   if (c.shareControl !== undefined && typeof c.shareControl !== 'boolean') errs.push('shareControl: true or false');
   if (c.controlOnly !== undefined && typeof c.controlOnly !== 'boolean') errs.push('controlOnly: true or false');
+  if (c.agentTokens !== undefined && typeof c.agentTokens !== 'boolean') errs.push('agentTokens: true or false');
   else if (c.controlOnly === true && c.shareControl !== true) errs.push('controlOnly needs shareControl: true');
   return errs;
 }
@@ -1304,6 +1309,263 @@ export function createShareControl(cfg, { check = () => shareControlCheck(cfg), 
   };
 }
 
+// ---------------------------------------------------------------------------- agent tokens (agent hosts)
+// The dashboard's entropy panel counts the AI work this machine's agents asked of data centers. A niced
+// child process of this script (`--scan-agent-tokens`, at most every AGENT_TOKENS_EVERY_MS, never in
+// the frame path) reads only the bytes appended since its last scan of
+//   Claude Code  ~/.claude/projects/**/*.jsonl  assistant lines' message.usage (subagent transcripts too)
+//   Codex        ~/.codex/sessions/**/*.jsonl   token_count events' last_token_usage (one per turn)
+// and adds them to per-local-day totals in ~/.local/state/rdocker/agent-tokens.json (per-file offset +
+// inode/size/mtime, so an 18 GB tree costs one full pass, then only the new tail).
+// Counting, all LOWER-BOUND safe:
+//   - Claude Code writes the same message's usage on several lines (one per content block), and a
+//     forked subagent's transcript repeats its parent's messages: each message.id counts once, at its
+//     first line, against a bounded set of the most recent ids (AGENT_TOKENS_RECENT_IDS, all files).
+//   - Codex: a turn counts once via last_token_usage (never the running total_token_usage); an event
+//     whose running total did not change is a repeat and is skipped; a replayed event (same timestamp
+//     and total, e.g. a resumed session's copy) is caught by the same recent set.
+// Frame field `agentTokens` = { days: { 'YYYY-MM-DD': { claude: {out,in,cw,cr}, codex: {out,in,cr} } },
+// since }, last AGENT_TOKENS_DAYS days, sent when it changed and with every info frame (~10 min).
+// Codex `in` = input minus cached; `cr` = cached input. Config: "agentTokens": false turns it off.
+export const AGENT_TOKENS_EVERY_MS = 10 * 60_000;
+const AGENT_TOKENS_FIRST_MS = 30_000; // first scan this long after start (frames come first)
+export const AGENT_TOKENS_DAYS = 400;
+export const AGENT_TOKENS_RECENT_IDS = 50_000;
+const AGENT_TOKENS_TIMEOUT_MS = 30 * 60_000;
+const AGENT_TOKENS_SAVE_MS = 60_000; // checkpoint the state this often during a long (first) scan
+const TOKEN_READ_CHUNK = 1 << 20;
+const TOKEN_LINE_MAX = 64 << 20; // a longer "line" is not a transcript line: skipped
+const CLAUDE_MARK = Buffer.from('"usage":{');
+const CODEX_MARK = Buffer.from('"token_count"');
+
+/** Local calendar day of an epoch-ms time, YYYY-MM-DD (the reporter's time zone). */
+export function localDay(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const tokenCount = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : 0);
+
+/** One Claude Code transcript line -> { id, day, out, in, cw, cr }, or null (not an assistant message with usage). */
+export function claudeUsage(line) {
+  let o;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const m = o?.type === 'assistant' ? o.message : null;
+  const u = m?.usage;
+  const t = Date.parse(o?.timestamp);
+  if (!u || typeof u !== 'object' || typeof m.id !== 'string' || !m.id || !Number.isFinite(t)) return null;
+  return { id: m.id, day: localDay(t), out: tokenCount(u.output_tokens), in: tokenCount(u.input_tokens), cw: tokenCount(u.cache_creation_input_tokens), cr: tokenCount(u.cache_read_input_tokens) };
+}
+
+/** One Codex rollout line -> { total, key, day, out, in, cr } for a token_count event with last_token_usage, else null. */
+export function codexUsage(line) {
+  let o;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const info = o?.type === 'event_msg' && o.payload?.type === 'token_count' ? o.payload.info : null;
+  const last = info?.last_token_usage;
+  const tot = info?.total_token_usage;
+  const t = Date.parse(o?.timestamp);
+  if (!last || typeof last !== 'object' || !tot || typeof tot !== 'object' || !Number.isFinite(t)) return null;
+  const total = [tot.input_tokens, tot.cached_input_tokens, tot.output_tokens, tot.total_tokens].map(tokenCount).join('/');
+  const input = tokenCount(last.input_tokens);
+  const cached = Math.min(input, tokenCount(last.cached_input_tokens));
+  return { total, key: `x:${o.timestamp}:${total}`, day: localDay(t), out: tokenCount(last.output_tokens), in: input - cached, cr: cached };
+}
+
+/** Insertion-ordered id set that forgets its oldest entries past `max`. */
+class RecentIds {
+  constructor(list, max) {
+    this.max = max;
+    this.set = new Set(Array.isArray(list) ? list.slice(-max) : []);
+  }
+  /** true when `id` is new (and remembers it); false for a repeat. */
+  add(id) {
+    if (this.set.has(id)) return false;
+    this.set.add(id);
+    if (this.set.size > this.max) this.set.delete(this.set.values().next().value);
+    return true;
+  }
+  list() {
+    return [...this.set];
+  }
+}
+
+export const emptyTokenState = () => ({ v: 1, since: null, files: {}, recent: [], days: {} });
+
+export function loadTokenState(file) {
+  try {
+    const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (s?.v === 1 && s.files && typeof s.files === 'object' && s.days && typeof s.days === 'object') return { ...emptyTokenState(), ...s };
+  } catch {
+    /* first run, or unreadable: start over */
+  }
+  return emptyTokenState();
+}
+
+function saveTokenState(file, state) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+const ZERO = { claude: { out: 0, in: 0, cw: 0, cr: 0 }, codex: { out: 0, in: 0, cr: 0 } };
+
+function addTokens(state, day, prov, u) {
+  const d = (state.days[day] ??= {});
+  const p = (d[prov] ??= { ...ZERO[prov] });
+  for (const k of Object.keys(p)) p[k] += u[k];
+  if (!state.since || day < state.since) state.since = day;
+}
+
+/** Count one candidate line into `state` (rec = the file's state record; codex keeps its last running total there). */
+export function countTokenLine(kind, line, rec, recent, state) {
+  if (kind === 'claude') {
+    const u = claudeUsage(line);
+    if (!u || !recent.add(u.id)) return;
+    if (u.out + u.in + u.cw + u.cr > 0) addTokens(state, u.day, 'claude', u);
+    return;
+  }
+  const u = codexUsage(line);
+  if (!u || u.total === rec.last) return; // a repeat of the previous event (running total unchanged)
+  rec.last = u.total;
+  if (!recent.add(u.key)) return; // the same event seen in another file (replay)
+  if (u.out + u.in + u.cr > 0) addTokens(state, u.day, 'codex', u);
+}
+
+/**
+ * Stream [start, end) of `file` in chunks and call onLine for each COMPLETE line that contains `mark`
+ * (a byte search, so lines that cannot carry usage are never decoded). Returns the offset just past
+ * the last complete line: a line still being written is read again next time.
+ */
+export async function readNewLines(file, start, end, mark, onLine) {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(TOKEN_READ_CHUNK);
+    let pos = start;
+    let done = start; // offset after the last complete line
+    let carry = null;
+    let skipping = false; // inside an over-long line: drop bytes until its newline
+    while (pos < end) {
+      const { bytesRead } = await fh.read(buf, 0, Math.min(TOKEN_READ_CHUNK, end - pos), pos);
+      if (!bytesRead) break;
+      const chunk = buf.subarray(0, bytesRead);
+      const data = carry ? Buffer.concat([carry, chunk]) : chunk;
+      const base = pos - (carry?.length ?? 0);
+      pos += bytesRead;
+      let from = 0;
+      let nl;
+      while ((nl = data.indexOf(10, from)) !== -1) {
+        if (!skipping) {
+          const line = data.subarray(from, nl);
+          if (line.indexOf(mark) !== -1) onLine(line.toString('utf8'));
+        }
+        skipping = false;
+        from = nl + 1;
+        done = base + from;
+      }
+      carry = from < data.length ? Buffer.from(data.subarray(from)) : null;
+      if (carry && carry.length > TOKEN_LINE_MAX) {
+        carry = null;
+        skipping = true;
+      }
+    }
+    return done;
+  } finally {
+    await fh.close();
+  }
+}
+
+async function listJsonl(root) {
+  const out = [];
+  const walk = async (dir) => {
+    let ents;
+    try {
+      ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(p);
+    }
+  };
+  await walk(root);
+  // sorted: a session's transcript sits next to its subagents' (dedupe window locality)
+  return out.sort();
+}
+
+/** The frame payload: per-day totals of the last AGENT_TOKENS_DAYS days. */
+export const agentTokensPayload = (state) => ({ days: state.days, since: state.since });
+
+/**
+ * One incremental scan: new bytes of every transcript, the totals updated, the state saved (also
+ * checkpointed during a long first scan). Files that vanished leave the state; their days stay.
+ */
+export async function scanAgentTokens({ claudeDir, codexDir, stateFile, now = Date.now() }) {
+  const t0 = Date.now();
+  const state = loadTokenState(stateFile);
+  const recent = new RecentIds(state.recent, AGENT_TOKENS_RECENT_IDS);
+  const files = {};
+  let bytes = 0;
+  let read = 0;
+  let savedAt = t0;
+  const snapshot = (fileMap) => ({ ...state, files: fileMap, recent: recent.list() });
+  for (const [kind, dir, mark] of [['claude', claudeDir, CLAUDE_MARK], ['codex', codexDir, CODEX_MARK]]) {
+    if (!dir) continue;
+    for (const f of await listJsonl(dir)) {
+      let st;
+      try {
+        st = await fs.promises.stat(f);
+      } catch {
+        continue;
+      }
+      const prev = state.files[f];
+      if (prev && prev.ino === st.ino && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
+        files[f] = prev;
+        continue;
+      }
+      const same = prev && prev.ino === st.ino && st.size >= prev.off;
+      const start = same ? prev.off : 0;
+      const rec = { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, off: start, ...(kind === 'codex' ? { last: same ? (prev.last ?? null) : null } : {}) };
+      try {
+        rec.off = await readNewLines(f, start, st.size, mark, (line) => countTokenLine(kind, line, rec, recent, state));
+      } catch {
+        if (prev) files[f] = prev; // unreadable now: try again next scan
+        continue;
+      }
+      bytes += rec.off - start;
+      read++;
+      files[f] = rec;
+      if (Date.now() - savedAt > AGENT_TOKENS_SAVE_MS) {
+        saveTokenState(stateFile, snapshot({ ...state.files, ...files }));
+        savedAt = Date.now();
+      }
+    }
+  }
+  const cutoff = localDay(now - AGENT_TOKENS_DAYS * 86_400_000);
+  state.days = Object.fromEntries(Object.entries(state.days).filter(([d]) => d > cutoff).sort(([a], [b]) => (a < b ? -1 : 1)));
+  const out = snapshot(files);
+  saveTokenState(stateFile, out);
+  return { files: read, bytes, ms: Date.now() - t0, agentTokens: agentTokensPayload(out) };
+}
+
+/** Totals over every kept day, for the log line. */
+export function tokenTotals(payload) {
+  const t = { claude: { ...ZERO.claude }, codex: { ...ZERO.codex } };
+  for (const d of Object.values(payload?.days ?? {})) for (const prov of ['claude', 'codex']) for (const k of Object.keys(t[prov])) t[prov][k] += d?.[prov]?.[k] ?? 0;
+  return t;
+}
+
 // ---------------------------------------------------------------------------- collectors
 
 const sh = (cmd, args, timeout = 3000) =>
@@ -1433,6 +1695,14 @@ export class Collector {
     this.reach = null; // [{to, ip, rttMs, at}]
     this.reachAt = 0;
     this.reachBusy = false;
+    // agent hosts: AI tokens from the local agent logs (a niced child scans them; see agent tokens above)
+    this.tokensOn = !/worker/i.test(String(cfg.role ?? '')) && cfg.agentTokens !== false;
+    this.tokenDirs = { claudeDir: expandHome(cfg.claudeProjects ?? '~/.claude/projects'), codexDir: expandHome(cfg.codexSessions ?? '~/.codex/sessions'), stateFile: expandHome(cfg.agentTokensState ?? '~/.local/state/rdocker/agent-tokens.json') };
+    this.tokens = null; // latest agentTokens payload
+    this.tokensKey = '';
+    this.tokensSent = '';
+    this.tokensAt = Date.now() - AGENT_TOKENS_EVERY_MS + AGENT_TOKENS_FIRST_MS;
+    this.tokensBusy = false;
     this.wsl = this.linux && /microsoft/i.test(read('/proc/sys/kernel/osrelease') ?? '');
     this.tailscaleBin = this.mac && fs.existsSync('/Applications/Tailscale.app/Contents/MacOS/Tailscale') ? '/Applications/Tailscale.app/Contents/MacOS/Tailscale' : 'tailscale';
     this.ts = cached(() => this.readTailscale(), TS_EVERY_MS - 1000);
@@ -1654,6 +1924,44 @@ export class Collector {
     return routeStats(entries, now);
   }
 
+  /** Start a background agent-token scan when one is due (agent hosts); its result rides a later frame. */
+  kickTokens(now) {
+    if (!this.tokensOn || this.tokensBusy || now - this.tokensAt < AGENT_TOKENS_EVERY_MS) return;
+    this.tokensBusy = true;
+    this.tokensAt = now;
+    const d = this.tokenDirs;
+    const args = [fileURLToPath(import.meta.url), '--scan-agent-tokens', '--claude-dir', d.claudeDir, '--codex-dir', d.codexDir, '--state', d.stateFile];
+    let out = '';
+    let err = '';
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => child.kill('SIGTERM'), AGENT_TOKENS_TIMEOUT_MS);
+    child.stdout.on('data', (b) => (out = (out + b).slice(-(4 << 20))));
+    child.stderr.on('data', (b) => (err = (err + b).slice(-2000)));
+    child.on('error', (e) => log('agent tokens: scan did not start:', e?.message ?? e));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      this.tokensBusy = false;
+      let r = null;
+      try {
+        r = JSON.parse(out.trim().split('\n').pop() ?? '');
+      } catch {
+        /* reported below */
+      }
+      if (code !== 0 || !r?.agentTokens) {
+        log(`agent tokens: scan failed (exit ${code}): ${err.trim().split('\n').pop() ?? ''}`);
+        return;
+      }
+      const key = JSON.stringify(r.agentTokens);
+      const t = tokenTotals(r.agentTokens);
+      log(
+        `agent tokens: scan ok, ${r.files} file(s) read, ${(r.bytes / 1e6).toFixed(1)} MB new in ${(r.ms / 1000).toFixed(1)}s; ` +
+          `since ${r.agentTokens.since ?? '-'}: claude out=${t.claude.out} in=${t.claude.in} cw=${t.claude.cw} cr=${t.claude.cr}, codex out=${t.codex.out} in=${t.codex.in} cr=${t.codex.cr}`,
+      );
+      this.tokens = r.agentTokens;
+      this.tokensKey = key;
+    });
+  }
+
   async frame({ withInfo = false, fast = false } = {}) {
     const now = Date.now();
     const uptime = os.uptime();
@@ -1695,6 +2003,7 @@ export class Collector {
       this.peers = ts.peers;
     }
     this.kickReach(now);
+    this.kickTokens(now);
     let links = this.peers;
     if (fast && this.cfg.pingPeers !== false && links.length) {
       const rtt = await this.pings(links);
@@ -1734,6 +2043,11 @@ export class Collector {
       ...(lend ? { lend } : {}), // lent Mac workers (status file present); small, so every frame
       ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)
     };
+    // Agent tokens: only when changed, and with every info frame (a restarted dashboard gets them back).
+    if (this.tokens && (withInfo || this.tokensKey !== this.tokensSent)) {
+      frame.agentTokens = this.tokens;
+      this.tokensSent = this.tokensKey;
+    }
     if (withInfo) frame.info = this.info();
     // Pool health: only when recomputed (about once a minute) or with info (a new connection).
     const health = await this.healthC();
@@ -1945,6 +2259,17 @@ async function main(argv) {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   if (argv.includes('--version')) return console.log(VERSION);
+  if (argv.includes('--scan-agent-tokens')) {
+    // The background agent-token scan (Collector.kickTokens): lowest CPU priority, one JSON line out.
+    try {
+      os.setPriority(19);
+    } catch {
+      /* not permitted: run at normal priority */
+    }
+    const r = await scanAgentTokens({ claudeDir: arg('--claude-dir'), codexDir: arg('--codex-dir'), stateFile: arg('--state') ?? expandHome('~/.local/state/rdocker/agent-tokens.json') });
+    console.log(JSON.stringify(r));
+    return;
+  }
   const file = arg('--config') ?? process.env.RD_REPORTER_CONFIG ?? path.join(os.homedir(), '.config/rdocker/reporter.json');
   if (argv.includes('--share-check')) {
     // Installers: would this config's share control accept orders here, as this user? (prints ok or why)
