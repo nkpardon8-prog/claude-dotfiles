@@ -21,8 +21,12 @@ _CTX_GATE_CONFIG_LOADED=1
 #
 # _OVERRIDE env-var pattern allows tests and users to set deterministic thresholds
 # before sourcing this lib (readonly cannot be re-declared post-source).
-readonly CTX_SOFT_PCT="${CTX_SOFT_PCT_OVERRIDE:-50}"           # FYI nudge at next natural seam
-readonly CTX_IMPORTANT_PCT="${CTX_IMPORTANT_PCT_OVERRIDE:-65}" # finish current task then /pre-compact
+#
+# 2026-11-24 retune: 40 SOFT / 50 IMPORTANT / 75 FORCE (unchanged). On a 1M window the
+# checkpoint target is ~400-450k tokens at a natural stopping point, never mid-edit.
+# Bands: <40 silent; 40-49 SOFT; 50-74 IMPORTANT; >=75 FORCE.
+readonly CTX_SOFT_PCT="${CTX_SOFT_PCT_OVERRIDE:-40}"           # 40-49: FYI nudge at next natural seam
+readonly CTX_IMPORTANT_PCT="${CTX_IMPORTANT_PCT_OVERRIDE:-50}" # 50-74: finish current task then /pre-compact
 readonly CTX_FORCE_PCT="${CTX_FORCE_PCT_OVERRIDE:-75}"         # FIRST action MUST be /pre-compact
 
 # ---------------------------------------------------------------------------
