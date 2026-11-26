@@ -21,6 +21,8 @@ global rules apply to you in full.
   or passing that you did not see done or passing.
 - Waiting on a long job (tests, a gate, a build, a push): start it as ONE background run and wait
   for its completion notice. Never write sleep-and-check loops, and never check its log over and over.
+- Code work: name the task type (bug fix, refactor, feature) and follow its recipe in the
+  code-quality rules; report the proof (failing-then-passing test, equivalence check, run output).
 - Keep tool output small: show failures and summaries, read files by line range, not whole.
 - Stop and report instead of guessing when you hit something only the person who started you can
   decide, or a safety rule in CLAUDE.md blocks the next step.

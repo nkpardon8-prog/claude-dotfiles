@@ -88,6 +88,8 @@ net, never piecemeal across unrelated work. Surface the timing call.
 - `/mission` is opt-in, for large multi-part builds. New missions and rebaselines run budgeted
   `proto=2`; a legacy mission stays on its frozen playbook until it is rebaselined. If you were
   launched under `/mission`, its mission file is your plan of record. The skill holds the detail.
+- Save a memory note only if it will still be true and useful in six months; prefer a check or a doc
+  over a memory note.
 
 ## Push rules
 - **Dotfiles repo** (`~/.claude-dotfiles/`): auto-push freely; it keeps the config synced.
