@@ -32,7 +32,7 @@ written rule carries it. Update this table when a rule or an enforcer changes.
 | Worktree cleanup only when landed | `rules/worktree-hygiene.md` | none (`/worktree-cleanup` asks owners) |
 | Backend layering, no N+1 | `rules/backend-patterns.md` | review |
 | Code quality recipes, test quality, comment policy | `rules/code-quality.md` | review: `implementation-reviewer`, `/codex-review` proof rule, god-review `documentation` principle |
-| Blocking findings state their proof | `commands/codex-review.md`, `commands/mission.md` §H2, `agents/implementation-reviewer.md` | review; `/mission` verify lane counts tagged blocking rows |
+| Blocking findings state their proof | `commands/codex-review.md`, `commands/mission.md` §H2, `agents/implementation-reviewer.md` | review; `/mission` verify lane counts blocking rows (unresolved high-risk = `UNCERTAIN \| BLOCKING`), pinned by `lint-skill-contract.sh` and `scripts/hooks/test-ledger-verify-count.sh` |
 | Agent files declare `model:` and `effort:`; commands stay under size | dotfiles pre-commit (`scripts/install-git-hooks.sh`) | lint: `lint-skill-contract.sh` (frontmatter), `lint-skill-size.sh` |
 | Stale handoffs not resumed | `/pre-compact` skill | hook: `stale-handoff-guard.sh` |
 
