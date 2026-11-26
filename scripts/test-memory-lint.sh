@@ -4,7 +4,7 @@
 # content (canary strings, including one inside a link destination) ever reaches the output.
 set -euo pipefail
 
-LINT="$(cd "$(dirname "$0")" && pwd)/memory-lint.py"
+LINT="${LINT:-$(cd "$(dirname "$0")" && pwd)/memory-lint.py}"
 CANARY="CANARY-7f3a9e-do-not-print"
 T="$(mktemp -d)"
 trap 'chmod -R u+rw "$T" 2>/dev/null; rm -rf "$T"' EXIT
