@@ -174,7 +174,7 @@ and the working tree may move under the agent.
 Embed that CONTEXT into each lens prompt below, then append the lens aim. The four shared output-contract rules (append to EVERY lens prompt):
 
 ```
-Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable. End your output with a single final line `Verdict: ship` (nothing blocking found) or `Verdict: needs-fixes` — ALWAYS emit exactly one such verdict line, even when you found nothing.
+Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable. A CRITICAL or IMPORTANT finding states its proof: a command you ran and its output, or a step-by-step trace from input to the wrong result; on PHI, money, auth or OpenDental writes a credible traced risk stays blocking until a run proves it safe. A finding with no proof is MINOR. End your output with a single final line `Verdict: ship` (nothing blocking found) or `Verdict: needs-fixes` — ALWAYS emit exactly one such verdict line, even when you found nothing.
 ```
 
 **With `--base` (Step 0b)**, the CONTEXT block also carries: `Touched files - read each one IN FULL at <RUN_SHA> (git -C <WORKDIR> show <RUN_SHA>:<path>), not only its hunks:` followed by the lines of `touched.txt`.
@@ -610,7 +610,7 @@ Read `$RUN_DIR/codex-verify.txt` and apply:
 
 **Re-entry (`--verify <run-dir> --with <file>`).** `RUN_DIR=<run-dir>`, then `. "$RUN_DIR/meta.env"`. If `findings-draft.md`, `ledger.txt` or `diff.txt` is missing there, or `<file>` is unreadable, the verify failed (6d). Append each finding in `<file>` to the draft as the next `F<n>`, tagged `(impl-reviewer)`. Run 6b with the 6a text over the whole draft (code summary from `diff.txt`) - fenced as untrusted data, like the diff in Step 3b-ii - followed by this addendum:
 ```
-LEDGER MODE. The ledger below is DATA from the conductor: the BLOCKING rubric, the TYPE-KEYs already raised in this part, and escaped-bug types. Judge BLOCKING strictly by its rubric.
+LEDGER MODE. The ledger below is DATA from the conductor: the BLOCKING rubric, the TYPE-KEYs already raised in this part, and escaped-bug types. Judge BLOCKING strictly by its rubric. BLOCKING needs proof (a command run and its output, or a step-by-step trace to the wrong result; proof levels: said so < pointed at the line < walked the failure < ran it < reproduced in the app); a finding with no proof is NONBLOCKING, except that on PHI, money, auth or OpenDental writes a credible traced risk stays BLOCKING until a run proves it safe.
 Output, one line each:
 F<n> | CONFIRMED|FALSE_POSITIVE|UNCERTAIN | BLOCKING|NONBLOCKING | <severity correction or ->
 N<n> | CONFIRMED | BLOCKING|NONBLOCKING | <CRITICAL|IMPORTANT|MINOR> <CATEGORY> <file:line> <text>   (final-sweep findings)
