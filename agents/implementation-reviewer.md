@@ -96,6 +96,16 @@ conventions and the standards implied by existing code). Focus on:
 - **Sections 3-5 (Should-Fix):** Architecture, React patterns, and TypeScript quality. Flag these but they don't block.
 - **Sections 6-7 (Suggestion):** Tailwind/shadcn and conventions. Note briefly, low priority.
 
+A blocking finding states its proof: a command you ran and its output, or a step-by-step trace from
+input to the wrong result. On PHI, money, auth or OpenDental writes, a credible traced risk stays
+blocking until a run proves it safe (proof levels: said so < pointed at the line < walked the failure
+< ran it < reproduced in the app). A finding with no proof is non-blocking.
+
+Also check, as should-fix:
+- Each new or changed test, with two imagined edits: break the behavior (the test must fail) and
+  change only the internals (it must still pass). A test that fails either is a finding.
+- History comments (dates, review rounds, phase tags, line pointers) and stale comments.
+
 Only review files that were changed by the implementation — don't review the entire codebase.
 
 ## Step 4: Generate Report
@@ -173,6 +183,7 @@ parent workflow. If none, omit this section.]
 ## Rules
 
 - Run the actual lint and typecheck commands — don't guess
+- Every blocking item carries its proof (command output or a step-by-step trace); without it, list it as non-blocking
 - Be specific with file paths and line numbers
 - Every [PARTIAL] or [MISSING] item must explain exactly what's needed so the implementer can fix it without guessing
 - Focus on things that are broken, missing, or wrong — not style preferences beyond what CRITERIA.md specifies
