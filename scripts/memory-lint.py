@@ -13,6 +13,8 @@ Prints counts and file names only, never note content. Always exits 0.
 
 Usage: memory-lint.py [--dir DIR ...]   (default: every ~/.claude/projects/*/memory)
 """
+from __future__ import annotations
+
 import argparse
 import re
 import sys
