@@ -309,6 +309,10 @@ req_before "$X" "NON-CODE TARGETS ONLY"
 # replaced it, and re-grows by copy-paste from an older revision.
 absent "$X" "Spawn ALL FOUR Bash calls in a SINGLE message"
 
+# /god-review triage: dead-code deletions always route to HUMAN_GATE. Without this line a single-file
+# deletion in ordinary source falls through to AUTO_FIX and is applied unreviewed.
+req "commands/god-review.md" "comes from the \`dead-code-conservatism\` lens or recommends deleting code"
+req "commands/god-review.md" "not a deletion, not deferrable, not replayed."
 L="commands/plan.md"
 # plan.md's register carries no EXACTLY-count (the third explorer is conditional), so the
 # register sentence and the same-message literal ARE the contract.

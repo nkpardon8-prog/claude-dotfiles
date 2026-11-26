@@ -18,7 +18,8 @@ written rule carries it. Update this table when a rule or an enforcer changes.
 | Targeted tests while building, full suite at close | `CLAUDE.md` Testing and docs | review |
 | Model routing (Terra cheap work, Sol review) | `CLAUDE.md` Model routing | lint: `lint-skill-contract.sh` pins review-lane models and Codex effort per lane; ad-hoc calls: none |
 | Checkpoint with `/pre-compact` near 40-45% context | `CLAUDE.md` Context, compaction | hook: `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh` |
-| Memory notes only if true in six months | `CLAUDE.md` Context, compaction | check: `scripts/memory-lint.py` (report-only) |
+| Memory notes only if true in six months | `CLAUDE.md` Context, compaction | none (judgment) |
+| Memory index hygiene: broken links, orphans, index size, stale project notes | `scripts/memory-lint.py` | check: `scripts/memory-lint.py` (report-only maintenance, run by hand) |
 | Never push other repos without approval | `CLAUDE.md` Push rules | none globally; dentall: safe-push |
 | Prod ops serialized and approved | `CLAUDE.md` Push rules, dentall `CLAUDE.md` | hook: `prod-coordination-gate.py`, `prod-lock-release.py`, `prod-ledger.py` |
 | Never echo or commit secrets | `CLAUDE.md` Credentials | check: `scripts/secret-scan.sh` (dotfiles pre-commit, `test-secret-scan.sh`) |

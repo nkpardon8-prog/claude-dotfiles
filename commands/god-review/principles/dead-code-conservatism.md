@@ -88,7 +88,7 @@ find "$WORKDIR" -type f -name "*.py" -not -path "*/.git/*" -not -path "*/venv/*"
 
 ## Phase 3: Deep Analysis — Mandatory Verification Before Flagging
 
-**CRITICAL: For every candidate, ALL of the following checks must be performed. Recommend deletion ONLY if ALL checks show zero evidence of live usage. If a check finds clear live usage, drop the candidate. If a check finds something you cannot rule in or out (an ambiguous string match, a computed import path), tag the candidate `investigate` instead of recommending deletion.**
+**CRITICAL: For every candidate, ALL of the following checks must be performed. Recommend deletion ONLY if ALL checks ran without error and show zero evidence of live usage. If a check finds clear live usage, drop the candidate. If a check errors, or finds something you cannot rule in or out (an ambiguous string match, a computed import path), tag the candidate `investigate` instead of recommending deletion.**
 
 ### Check 1: String-literal / reflection lookup
 
@@ -159,7 +159,27 @@ grep -rn \
   -E "\b${SYMBOL}\b" "$WORKDIR" 2>/dev/null | wc -l
 ```
 
-**Recommend deletion ONLY if ALL 6 checks return 0 (no references found); record the commands and their zero counts as the evidence.**
+### Check 7: Ordinary call sites, including the defining module
+
+An export used only inside its own file passes the importer scan. Count every bare reference outside
+the definition line itself:
+
+```bash
+SYMBOL_FILE="path/to/defining/file.ts"  # replace
+grep -rnw --exclude-dir="node_modules" --exclude-dir=".git" --exclude-dir="dist" \
+  "$SYMBOL" "$WORKDIR"; rc=$?
+# rc 0: references exist (read them; anything besides the definition clears the candidate)
+# rc 1: no references   rc 2: the search FAILED - the candidate is `investigate`, never a zero
+```
+
+### Search errors are not zeros
+
+Every check above pipes into `wc -l`, which prints 0 when grep fails (unreadable path, bad pattern,
+missing directory). Run each check so its grep exit status is visible (drop the `2>/dev/null`, or
+check `${PIPESTATUS[0]}`): status 2 or any stderr means that check is incomplete, and the candidate
+is `investigate`.
+
+**Recommend deletion ONLY if ALL 7 checks ran without error and found no reference beyond the definition; record the commands and their results as the evidence.**
 
 ## Phase 4: Generate Report
 
@@ -175,11 +195,11 @@ grep -rn \
 
 {N} candidates investigated. {M} confirmed unused after all reflection checks. {K} candidates cleared by at least one check.
 
-## Confirmed Unused (all 6 checks passed)
+## Confirmed Unused (all 7 checks passed)
 
 | Symbol | File | Lines | Checks Passed | Proposed Action | Severity |
 |--------|------|-------|--------------|-----------------|----------|
-| `{name}` | `{file}:{line}` | {count} | all 6 | Delete (HUMAN_GATE) | likely |
+| `{name}` | `{file}:{line}` | {count} | all 7 | Delete (HUMAN_GATE) | likely |
 
 ### Deletion (proposed, human applies)
 
@@ -203,7 +223,7 @@ grep -rn \
 
 ## Recommendations
 
-1. For `{symbol}`: delete it, with the 6 zero-count checks above as the evidence (human applies).
+1. For `{symbol}`: delete it, with the 7 clean checks above as the evidence (human applies).
 2. After deletion: run typecheck and the covering tests.
 3. For each `investigate` row: confirm or clear the inconclusive reference before any deletion.
 ```
@@ -223,10 +243,10 @@ mkdir -p tmp/god-review/findings
 
 See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
-- **PASS**: No exports or functions confirmed unused after all 6 verification checks.
+- **PASS**: No exports or functions confirmed unused after all 7 verification checks.
 - **WARN**: One or more symbols confirmed unused after all verification checks, or candidates left `investigate` by an inconclusive check.
 
-A deletion recommendation with all 6 zero-count checks is `likely` confidence; anything less is `investigate`. Both are surfaced for human review, not acted upon automatically. The orchestrator never downgrades this to AUTO_FIX.
+A deletion recommendation with all 7 checks clean is `likely` confidence; anything less is `investigate`. Both are surfaced for human review, not acted upon automatically. The orchestrator never downgrades this to AUTO_FIX.
 
 ## Risk Levels
 
@@ -239,7 +259,7 @@ Even HIGH risk findings are HUMAN_GATE — this lens never produces AUTO_FIX can
 ## Known Issues (don't re-report)
 
 - Load from `tmp/god-review/context-package.md` known-issues section if available
-- Symbols in a `_deprecated/` or similar parking directory are dead by declaration: verify with the same 6 checks and recommend deleting them
+- Symbols in a `_deprecated/` or similar parking directory are dead by declaration: verify with the same 7 checks and recommend deleting them
 - Do NOT flag symbols in files ending with `.d.ts` — these are type declaration files for external consumers
 - Do NOT flag `main()`, `handler()`, `app`, or framework entrypoints (Express app, Next.js page exports, FastAPI app, etc.) — these are called by the framework, not imported
 - Do NOT flag symbols marked with `// @public` or documented in JSDoc/TSDoc with `@public` — these are intentional public API surface

@@ -101,10 +101,12 @@ input to the wrong result. On PHI, money, auth or OpenDental writes, a credible 
 blocking until a run proves it safe (proof levels: said so < pointed at the line < walked the failure
 < ran it < reproduced in the app). A finding with no proof is non-blocking.
 
-Also check, as should-fix:
-- Each new or changed test, with two imagined edits: break the behavior (the test must fail) and
-  change only the internals (it must still pass). A test that fails either is a finding.
-- History comments (dates, review rounds, phase tags, line pointers) and stale comments.
+Check each new or changed test with two imagined edits. Break the behavior: a test that still
+passes guards nothing, and that is **blocking** (a test can pass while the thing it guards is
+broken). Change only the internals: a test that breaks is coupled to implementation, **should-fix**.
+
+Flag as should-fix: history comments (dates, review rounds, phase tags, line pointers) and stale
+comments.
 
 Only review files that were changed by the implementation — don't review the entire codebase.
 

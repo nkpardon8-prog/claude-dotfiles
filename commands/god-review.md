@@ -1323,14 +1323,16 @@ For each finding from 3a, assign exactly ONE bucket based on these rules
    returns 0 (already in `tmp/god-review/known-deferred-session.txt`).
 2. **`bucket_HUMAN_GATE`** — `is_hard_gate "$FINDING_FILE"` returns 0 (matches
    `lib/hard-gates.txt`), OR Architect output would be multi-file, OR
-   category is `assumption` / `contradiction` requiring human judgment.
+   category is `assumption` / `contradiction` requiring human judgment, OR the finding
+   comes from the `dead-code-conservatism` lens or recommends deleting code (a symbol,
+   file or module). Deletion is always a human decision, never AUTO_FIX.
 3. **`bucket_AUTO_DEFER`** — finding is `minor` severity AND not security-critical,
    OR validator marked it false_positive in Phase 2d, OR you (orchestrator)
    judge this requires deferral and have a substantive technical reason
    (≥30 chars, references a specific file path / identifier / quoted external
    name / issue ref — `record_auto_defer` will reject trivial reasons).
 4. **`bucket_AUTO_FIX`** — everything else: severity ≥ likely, non-hard-gate,
-   not deferrable, not replayed.
+   not a deletion, not deferrable, not replayed.
 
 Print the bucket counts: `Round $ROUND triage: REPLAYED=X, HUMAN_GATE=Y, AUTO_DEFER=Z, AUTO_FIX=W`.
 

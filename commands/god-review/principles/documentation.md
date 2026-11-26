@@ -62,8 +62,11 @@ Use TodoWrite to track candidate comments.
 ### 2.1 History comments
 
 ```bash
-grep -nEi "(20[0-9]{2}-[0-9]{2}-[0-9]{2}|round [0-9]+|phase [0-9A-Z]+|\bR[0-9]+\b|review fix|see line [0-9]+|:[0-9]+\)|was changed|previously|used to)" -- <changed files>
+CHANGED=( $(git diff main...HEAD --name-only 2>/dev/null) )
+[ "${#CHANGED[@]}" -gt 0 ] && grep -nEi "(20[0-9]{2}-[0-9]{2}-[0-9]{2}|round [0-9]+|phase [0-9A-Z]+|\bR[0-9]+\b|review fix|see line [0-9]+|was changed|previously|used to)" -- "${CHANGED[@]}"
 ```
+
+Matches are candidates only; read each one before reporting it.
 
 ```typescript
 // WRONG - history
