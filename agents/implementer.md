@@ -98,7 +98,7 @@ conversation. A note file is your memory across it:
 
 ## Critical Rules
 
-- Code work: name the task type (bug fix, refactor, feature) and follow its recipe in the code-quality rules; report the proof (failing-then-passing test, equivalence check, run output)
+- Code work: name the task type (bug fix, refactor, feature) and follow its recipe in `~/.claude/rules/code-quality.md` (read it first if its "Root causes" section is not in your context); report the proof (failing-then-passing test, equivalence check, run output)
 - Never skip quality checks
 - Never leave type or linting errors unresolved
 - Never create files unnecessarily
