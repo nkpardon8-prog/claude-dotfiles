@@ -19,7 +19,7 @@ Apparently-unused code must undergo multi-step verification before being flagged
 - Dead code removal is failure mode #9 — code that looks unused may be referenced by reflection, dynamic import, cron config, or test harness setup
 - False positives in dead-code analysis cause removal of live code, creating silent bugs that don't surface until runtime
 - Automated deletion is irreversible at the user's mental level — even with git history, "it was deleted by the review bot" erodes trust
-- The recommended remediation is always quarantine to `_deprecated/` (HUMAN_GATE), not deletion — this is hard-coded in Phase 3's gate logic
+- The remediation is deletion backed by evidence (no callers, including string references, dynamic imports and config), applied by a human (HUMAN_GATE); when the evidence is incomplete the finding is tagged `investigate` instead. Never quarantine to `_deprecated/`: a parked copy is still dead code, and git history already keeps it
 - This lens deliberately produces HUMAN_GATE-only findings; the orchestrator will never auto-apply dead-code removals
 
 ## Phase 1: Gather Context
@@ -88,7 +88,7 @@ find "$WORKDIR" -type f -name "*.py" -not -path "*/.git/*" -not -path "*/venv/*"
 
 ## Phase 3: Deep Analysis — Mandatory Verification Before Flagging
 
-**CRITICAL: For every candidate, ALL of the following checks must be performed. Flag ONLY if ALL checks pass (i.e., all show zero evidence of live usage). If ANY check finds evidence, drop the candidate entirely.**
+**CRITICAL: For every candidate, ALL of the following checks must be performed. Recommend deletion ONLY if ALL checks show zero evidence of live usage. If a check finds clear live usage, drop the candidate. If a check finds something you cannot rule in or out (an ambiguous string match, a computed import path), tag the candidate `investigate` instead of recommending deletion.**
 
 ### Check 1: String-literal / reflection lookup
 
@@ -159,7 +159,7 @@ grep -rn \
   -E "\b${SYMBOL}\b" "$WORKDIR" 2>/dev/null | wc -l
 ```
 
-**Flag the candidate ONLY if ALL 6 checks return 0 (no references found).**
+**Recommend deletion ONLY if ALL 6 checks return 0 (no references found); record the commands and their zero counts as the evidence.**
 
 ## Phase 4: Generate Report
 
@@ -169,7 +169,7 @@ grep -rn \
 **Scope:** {scope}
 **Status:** {PASS | WARN}
 **Tier:** 2 (always-on, no promotion)
-**Remediation:** HUMAN_GATE only (quarantine to `_deprecated/`, never delete)
+**Remediation:** HUMAN_GATE only (delete with evidence; unsure -> `investigate`)
 
 ## Summary
 
@@ -179,17 +179,21 @@ grep -rn \
 
 | Symbol | File | Lines | Checks Passed | Proposed Action | Severity |
 |--------|------|-------|--------------|-----------------|----------|
-| `{name}` | `{file}:{line}` | {count} | all 6 | Quarantine to `_deprecated/` (HUMAN_GATE) | investigate |
+| `{name}` | `{file}:{line}` | {count} | all 6 | Delete (HUMAN_GATE) | likely |
 
-### Quarantine Diff (proposed, human applies)
+### Deletion (proposed, human applies)
 
 ```diff
-# Move {file} to _deprecated/{file} and update all import references
-# This is a multi-file change — apply manually
-git mv {file} _deprecated/{file}
-# Then update all files that import from {original_path} to import from _deprecated/{original_path}
-# Verify no imports remain: grep -rn "{symbol_name}" src/
+# Delete {symbol} from {file} (or the whole file if nothing live remains in it)
+# Then run the project typecheck and the tests that cover {file}
+# Verify no references remain: grep -rn "{symbol_name}" .  (exclude node_modules, .git, dist)
 ```
+
+## Needs Investigation (a check was inconclusive)
+
+| Symbol | File | Inconclusive Check | What to confirm |
+|--------|------|--------------------|-----------------|
+| `{name}` | `{file}` | {check number + name} | {the reference to rule in or out} |
 
 ## Candidates Cleared (evidence of live usage found)
 
@@ -199,9 +203,9 @@ git mv {file} _deprecated/{file}
 
 ## Recommendations
 
-1. For `{symbol}`: move to `_deprecated/{file}` — do NOT delete. Review after 2 sprints; if still unused, delete then.
-2. Add a `// @deprecated — quarantined {date}` comment before moving to aid future cleanup
-3. After quarantine: run typecheck to confirm all import references were updated
+1. For `{symbol}`: delete it, with the 6 zero-count checks above as the evidence (human applies).
+2. After deletion: run typecheck and the covering tests.
+3. For each `investigate` row: confirm or clear the inconclusive reference before any deletion.
 ```
 
 ## Phase 5: Output
@@ -209,7 +213,7 @@ git mv {file} _deprecated/{file}
 1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-dead-code-conservatism}.txt`
 2. Print summary:
    - PASS: no confirmed unused exports/functions
-   - WARN: confirmed unused symbols found (all require HUMAN_GATE quarantine, never auto-apply)
+   - WARN: confirmed unused symbols found (deletion recommended, HUMAN_GATE, never auto-apply) or `investigate` candidates
 
 ```bash
 mkdir -p tmp/god-review/findings
@@ -220,9 +224,9 @@ mkdir -p tmp/god-review/findings
 See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: No exports or functions confirmed unused after all 6 verification checks.
-- **WARN**: One or more symbols confirmed unused after all verification checks. All are `investigate`-level confidence (dead code is often intentional or will be used soon).
+- **WARN**: One or more symbols confirmed unused after all verification checks, or candidates left `investigate` by an inconclusive check.
 
-Dead-code findings are always `investigate` confidence — they are surfaced for human review, not acted upon automatically. The orchestrator never downgrades this to AUTO_FIX.
+A deletion recommendation with all 6 zero-count checks is `likely` confidence; anything less is `investigate`. Both are surfaced for human review, not acted upon automatically. The orchestrator never downgrades this to AUTO_FIX.
 
 ## Risk Levels
 
@@ -235,12 +239,12 @@ Even HIGH risk findings are HUMAN_GATE — this lens never produces AUTO_FIX can
 ## Known Issues (don't re-report)
 
 - Load from `tmp/god-review/context-package.md` known-issues section if available
-- Do NOT flag symbols in `_deprecated/` — they are already quarantined and pending deletion
+- Symbols in a `_deprecated/` or similar parking directory are dead by declaration: verify with the same 6 checks and recommend deleting them
 - Do NOT flag symbols in files ending with `.d.ts` — these are type declaration files for external consumers
 - Do NOT flag `main()`, `handler()`, `app`, or framework entrypoints (Express app, Next.js page exports, FastAPI app, etc.) — these are called by the framework, not imported
 - Do NOT flag symbols marked with `// @public` or documented in JSDoc/TSDoc with `@public` — these are intentional public API surface
 - Do NOT flag symbols in a `public/` directory or an `api/` directory at the project root — these are likely public-facing
 - Do NOT flag symbols exported from `index.ts`/`index.js` barrel files without also verifying the barrel itself is unused — a barrel that IS imported makes all its re-exports live
-- Do NOT recommend deletion — always recommend quarantine to `_deprecated/` with a comment
+- Do NOT recommend quarantine (`_deprecated/`, `@deprecated` parking, commented-out code); recommend deletion with evidence, or tag `investigate`
 
 Run analysis on: $ARGUMENTS (or full repo if empty).

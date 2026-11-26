@@ -238,7 +238,7 @@ Categories covered:
 - **CI/CD** — workflow YAMLs
 - **Tests** — test files (per `test-deletion.md` lens)
 - **Build/runtime config** — `next.config.*`, `Dockerfile`, etc.
-- **Quarantine** — `_deprecated/**` paths
+- **Legacy parked code** — `_deprecated/**` paths (new dead code is deleted, never parked)
 
 ---
 

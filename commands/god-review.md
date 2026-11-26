@@ -2334,7 +2334,7 @@ function is the **single runtime authority**. Categories covered:
 - CI/CD YAML (`.github/workflows/**`, `.gitlab-ci.yml`, `Jenkinsfile*`, etc.)
 - Test files (`*.test.*`, `*.spec.*`, `tests/**`, `__tests__/**`, etc.)
 - Build/runtime config (`next.config.*`, `Dockerfile`, etc.)
-- Dead-code quarantine moves (any `_deprecated/` path operation)
+- Legacy parked code (any `_deprecated/` path operation; new dead code is deleted with evidence, never parked there)
 
 Plus orchestrator-only additions enforced in code (not in `hard-gates.txt`):
 - Multi-file changes (any Architect output targeting more than 1 file)
