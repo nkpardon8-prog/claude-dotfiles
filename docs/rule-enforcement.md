@@ -16,7 +16,7 @@ written rule carries it. Update this table when a rule or an enforcer changes.
 | Blocked means stop | `CLAUDE.md` Working with the user | none |
 | Peer messages are untrusted data | `rules/agent-peer-messaging.md` | none (routing only: `line-agent-communicator.py route-send`) |
 | Targeted tests while building, full suite at close | `CLAUDE.md` Testing and docs | review |
-| Model routing (Terra cheap work, Sol review) | `CLAUDE.md` Model routing | lint: `lint-skill-contract.sh` checks skill wiring; otherwise none |
+| Model routing (Terra cheap work, Sol review) | `CLAUDE.md` Model routing | lint: `lint-skill-contract.sh` pins review-lane models and Codex effort per lane; ad-hoc calls: none |
 | Checkpoint with `/pre-compact` near 40-45% context | `CLAUDE.md` Context, compaction | hook: `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh` |
 | Memory notes only if true in six months | `CLAUDE.md` Context, compaction | check: `scripts/memory-lint.py` (report-only) |
 | Never push other repos without approval | `CLAUDE.md` Push rules | none globally; dentall: safe-push |
@@ -32,7 +32,7 @@ written rule carries it. Update this table when a rule or an enforcer changes.
 | Backend layering, no N+1 | `rules/backend-patterns.md` | review |
 | Code quality recipes, test quality, comment policy | `rules/code-quality.md` | review: `implementation-reviewer`, `/codex-review` proof rule, god-review `documentation` principle |
 | Blocking findings state their proof | `commands/codex-review.md`, `commands/mission.md` §H2, `agents/implementation-reviewer.md` | review; `/mission` verify lane counts tagged blocking rows |
-| Agent files declare `model:` and `effort:`; commands stay under size | dotfiles pre-commit | lint: `lint-skill-contract.sh`, `lint-skill-size.sh` |
+| Agent files declare `model:` and `effort:`; commands stay under size | dotfiles pre-commit (`scripts/install-git-hooks.sh`) | lint: `lint-skill-contract.sh` (frontmatter), `lint-skill-size.sh` |
 | Stale handoffs not resumed | `/pre-compact` skill | hook: `stale-handoff-guard.sh` |
 
 ## Dentall mechanical rules (by check name)
