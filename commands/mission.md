@@ -144,7 +144,11 @@ BLOCKING, stated once: wrong behavior reaching a user or record, data loss, a mo
 security or tenant breach, PHI exposure, a broken operator or recovery path, or
 a test that can pass while the thing it guards is broken. Everything else is NON-BLOCKING: recorded
 verbatim, never fixed in-part.
-Classify by which list it belongs to, not by how confident or how large the finding is. The Sol
+A blocking finding also states its proof: a command run and its output, or a step-by-step trace
+from input to the wrong result (said so < pointed at the line < walked the failure < ran it <
+reproduced in the app). No proof -> NON-BLOCKING, except that on PHI, money, auth or OpenDental
+writes a credible traced risk stays blocking until a run proves it safe. Given proof, classify by
+which list it belongs to, not by how confident or how large the finding is. The Sol
 verify lane tags every blocking finding `new|repeat` against the ledger; a round is VOID unless
 verify succeeded and `tagged == blocking` across both barrier lanes; the conductor never re-grades.
 Round 1 = the whole part (`--base <PART-START base>`); clean -> `dry=1`. Fix every blocking finding
@@ -260,7 +264,7 @@ Contradictions -> `pending` + `note`, proceed on the better-evidenced branch. Lo
 **Plan.** Per round K: `skill: plan --mission --round <K> --ledger <file> --report <path>`, then
 `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh bank-review <sid> <root> <N> <K> plan <report>`,
 then the plan line `... phase=plan round=<K> dry=0 open=<n>`. The ledger (`tmp/mission/p<N>/ledger.md`)
-holds the rubric, the part's prior TAG rows and the escaped-bug types. Log `test-trust` before the
+holds the rubric (§H2, with its proof rule), the part's prior TAG rows and the escaped-bug types. Log `test-trust` before the
 first implement round.
 
 **Code review round K.** Open the barrier, then run both lanes in ONE message, blind to each other:
