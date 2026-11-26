@@ -355,6 +355,11 @@ req "$X" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line
 req "$X" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
 req "$X" "Verify: failed"
 req "$X" "Verify: deferred"
+# An unresolved PHI/money/auth/OD-write risk is UNCERTAIN | BLOCKING and must count toward blocking=,
+# or the mission writer banks the round clean (scripts/hooks/test-ledger-verify-count.sh runs the count).
+req "$X" "mark it UNCERTAIN | BLOCKING, never NONBLOCKING"
+req "$X" '(CONFIRMED|UNCERTAIN) \| BLOCKING'
+req "$X" "| <severity correction or -> | <evidence>"
 # A /mission round (--ledger or --verify) runs at high, final: no xhigh, no self-escalation (mission
 # rework 2026-11-11). Without the pin, Step 0's one-shot escalation would quietly fire inside a loop.
 req_before "$X" 'a /mission round: take the caller'"'"'s `--effort` (`medium`, or `high` for a `tier=high` part), default `medium`, final'
