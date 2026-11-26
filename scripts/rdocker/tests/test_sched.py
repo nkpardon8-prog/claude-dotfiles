@@ -455,6 +455,40 @@ class QueueEstimate(unittest.TestCase):
         free, rel = rd_pool.slot_releases(h, TSC, now=now)
         self.assertEqual((free, [round(r) for r in rel]), (0, [380]))
 
+    def test_spare_growth_gap_placement_matches_the_runner(self):
+        """2026-11-25 (rr_runner.pl spare_gate): inside rr_spare_gap_s of the last spare growth (probe spare_age_s,
+        spare_busy = the stamped busy count) the runner lets spare slots REFILL up to that count and no
+        further; placement must never advertise a growth slot it would refuse, nor hide a refill it would
+        grant. After the gap (or off, or a probe without the fields): the whole cap, as before."""
+        now = time.time()
+        h = rd_pool.Host("hp", {"rr_slots_base": 2, "rr_spare_gap_s": 60}, {"speed": 1.0})
+        room = dict(probe(slots_cap=8, slots_busy=3, ncpu=8, load=1.0), ev=ev(all=[50, 100.0]))
+        h.probe = dict(room, held=[[0, 10], [1, 20], [2, 30]], spare_age_s=10, spare_busy=3)
+        self.assertEqual(rd_pool.slot_rule(h), (2, 3, 50))
+        self.assertEqual(rd_pool.open_slots(h), 3)
+        self.assertEqual(rd_pool.slot_releases(h, VITEST, now=now)[0], 0)      # growth to 4: refused for 50 s
+        # the earliest slot: a holder's end (any of them: a refill under the count) or the gap's end
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now), 50, delta=1)
+        h.probe = dict(room, held=[[0, 900], [1, 900], [2, 900]], spare_age_s=10, spare_busy=3)
+        self.assertAlmostEqual(rd_pool.queue_wait(h, VITEST, now=now), 50, delta=1)   # holders all long past
+        # refills are never hidden: a free base slot (by index), or a spare one under the stamped count
+        h.probe = dict(room, slots_busy=2, held=[[0, 10], [2, 30]], spare_age_s=10, spare_busy=3)
+        self.assertEqual(rd_pool.slot_releases(h, VITEST, now=now)[0], 1)
+        h.probe = dict(room, slots_busy=2, held=[[0, 10], [1, 30]], spare_age_s=10, spare_busy=3)
+        self.assertEqual(rd_pool.slot_releases(h, VITEST, now=now)[0], 1)
+        h.probe = dict(room, slots_busy=1, held=[[2, 30]], spare_age_s=10, spare_busy=2)
+        self.assertEqual(rd_pool.slot_releases(h, VITEST, now=now)[0], 2)       # base 0 and 1, no growth past 2
+        # the gap is over / off / no stamp in the probe: the whole cap (8 - 3 held)
+        for pr, cfg in ((dict(spare_age_s=60, spare_busy=3), {}), (dict(spare_age_s=10, spare_busy=3), {"rr_spare_gap_s": 0}),
+                        ({}, {})):
+            h.cfg = dict({"rr_slots_base": 2, "rr_spare_gap_s": 60}, **cfg)
+            h.probe = dict(room, held=[[0, 10], [1, 20], [2, 30]], **pr)
+            self.assertEqual((rd_pool.slot_rule(h), rd_pool.slot_releases(h, VITEST, now=now)[0]), ((2, 8, None), 5))
+        # no spare room at all: the base slots only, whatever the stamp says
+        h.cfg = {"rr_slots_base": 2}
+        h.probe = dict(room, load1=14.0, held=[[0, 10], [2, 30]], spare_age_s=10, spare_busy=5)
+        self.assertEqual((rd_pool.slot_rule(h), rd_pool.slot_releases(h, VITEST, now=now)[0]), ((2, 2, None), 1))
+
     def test_route_log_pairs_the_predicted_wait_with_the_measured_one(self):
         """qpred_s is added only beside slot_s (the runner's SLOT), so retries and shards sum alike."""
         rd_run.STAGES.clear()
@@ -721,7 +755,7 @@ class MoverUnit(unittest.TestCase):
         """The session got its slot between the re-plan and the request: no move, ctx.plan untouched,
         no "moving to" line (host_loop prints it only when the move happened)."""
         plan0, fresh = object(), object()
-        ctx = mock.Mock(plan=plan0, cfg={"rr_move_poll_s": 0.01})
+        ctx = mock.Mock(plan=plan0, cfg={"rr_move_poll_s": 0.01, "rr_move_first_s": 0.01})
         sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
         sess.wait_since = time.monotonic()
         sess.got_slot = False
@@ -750,9 +784,10 @@ class MoverUnit(unittest.TestCase):
         self.assertEqual(err.getvalue(), "")
 
 
-    def test_a_free_own_worker_that_is_not_better_does_not_hide_a_better_one(self):
-        """rank() puts this Mac's own worker first while free, not by finish: a move candidate scan that
-        meets it and finds it not clearly better looks on to the next worker (rd_pool.is_own)."""
+    def test_the_earliest_finish_that_clears_the_gain_rule_wins(self):
+        """rank() puts this Mac's own worker first while free, not by finish, so the scan looks at every
+        worker (2026-11-25: no early break on the first one that fails the gain rule) and takes the
+        lowest eta of those that clear it."""
         sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
         sess.wait_since = time.monotonic()
         ctx = mock.Mock(cfg={}, job={"cls": "normal"}, wt={"slug": "s", "top": "/x"}, deps=[], force=None)
@@ -769,10 +804,110 @@ class MoverUnit(unittest.TestCase):
         with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
             c, _, _ = mv.candidate(sess)
         self.assertIs(c, fast)
-        plan.hosts = [host("lap", 290.0, False), fast]        # a regular worker first: the scan stops, as before
+        plan.hosts = [host("lap", 290.0, False), fast]        # a regular worker that fails first: looks on
+        with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
+            c, _, _ = mv.candidate(sess)
+        self.assertIs(c, fast)
+        faster = host("w8", 10.0, False)
+        plan.hosts = [host("lap", 290.0, False), fast, faster]   # two clear it: the earlier finish
+        with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
+            c, _, _ = mv.candidate(sess)
+        self.assertIs(c, faster)
+        plan.hosts = [host("lap", 290.0, False), host("w9", 250.0, False)]   # none clears it: stay
         with mock.patch.object(rd_pool, "plan", return_value=plan), mock.patch.object(rd_pool, "deps_shas", return_value=""):
             c, _, _ = mv.candidate(sess)
         self.assertIsNone(c)
+
+    def test_first_check_comes_soon_after_the_first_wait(self):
+        """rr_move_first_s after the attempt's first WAIT (not rr_move_poll_s after the attempt began): a
+        job that lost the race to a slot is re-planned within seconds; then every rr_move_poll_s."""
+        ctx = mock.Mock(cfg={"rr_move_poll_s": 30, "rr_move_first_s": 0.3})
+        sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        mv = rd_run.Mover(ctx, mock.Mock(name="hp"), mock.Mock(session=sess))
+        calls = []
+
+        def candidate(s):
+            calls.append(time.monotonic())
+            return None, 100.0, None
+        with mock.patch.object(mv, "candidate", side_effect=candidate):
+            mv.start()
+            time.sleep(0.8)
+            self.assertEqual(calls, [])                      # no WAIT yet: nothing to move
+            sess.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+            t0 = sess.wait_since
+            time.sleep(1.2)
+            mv.stop()
+        self.assertEqual(len(calls), 1, calls)               # once at ~0.3 s; the next only 30 s later
+        self.assertGreaterEqual(calls[0] - t0, 0.29)
+        self.assertLess(calls[0] - t0, 1.0)
+
+    def test_here_finish_without_an_estimate_is_pessimistic(self):
+        """queue_wait None (no slot of its kind seen now) is a typical hold x rr_queue_overrun_x per run up
+        to and including this one, never 0; a real estimate - a zero one too - is used as it is."""
+        sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        sess.wait_since, sess.ahead = time.monotonic(), 2
+        ctx = mock.Mock(cfg={}, job={"cls": "normal"})
+        here = rd_pool.Host("hp", {"rr_queue_overrun_x": 2.0}, {"speed": 1.0})
+        here.probe, here.setup_s, here.rank_s, here.state = {"slots_cap": 2}, 5.0, 10.0, "busy"
+        mv = rd_run.Mover(ctx, here, mock.Mock(session=sess))
+        p = mock.Mock(hosts=[here])
+        with mock.patch.object(rd_pool, "queue_wait", return_value=None):
+            self.assertAlmostEqual(mv.here_finish(p, sess), rd_pool.holder_typ(here) * 2.0 * 3 + 15.0)
+        with mock.patch.object(rd_pool, "queue_wait", return_value=0.0):
+            self.assertEqual(mv.here_finish(p, sess), 15.0)
+        with mock.patch.object(rd_pool, "queue_wait", return_value=40.0):
+            self.assertEqual(mv.here_finish(p, sess), 55.0)
+
+    def test_slot_before_move_keeps_the_attempt(self):
+        """The runner arbitrates: MOVE is written once and the link stays open; a SLOT that comes back
+        first drops the pending move (and a give-up), so GO still goes out and nothing is abandoned;
+        MOVED (the runner left its wait) records that wait once, as route.log mvwait_s."""
+        rd_run.STAGES.clear()
+        self.addCleanup(rd_run.STAGES.clear)
+        sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        sess.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+        self.assertTrue(sess.request_move(("w2", None, "msg")))
+        self.assertEqual(sess.give_up_left(), 0)              # leave now: the writer sends MOVE (once)
+        sess.on_status("SLOT 4.5")                            # ...but the runner had its slot already
+        self.assertIsNone(sess.move_to)
+        self.assertFalse(sess.gave_up)
+        self.assertIsNone(sess.give_up_left())                # never leaves after SLOT
+        sess.on_status("READY")
+        self.assertTrue(sess.claim_go())
+        self.assertNotIn("mvwait_s", rd_run.STAGES)
+        moved = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        moved.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+        moved.request_move(("w2", None, "msg"))
+        moved.on_status("MOVED 12.5")
+        self.assertEqual((rd_run.STAGES["mvwait_s"], moved.move_to[0]), (12.5, "w2"))
+        # the give-up hand-off: also never after SLOT
+        g = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False), give_up_s=0.0)
+        g.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+        g.on_status("SLOT 1.0")
+        self.assertIsNone(g.give_up_left())
+        self.assertFalse(g.gave_up)
+
+    def test_busy_at_the_deadline_keeps_a_requested_hand_off(self):
+        """Round-1 fix: the runner's wait running out says only "BUSY <s>" (never SLOT first): the wait is
+        still route.log slot_s, and a move or give-up hand-off already asked for stands (no slot taken)."""
+        rd_run.STAGES.clear()
+        self.addCleanup(rd_run.STAGES.clear)
+        g = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False), give_up_s=0.0)
+        g.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+        self.assertEqual(g.give_up_left(), 0)
+        self.assertTrue(g.gave_up)
+        g.qpred_s = 20.0
+        g.on_status("BUSY 30.5")
+        self.assertTrue(g.gave_up)                            # the hand-off to this machine stands
+        self.assertFalse(g.got_slot)
+        self.assertEqual((rd_run.STAGES["slot_s"], rd_run.STAGES["qpred_s"]), (30.5, 20.0))
+        m = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        m.on_status("WAIT holder=x age=1 busy=2 slots=2 ahead=0")
+        m.request_move(("w2", None, "msg"))
+        m.on_status("BUSY 9.0")
+        self.assertEqual(m.move_to[0], "w2")                  # the move stands too
+        m.on_status("BUSY")                                   # the mirror's BUSY: no number, nothing added
+        self.assertEqual(rd_run.STAGES["slot_s"], 39.5)
 
 
 class Retry(unittest.TestCase):

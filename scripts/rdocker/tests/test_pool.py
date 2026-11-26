@@ -640,6 +640,72 @@ class ProbeSnippet(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         return json.loads(p.stdout)
 
+    def test_spare_growth_stamp(self):
+        """slots/.spare_last (rr_runner.pl spare_gate): its age and busy count, read by the runner's own
+        spare_stamp (the share-spec block); missing, garbage, a symlink or a future mtime = no fields.
+        Round-1 fix: read with the occupancy under a shared slots/.spare_lock, never waited for - no lock
+        file = no stamp yet; the lock busy (a spare admission right now) = no refill budget (0, 0)."""
+        self.assertNotIn("spare_age_s", self.run_probe({"slots": 4}))
+        f = os.path.join(self.root, "slots", ".spare_last")
+        test_run.wfile(f, "3\n")
+        t = time.time() - 20
+        os.utime(f, (t, t))
+        self.assertNotIn("spare_busy", self.run_probe({"slots": 4}))        # no .spare_lock: no stamp
+        lk = os.path.join(self.root, "slots", ".spare_lock")
+        test_run.wfile(lk, "")
+        o = self.run_probe({"slots": 4})
+        self.assertEqual(o["spare_busy"], 3)
+        self.assertTrue(19 <= o["spare_age_s"] <= 22, o)
+        with open(lk, "a") as h:
+            fcntl.flock(h, fcntl.LOCK_EX)                                   # a runner mid spare admission
+            o = self.run_probe({"slots": 4})
+        self.assertEqual((o["spare_busy"], o["spare_age_s"]), (0, 0))
+        os.utime(f, (time.time() + 600,) * 2)
+        self.assertNotIn("spare_busy", self.run_probe({"slots": 4}))
+        test_run.wfile(f, "x\n")
+        self.assertNotIn("spare_busy", self.run_probe({"slots": 4}))
+        os.unlink(f)
+        os.symlink(os.path.join(self.d, "other"), f)
+        test_run.wfile(os.path.join(self.d, "other"), "3\n")
+        self.assertNotIn("spare_busy", self.run_probe({"slots": 4}))
+        os.unlink(f)
+        os.mkfifo(f)                                         # a FIFO never blocks the probe: no fields
+        self.assertNotIn("spare_busy", self.run_probe({"slots": 4}))
+
+    def test_slots_cap_fails_closed_and_rr_proc_needs_the_harness(self):
+        """Round-3: slots.cap is read by the share-spec slots_cap_read, the runner's own rule - one number caps
+        the slots, a planted symlink is ignored, anything else (too long, garbage) = 0: nothing admitted. And
+        the probe honours RR_PROC only with RR_TEST=1 (the fake says load 3.50)."""
+        cap = os.path.join(self.root, "slots.cap")
+        self.assertEqual(self.run_probe({"slots": 4})["slots_cap"], 4)
+        for text, want in (("2\n", 2), ("garbage\n", 0), ("1" * 65 + "\n", 0), ("3 x\n", 0)):
+            test_run.wfile(cap, text)
+            self.assertEqual(self.run_probe({"slots": 4})["slots_cap"], want, text)
+        os.unlink(cap)
+        os.mkfifo(cap)                                                       # never hangs, admits nothing
+        self.assertEqual(self.run_probe({"slots": 4})["slots_cap"], 0)
+        os.unlink(cap)
+        os.symlink(os.path.join(self.d, "elsewhere"), cap)
+        self.assertEqual(self.run_probe({"slots": 4})["slots_cap"], 4)
+        self.assertEqual(float(self.run_probe({"slots": 4})["load1"]), 3.5)
+        self.env = dict(self.env, RR_TEST="")
+        self.assertNotEqual(self.run_probe({"slots": 4}).get("load1"), "3.50")
+
+    def test_planted_fifos_never_hang_the_probe(self):
+        """Round-2 fix: every file the probe reads goes through the share-spec small_read (non-blocking, no
+        symlink, regular files only, bounded): FIFOs at a held slot's .who / .own, at a slot lock and at
+        speed - with .spare_lock held by the probe meanwhile - are just unreadable."""
+        slots = os.path.join(self.root, "slots")
+        test_run.wfile(os.path.join(slots, ".spare_lock"), "")
+        fh = open(os.path.join(slots, "0"), "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        self.addCleanup(fh.close)
+        for f in ("0.who", "0.own", "1", os.path.join("..", "speed")):       # (a FIFO slots.cap: its own test)
+            os.mkfifo(os.path.join(slots, f))
+        o = self.run_probe({"slots": 4})                    # (run_probe's own 30 s timeout = a hang)
+        self.assertEqual((o["slots_busy"], o["jobs"]), (1, []))
+        self.assertNotIn("speed", o)
+
     def test_readings_slots_cap_speed_and_warmth(self):
         held = []
         for name in ("0", "heavy-0"):
@@ -736,7 +802,7 @@ class ProbeShareSwitch(unittest.TestCase):
         self.env["RR_SHARE_FILE"] = share
         # a 64 GB worker (nickmbp's size): the old words give the old counts
         test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 67108864 kB\nMemAvailable: 33554432 kB\n")
-        for text, want in (("some\n", ("medium", 4, 3)), ("max", ("high", 8, 6)), ("off\n", ("off", 8, 6)),
+        for text, want in (("some\n", ("medium", 6, 4)), ("max", ("high", 8, 6)), ("off\n", ("off", 8, 6)),
                            ("bogus", ("off", 8, 6)), ("low", ("low", 2, 1)), ("cpu=75 ram=8", ("custom", 4, 1))):
             test_run.wfile(share, text)
             o = self.run_probe(req)
@@ -744,7 +810,7 @@ class ProbeShareSwitch(unittest.TestCase):
         test_run.wfile(share, "some")
         o = self.run_probe({"slots": 1, "heavy_slots": 1})
         self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (1, 1))         # floor, min 1
-        self.assertEqual((o["share_cpu"], o["ram_cap_mb"]), (50, 32768))
+        self.assertEqual((o["share_cpu"], o["ram_cap_mb"]), (75, 32768))
         # an 8 GB worker: the preset RAM cap bites (medium = 4 GB: 2 jobs, no heavy one)
         test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 4194304 kB\n")
         o = self.run_probe(req)

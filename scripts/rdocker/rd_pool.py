@@ -106,6 +106,7 @@ HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker 
 # Tunable: rr_queue_overrun_x, rr_queue_age_k; route.log qpred_s (predicted) beside slot_s (measured).
 QUEUE_OVERRUN_X = 1.3
 QUEUE_AGE_K = 1.0
+SPARE_GAP_S = 60.0           # rr_spare_gap_s: spare slots grow one per this many s (rr_runner.pl spare_gate)
 # a worker whose 1-min load per CPU thread is at least this at probe time counts as busy (its free
 # slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
 # 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
@@ -551,17 +552,20 @@ def share_spec_pl():
 
 
 # Read-only snapshot of a worker, one JSON line. stdin: {"slots", "heavy_slots", "slug",
-# "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC / RR_SYS / RR_SYSCTL_* / RR_USED_MB: same overrides as the
-# runner (tests).
+# "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC (with RR_TEST=1) / RR_SYS / RR_SYSCTL_* / RR_USED_MB: same
+# overrides as the runner (tests).
 PROBE = r'''
 use strict; use warnings; use JSON::PP; use POSIX (); use Fcntl qw(:flock O_RDONLY O_RDWR O_NOFOLLOW O_NONBLOCK);
 my $R = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
+sub test_env { ($ENV{RR_TEST} // "") eq "1" ? $ENV{$_[0]} : undef }    # RR_PROC: tests only (the runner's rule)
 my $q = eval { local $/; JSON::PP->new->decode(<STDIN> // "{}") } || {};
-sub slurp { open(my $f, "<", $_[0]) or return ""; local $/; <$f> // "" }
+# every file the probe reads (~/rr is writable by tested code; /proc, /sys): the share-spec small_read - never
+# a symlink, a FIFO or a device, at most 1 MB ("" otherwise), so no planted file can hang the probe
+sub slurp { (small_read($_[0], 1 << 20))[0] }
 ''' + (share_spec_pl() or "@NO-SHARE-SPEC@") + r'''
 my %o = (os => ($ENV{RR_OS} || $^O));
 if ($o{os} eq "linux") {
-    my $p = $ENV{RR_PROC} // "/proc";
+    my $p = test_env("RR_PROC") // "/proc";
     my $mi = slurp("$p/meminfo");
     my ($av) = $mi =~ /^MemAvailable:\s*(\d+)/m; my ($t) = $mi =~ /^MemTotal:\s*(\d+)/m;
     if ($t && defined $av) { $o{mem_free_pct} = int($av * 100 / $t); $o{mem_avail_mb} = int($av / 1024) }
@@ -578,7 +582,7 @@ if ($o{os} eq "linux") {
 }
 # x86: the CPU's x86-64 level (1-4) from its feature flags; none on ARM (rd_pool.no_newer_cpu)
 {
-    my $fl = $o{os} eq "linux" ? (slurp(($ENV{RR_PROC} // "/proc") . "/cpuinfo") =~ /^flags\s*:([^\n]*)/m)[0]
+    my $fl = $o{os} eq "linux" ? (slurp((test_env("RR_PROC") // "/proc") . "/cpuinfo") =~ /^flags\s*:([^\n]*)/m)[0]
            : lc(join " ", map { sysctl_n("machdep.cpu.$_") } qw(features extfeatures leaf7_features));
     my %mac = ("sse4.1" => "sse4_1", "sse4.2" => "sse4_2", "avx1.0" => "avx", sse3 => "pni", lahf => "lahf_lm",
                lzcnt => "abm");
@@ -591,7 +595,7 @@ if ($o{os} eq "linux") {
         $o{x86} = 4 if $o{x86} == 3 && $has->(qw(avx512f avx512bw avx512cd avx512dq avx512vl));
     }
 }
-sub busy { my ($f) = @_; sysopen(my $h, $f, O_RDONLY | O_NOFOLLOW) or return 0;
+sub busy { my ($f) = @_; my $h; sysopen($h, $f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $h or return 0;
     return 0 if flock($h, LOCK_SH | LOCK_NB); 1 }
 # the owner's share switch (rr_runner.pl's share-spec block, spliced in above): the level word (max = no
 # file), its cpu % and RAM cap, and the memory guard. mem_room_mb: what a new job may still use here (the
@@ -602,7 +606,7 @@ my $shs = share_spec(share_read($shf));
 my $share = $shs->{level};
 $o{share} = $share;
 my $tot_mb;
-if ($o{os} eq "linux") { my ($t) = slurp(($ENV{RR_PROC} // "/proc") . "/meminfo") =~ /^MemTotal:\s*(\d+)/m; $tot_mb = int($t / 1024) if $t }
+if ($o{os} eq "linux") { my ($t) = slurp((test_env("RR_PROC") // "/proc") . "/meminfo") =~ /^MemTotal:\s*(\d+)/m; $tot_mb = int($t / 1024) if $t }
 else { my ($t) = sysctl_n("hw.memsize") =~ /^(\d+)/; $tot_mb = int($t / 1048576) if $t }
 my $hs = ($q->{heavy_slots} // "") =~ /^(\d+)$/ ? $1 : undef;
 my $caps = share_caps($shs, ($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1, $hs, $o{ncpu}, $tot_mb);
@@ -616,9 +620,16 @@ if ($share ne "off") {
     $o{paused} = "pressure" if share_guard($o{os}, 0) eq "pressure";
 }
 my $n = $caps->{slots};
-my ($cap) = -l "$R/slots.cap" ? () : slurp("$R/slots.cap") =~ /^\s*(\d+)/;
+my $cap = slots_cap_read("$R/slots.cap");    # (the share-spec block: the runner's rule, fail closed)
 $n = $cap if defined $cap && $cap < $n;
 $o{slots_cap} = $n; $o{slots_busy} = 0; my (@ages, @held);
+# the occupancy and the spare growth stamp are read under a SHARED slots/.spare_lock (the runner counts, takes
+# a spare slot and stamps under it exclusive), so a spare admission never lands between the two; never waited
+# for: busy = a spare admission right now -> no refill budget (age 0, busy 0: the base slots only). No lock
+# file = no spare admission under a gap yet = no stamp.
+my ($spl, $spl_busy);
+if (sysopen($spl, "$R/slots/.spare_lock", O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $spl) { $spl_busy = !flock($spl, LOCK_SH | LOCK_NB) }
+else { undef $spl }
 for my $i (0 .. $n - 1) {
     next unless busy("$R/slots/$i");
     $o{slots_busy}++;
@@ -630,6 +641,10 @@ for my $i (0 .. $n - 1) {
     push @held, [$i + 0, $age];
 }
 $o{ages} = \@ages; $o{held} = \@held;
+# the spare-slot growth stamp (rr_runner.pl spare_gate): its age and the busy count it allows refills up to
+if ($spl && $spl_busy) { ($o{spare_age_s}, $o{spare_busy}) = (0, 0) }
+elsif ($spl) { my @sp = spare_stamp("$R/slots/.spare_last"); ($o{spare_age_s}, $o{spare_busy}) = @sp if @sp }
+close $spl if $spl;
 # who runs what (<i>.own = tab-separated id= name= client= start= pid= label= timeout_s= cmd=, written by the runner
 # beside <i>.who): only for a held slot whose .who names the same pid (never a leftover's)
 my @jobs;
@@ -1414,16 +1429,46 @@ def spare_room(host):
     return fp >= _num(cfg.get("rr_spare_min_free_pct"), 25) and load / ncpu <= _num(cfg.get("rr_spare_max_load"), 1.5)
 
 
-def open_slots(host):
-    """How many slots the runner hands out now (rr_runner.pl share_gate + take_slot): the probe's slots_cap
-    (fleet slots scaled by the share level, under ~/rr/slots.cap), of which only rr_slots_base (the header's
-    slots_base, 2 by default) while the worker has no spare room. 2026-11-23: the probe counted the whole cap,
-    so a loaded hp holding 5 of 8 with runs waiting read as 3 free slots and queue 0."""
+def spare_gap(host):
+    """-> (refill limit, seconds left) while the worker's spare-slot growth gap runs (rr_runner.pl spare_gate:
+    inside rr_spare_gap_s of the last growth a spare admission only refills up to the stamped busy count, the
+    probe's spare_busy, stamped spare_age_s ago), else None: the gap is over, off (0), or the probe has no
+    stamp (an older probe or none written yet) - no gap, as the runner treats a missing stamp."""
+    p, cfg = host.probe or {}, host.cfg or {}
+    gap = _num(cfg.get("rr_spare_gap_s"), SPARE_GAP_S)
+    age, mark = _num(p.get("spare_age_s")), _num(p.get("spare_busy"))
+    if gap is None or gap <= 0 or age is None or mark is None or not 0 <= age < gap:
+        return None
+    return int(mark), gap - age
+
+
+def slot_rule(host):
+    """-> (base, limit, growth_s): how the runner hands out slots now (rr_runner.pl share_gate + take_slot +
+    spare_gate). The probe's slots_cap (fleet slots scaled by the share level, under ~/rr/slots.cap); slots
+    0 .. base-1 (rr_slots_base, the header's slots_base, 2 by default) always, by index; the rest only
+    while the worker has spare room, and inside the spare growth gap only up to `limit` held in all (the
+    stamped busy count; a refill, never a growth). growth_s: seconds until the gap lets one more spare
+    slot in (None: no gap running, or nothing left to grow into)."""
     cap = max(0, int(_num((host.probe or {}).get("slots_cap"), 1)))
     base = _num((host.cfg or {}).get("rr_slots_base"))
-    if base is None or base < 1 or base >= cap or spare_room(host):
-        return cap
-    return int(base)
+    if base is None or base < 1 or base >= cap:
+        return cap, cap, None
+    base = int(base)
+    if not spare_room(host):
+        return base, base, None
+    g = spare_gap(host)
+    if g is None:
+        return base, cap, None
+    lim = min(cap, max(base, g[0]))
+    return base, lim, (g[1] if lim < cap else None)
+
+
+def open_slots(host):
+    """How many slots the runner lets be held at once now (slot_rule): the probe's slots_cap, of which only
+    rr_slots_base while the worker has no spare room (2026-11-23: the probe counted the whole cap, so a
+    loaded hp holding 5 of 8 with runs waiting read as 3 free slots and queue 0), and inside the spare
+    growth gap (2026-11-25) at most the stamped busy count (never below the base)."""
+    return slot_rule(host)[1]
 
 
 def slot_releases(host, job, now=None):
@@ -1439,7 +1484,8 @@ def slot_releases(host, job, now=None):
 
     def left(c, age):
         return max(k * age, c - age)
-    n_open = open_slots(host)
+    base, n_open, _ = slot_rule(host)
+    cap = max(0, int(_num(p.get("slots_cap"), 1)))
     jobs = [j for j in p.get("jobs") or [] if isinstance(j, dict)]
 
     def own_left(j):                     # a holder whose own command has a median here: its end, else None
@@ -1461,8 +1507,17 @@ def slot_releases(host, job, now=None):
         # slots with the spare ones held is a free worker; a spare holder's end opens nothing while the
         # room is shut. The heavy lock is any holder's, open slot or not.
         rel_all = sorted(e for _, e in ends)
-        rel = sorted(e for i, e in ends if i < n_open)
-        busy = len(rel)
+        if n_open <= base:
+            rel = sorted(e for i, e in ends if i < n_open)
+            free = n_open - len(rel)
+        else:
+            # spare slots open (inside the growth gap: by count, up to n_open held): the free base slots
+            # (by index, never gated), then the free spare indexes while the held count stays <= n_open;
+            # any holder's end frees one (a base index, or a refill under the count)
+            rel = rel_all
+            nb = sum(1 for i, _ in ends if i < base)
+            fb = max(0, base - nb)
+            free = fb + max(0, min(cap - base - (len(ends) - nb), n_open - len(ends) - fb))
     else:                                # an older probe: every holder, ages of all of them (oldest first)
         busy = max(0, int(_num(p.get("slots_busy"), 0)))
         ages = sorted((a for a in (_num(x_) for x_ in p.get("ages") or []) if a is not None), reverse=True)
@@ -1473,7 +1528,7 @@ def slot_releases(host, job, now=None):
             rel.append(left(typ, a))
         rel += [typ / 2.0] * max(0, busy - len(rel))
         rel = rel_all = sorted(rel[:busy]) if busy else []
-    free = n_open - busy
+        free = n_open - busy
     if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
         hfree = int(_num(p.get("heavy_cap"), 0) - _num(p.get("heavy_busy"), 0))
         if hfree <= 0:
@@ -1491,6 +1546,13 @@ def queue_wait(host, job, ahead=None, now=None):
     free, rel = slot_releases(host, job, now)
     ahead = int(_num((host.probe or {}).get("waiting"), 0)) if ahead is None else max(0, int(ahead))
     heap = [0.0] * free + list(rel)
+    _, lim, grow = slot_rule(host)
+    if grow is not None and job["cls"] != "heavy":
+        # inside the spare growth gap: one more spare slot when it ends, then one per gap up to the cap
+        # (a heavy job also needs a heavy slot: its estimate keeps to the holders' ends, pessimistic)
+        gap = _num((host.cfg or {}).get("rr_spare_gap_s"), SPARE_GAP_S)
+        cap = max(0, int(_num((host.probe or {}).get("slots_cap"), 1)))
+        heap += [grow + k * gap for k in range(cap - lim)]
     if not heap:
         return None
     heapq.heapify(heap)

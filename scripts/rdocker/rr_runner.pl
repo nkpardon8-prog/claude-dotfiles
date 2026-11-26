@@ -8,7 +8,7 @@
 #   "<len>\n" + <len> bytes of UTF-8 JSON header
 #       {nonce, repo_slug, wt12, sha, relcwd, argv[], env{}, deleted[], tar_len,
 #        stamps{dirs[], npm_args[]}, slots, wait_min, keep_containers_on_fail,
-#        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load,
+#        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load, spare_gap_s,
 #        cls, need_gb, heavy_slots, outputs[], owner{id, name, client}, timeout_s, exit_grace,
 #        wait_every}
 #   cls=heavy + heavy_slots: a heavy job also holds one of $ROOT/slots/heavy-<i> (flock);
@@ -37,7 +37,9 @@
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start;
 #   "KILL\n" = stop it now (the client's deliberate cancel: second Ctrl-C, a hedge's loser).
-#   "MOVE\n" (before GO) = the client is leaving to re-plan elsewhere (runs.log `moved`, not abandoned-setup).
+#   "MOVE\n" (before GO) = the client is leaving to re-plan elsewhere (runs.log `moved`, not abandoned-setup):
+#   read during the slot wait it ends the run at once ("<nonce> MOVED <s>", exit 73); once the slot is
+#   taken it is ignored (the client saw SLOT first and stays; a later close is abandoned-setup).
 # Detached runs (header run_id): at READY the runner creates $ROOT/spool/<id>.lock (held, flock) and
 # <id>.ctl. On GO it forks a KEEPER (setsid; no ssh fd at all) that owns the slot, spawns the
 # command, appends its stdout/stderr to <id>.out / <id>.err, and writes <id>.rc ("rc=N timeout=S
@@ -58,7 +60,8 @@
 # So a laptop that never wrote GO knows the command never ran (=> safe to run it locally).
 # Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...|DOCKER|TIMEOUT <s>|EXIT <rc>"
 # (and "PV <n>" first, when the header has pool_version: the worker's pool version, before any prepare;
-# "PV ?" when it is unknown)
+# "PV ?" when it is unknown; "MOVED <s>" when a MOVE ended the slot wait, with that wait; "SLOT <s>" only
+# when a slot was taken, with that wait; "BUSY <s>" when the slot wait ran out, with that wait)
 # (DOCKER, just before EXIT: the command called docker through the shim - rrun never caches it). The nonce is 128
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
@@ -105,6 +108,9 @@ use Cwd qw(realpath);
 umask 077;    # everything the runner creates is owner-only (~/rr is 0700)
 my $ROOT = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
+# A test fake that swaps a reading's source (RR_PROC: the /proc dir) counts only when the harness says so
+# (RR_TEST=1): a worker's inherited env never redirects it.
+sub test_env { ($ENV{RR_TEST} // '') eq '1' ? $ENV{$_[0]} : undef }
 my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
 my $COLIMA = $ENV{RR_COLIMA} || '/opt/homebrew/bin/colima';
 my $VM_DISK_GB = 20;     # colima --disk (GB, sparse; owner 2026-11-22: 20 is plenty, it is not a constraint); --cpu / --memory come from the share level (share_caps)
@@ -130,7 +136,8 @@ my $t_wait0;                          # run log: when the slot wait began (wait_
 my $unavail = 0;                      # we answered UNAVAIL (share off / memory / no docker): refused, not busy
 my $caps;                             # share_caps of the level this run's slot was taken under (take_slot)
 my $owner_stop = 0;                   # SIGUSR1: the worker's owner stopped the jobs here (rd-worker-mac)
-my $moved = 0;                        # the client sent MOVE before GO: it re-planned elsewhere (runs.log "moved")
+my $move_asked = 0;                   # the client sent MOVE (read_stdin); only the slot wait acts on it
+my $moved = 0;                        # the slot wait accepted that MOVE and said MOVED (runs.log "moved")
 my $setup_kind;                       # runs.log setup=: warm (packages there) / clone (from the store) / cold (npm install ran)
 my $node_major;                       # runs.log node=: `node -v` major on this run's PATH (undef = not known)
 my $node_v;                           # node_version()'s cached raw `node -v` output
@@ -240,10 +247,12 @@ sub main {
     $started = 1;
     $t_spawn = time;
     return detach($argv, \%env, $cwd) if defined $run_id;
+    my $c0 = child_cpu();
     my ($pid, $o_r, $e_r) = spawn($argv, \%env, $cwd, 'RELAY');
     status('STARTED');
     my $rc = supervise($pid, relay => [[$o_r, \*STDOUT], [$e_r, \*STDERR]],
                        grace => num_or($h{exit_grace}, 10), timeout => num_or($h{timeout_s}, 0));
+    cpu_end($c0);
     # the command called docker (the shim left its marker): the laptop never caches such a result
     status('DOCKER') if !$lost && -e "$tmp/docker.used";
     # the command's own exit code, the moment it ends (before cleanup): a link that dies after this
@@ -476,7 +485,7 @@ sub read_stdin {
         if    ($1 eq 'INT')  { $intr++ }
         elsif ($1 eq 'GO')   { $go = 1 }
         elsif ($1 eq 'KILL') { $killed = 1; $intr++ }    # a deliberate stop: before GO = interrupted
-        elsif ($1 eq 'MOVE') { $moved = 1 }              # the client leaves before GO to re-plan elsewhere
+        elsif ($1 eq 'MOVE') { $move_asked = 1 }         # the client asks to leave the slot wait (moved_out)
     }
     $inbuf = substr($inbuf, -8) if length $inbuf > 8;    # no valid line is longer
 }
@@ -589,15 +598,49 @@ sub sysctl_n {
     my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`;
     defined $v ? $v : "";
 }
+# A small file under ~/rr (tested code can write there), read safely: never through a symlink, never a FIFO
+# or a device (opened non-blocking, must be a regular file), at most $max bytes. -> (its text, its mtime), or
+# ("", undef) when it is missing or unsafe. Every read of a slots/ or wait/ file goes through it (a planted
+# FIFO must never hang a probe or a runner, least of all while it holds slots/.spare_lock).
+sub small_read {
+    my ($f, $max) = @_;
+    my ($fh, $v) = (undef, "");
+    sysopen($fh, $f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $fh or return ("", undef);
+    while (length $v < $max) { sysread($fh, $v, $max - length $v, length $v) or last }
+    my $m = (stat $fh)[9];
+    close $fh;
+    ($v, $m);
+}
+# The live cap of rd-tune / rd-doctor on concurrent runs (<rr>/slots.cap: one number, written atomically). -> undef
+# = no cap (no file; a planted symlink is ignored, never followed), else that number. A file that is not a
+# short regular file holding just one number (too long, garbage, a FIFO) = 0: fail closed, nothing admitted.
+sub slots_cap_read {
+    my ($f) = @_;
+    return undef if -l $f || !-e $f;
+    my ($t) = small_read($f, 65);
+    length $t <= 64 && $t =~ /^\s*(\d+)\s*$/ ? $1 + 0 : 0;
+}
+# Spare slots grow one at a time (take_slot; rd_pool PROBE spare_age_s / spare_busy): <slots>/.spare_last
+# holds the busy count after the last spare GROWTH, its mtime is when. -> (age s, count), or () when it is
+# missing, unreadable, a symlink, not a small regular file (a FIFO never blocks: opened non-blocking, like
+# share_read), not a count or dated in the future (= no gap: the old behaviour).
+sub spare_stamp {
+    my ($f) = @_;
+    my ($line, $m) = small_read($f, 16);
+    return () unless defined $m && $line =~ /^(\d{1,4})\s*$/;
+    my $c = $1 + 0;
+    my $age = time - $m;
+    $age >= 0 ? ($age, $c) : ();
+}
 # <<< share-spec
 
 # Slots 0..slots_base-1 are always usable; the extra ones up to `slots` only while the mini has room:
 # free memory (kern.memorystatus_level, the % memory_pressure prints) >= spare_min_free_pct and the
 # 1-min load per CPU <= spare_max_load. An unreadable reading counts as "no room" (fail safe).
-# Linux: same three readings from /proc ($RR_PROC overrides the dir, for tests); free level =
+# Linux: same three readings from /proc ($RR_PROC with RR_TEST=1 overrides the dir, tests); free level =
 # MemAvailable/MemTotal*100 (the kern.memorystatus_level analogue).
 sub proc_readings {
-    my $p = $ENV{RR_PROC} // '/proc';
+    my $p = test_env('RR_PROC') // '/proc';
     my $mi = slurp("$p/meminfo");
     my ($av) = $mi =~ /^MemAvailable:\s*(\d+)/m;
     my ($tot) = $mi =~ /^MemTotal:\s*(\d+)/m;
@@ -623,7 +666,7 @@ sub spare_room {
 # when unreadable (then the need_gb gate does not block: the run would otherwise never start).
 sub mem_avail_mb {
     if ($OS eq 'linux') {
-        my ($av) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemAvailable:\s*(\d+)/m;
+        my ($av) = slurp((test_env('RR_PROC') // '/proc') . "/meminfo") =~ /^MemAvailable:\s*(\d+)/m;
         return defined $av ? int($av / 1024) : undef;
     }
     my ($lvl) = sysctl_n('kern.memorystatus_level') =~ /^(\d+)/;
@@ -637,7 +680,7 @@ sub mem_avail_mb {
 # NODE_OPTIONS already sets the heap size.
 sub mem_total_mb {
     if ($OS eq 'linux') {
-        my ($kb) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
+        my ($kb) = slurp((test_env('RR_PROC') // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
         return defined $kb ? int($kb / 1024) : undef;
     }
     return sysctl_n('hw.memsize') =~ /^(\d+)/ ? int($1 / 1048576) : undef;
@@ -682,7 +725,7 @@ sub node_heap {
 
 sub logical_cpus {
     if ($OS eq 'linux') {
-        my $n = () = slurp(($ENV{RR_PROC} // '/proc') . "/cpuinfo") =~ /^processor\s*:/mg;
+        my $n = () = slurp((test_env('RR_PROC') // '/proc') . "/cpuinfo") =~ /^processor\s*:/mg;
         return $n || undef;
     }
     my ($n) = sysctl_n('hw.logicalcpu') =~ /^(\d+)/;
@@ -824,12 +867,7 @@ sub mem_ok {
     return !defined $mb || $mb >= $need;
 }
 # rd-tune's live cap on concurrent runs ($ROOT/slots.cap: a number); undef = no cap file.
-sub slots_cap {
-    my $f = "$ROOT/slots.cap";
-    return undef if -l $f;
-    my ($c) = slurp($f) =~ /^\s*(\d+)/;
-    $c;
-}
+sub slots_cap { slots_cap_read("$ROOT/slots.cap") }    # (the share-spec block: same rule as the probe)
 # The owner's share switch (the share-spec block: format, presets, caps, memory guard). RR_SHARE_FILE, else
 # /Users/Shared/rdocker/share on macOS (the owner writes it with `rdocker-share`), else $ROOT/share. No
 # file = everything (a worker without one behaves exactly as before). Read live, so a level change counts
@@ -895,14 +933,14 @@ sub join_waiters {
 sub leave_waiters { unlink $waitf if $waitf; $waitf = '' }
 sub waiters_ahead {
     return 0 unless $waitf;
-    my ($mine) = slurp($waitf) =~ /^(\d+(?:\.\d+)?)/ or return 0;
+    my ($mine) = (small_read($waitf, 64))[0] =~ /^(\d+(?:\.\d+)?)/ or return 0;
     opendir(my $dh, "$ROOT/wait") or return 0;
     my $n = 0;
     for my $f (readdir $dh) {
         next unless $f =~ /^(\d+)$/ && $1 != $$;
         my $pid = $1;
         if (!kill(0, $pid)) { unlink "$ROOT/wait/$f"; next }    # its run is gone
-        my ($t) = slurp("$ROOT/wait/$f") =~ /^(\d+(?:\.\d+)?)/;
+        my ($t) = (small_read("$ROOT/wait/$f", 64))[0] =~ /^(\d+(?:\.\d+)?)/;
         $n++ if defined $t && ($t < $mine || ($t == $mine && $pid < $$));
     }
     $n;
@@ -914,7 +952,7 @@ sub wait_line {
     my ($dir, $n, $gate, $held) = @_;
     my $old;
     for my $i (@$held) {
-        my ($slug, $t) = split ' ', slurp("$dir/$i.who");
+        my ($slug, $t) = split ' ', (small_read("$dir/$i.who", 4096))[0];
         next unless ($t // '') =~ /^\d+$/ && $t <= time;
         $old = [$i, $slug, $t] if !$old || $t < $old->[2];
     }
@@ -922,7 +960,7 @@ sub wait_line {
         $old ? $old->[1] // '?' : '?', $old ? time - $old->[2] : 0, scalar @$held, $n, waiters_ahead();
     $line .= " gate=$gate" if $gate;
     if ($old) {
-        my %f = map { /^([a-z]+)=(.*)$/ ? ($1 => $2) : () } split /\t/, (slurp("$dir/$old->[0].own") =~ /^([^\n]*)/)[0] // '';
+        my %f = map { /^([a-z]+)=(.*)$/ ? ($1 => $2) : () } split /\t/, ((small_read("$dir/$old->[0].own", 65536))[0] =~ /^([^\n]*)/)[0] // '';
         (my $hw = $f{name} || $f{id} || '') =~ s/[^A-Za-z0-9._:@\/+-]/_/g;
         $line .= " howner=$hw" if $hw ne '';
     }
@@ -976,6 +1014,58 @@ sub share_gate {
     ($n, $base);
 }
 
+# Spare slots grow one at a time (2026-11-25). load1 lags a burst by about a minute, so every run arriving
+# at once saw room and took a spare slot (nickmbp ran 8 jobs at load 31.8 on 18 threads). A spare index
+# (>= base) is only taken under the worker-wide flock slots/.spare_lock; slots/.spare_last (spare_stamp)
+# holds the busy count after the last GROWTH and its time. Inside spare_gap_s of it (header; rr_spare_gap_s,
+# 60; 0 = off, the old behaviour) a spare admission may only REFILL up to that count, and a refill never
+# stamps (steady turnover never moves the gap); a GROWTH waits for the gap to pass. Once it has passed (or
+# with no readable stamp) the refill credit has expired too: the next spare admission is a growth - let in,
+# and it stamps (now, its busy count). Busy = held slot locks 0..n-1, the probe's slots_busy (rd_pool's
+# open_slots applies the same rule to the probe's spare_age_s / spare_busy). Base slots never take the lock.
+# -> undef (no spare admission now) or {fh => the spare lock (none when off / unopenable: no gap),
+# grow => the busy count to stamp once the slot is ours}.
+sub slot_held { my $fh; sysopen($fh, $_[0], O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $fh or return 0; !flock($fh, LOCK_SH | LOCK_NB) }
+sub spare_gate {
+    my ($dir, $n, $deadline) = @_;
+    my $gap = num_or($h{spare_gap_s}, 60);
+    return {} unless $gap > 0;
+    my $lf = "$dir/.spare_lock";
+    unlink $lf if -l $lf;
+    sysopen(my $sl, $lf, O_RDWR | O_CREAT | O_NOFOLLOW, 0600) or return {};    # fail safe: no gap
+    # never waited for unbounded (tested code can hold it): one try at once, then retries for up to 2 s, never
+    # past the queue deadline (checked before each retry; no sleep outlasts it); still busy = no spare slot
+    # this pass (the wait goes on, and ends at its deadline)
+    my $until = time + 2 < $deadline ? time + 2 : $deadline;
+    until (flock($sl, LOCK_EX | LOCK_NB)) {
+        return {} unless $!{EWOULDBLOCK} || $!{EAGAIN};    # cannot lock it at all (a FIFO): no gap
+        my $left = $until - time;
+        return undef if $left <= 0;
+        sleep($left < 0.05 ? $left : 0.05);
+    }
+    if (time >= $deadline) { close $sl; return undef }    # got it only at/after the deadline: no admission
+    my ($age, $mark) = spare_stamp("$dir/.spare_last");
+    my $after = 1 + grep { slot_held("$dir/$_") } 0 .. $n - 1;
+    return $after <= $mark ? { fh => $sl, mark => $mark } : undef if defined $age && $age < $gap;
+    return { fh => $sl, grow => $after };
+}
+# Once the spare slot is ours (spare lock still held): recount. A base admission (never under the spare lock)
+# may have landed since spare_gate counted: a refill that now exceeds the stamped count would be a growth -
+# -> 0 (give the slot back and wait); a growth stamps the real count. -> 1 when the admission stands.
+sub spare_recheck {
+    my ($dir, $n, $sg) = @_;
+    my $busy = grep { slot_held("$dir/$_") } 0 .. $n - 1;    # ours included (its flock is another open)
+    return 0 if defined $sg->{mark} && $busy > $sg->{mark};
+    $sg->{grow} = $busy if $sg->{grow};
+    1;
+}
+sub spare_done {
+    my ($dir, $sg) = @_;
+    eval { write_file("$dir/.spare_last", "$sg->{grow}\n") } if $sg->{grow};    # unwritable: no gap next time
+    close $sg->{fh} if $sg->{fh};
+    delete $sg->{fh};
+}
+
 sub take_slot {
     my $dir = mk("$ROOT/slots");
     my $heavy0 = $h{heavy_slots};    # the fleet's count: each pass scales it afresh
@@ -993,10 +1083,25 @@ sub take_slot {
         if (!$gate && $heavy_fh) { close $heavy_fh; undef $heavy_fh }
         my @try = $gate ? (0 .. ($spare ? $n : $base) - 1) : ();
         @held = () if @try;
+        my $sg;    # spare_gate's answer, once this pass reaches the spare indexes (held over all of them)
         for my $i (@try) {
+            if ($i >= $base && !$sg) {
+                $sg = spare_gate($dir, $n, $deadline);
+                if (!$sg) {    # inside the growth gap with no refill left: no spare slot this pass
+                    push @held, grep { slot_held("$dir/$_") } $i .. $n - 1;
+                    last;
+                }
+            }
             # flock(2) == the lock `/usr/bin/lockf -k` takes; it dies with this process (even -9).
             my $fh = open_nofollow("$dir/$i", O_RDWR);
-            if (flock($fh, LOCK_EX | LOCK_NB)) {
+            my $got = flock($fh, LOCK_EX | LOCK_NB);
+            if ($got && $sg && !spare_recheck($dir, $n, $sg)) {    # over the refill limit after all
+                close $fh;                                         # give it back: no spare slot this pass
+                push @held, grep { slot_held("$dir/$_") } $i .. $n - 1;
+                last;
+            }
+            if ($got) {
+                spare_done($dir, $sg) if $sg;    # a growth stamps, then the spare lock goes
                 # Before anything else: bump the lock's mtime, then rewrite .who (with our pid).
                 # The janitor trusts a held slot's .who only when it is not older than the lock
                 # and its pid is alive, so a stale .who left by a run killed -9 never names the
@@ -1013,6 +1118,7 @@ sub take_slot {
             push @held, $i;
             close $fh;
         }
+        close $sg->{fh} if $sg && $sg->{fh};
         if ($heavy_fh) { close $heavy_fh; undef $heavy_fh }
         $waitf //= join_waiters();
         if (!defined $said || time - $said >= $every) {
@@ -1020,12 +1126,23 @@ sub take_slot {
             status(wait_line($dir, $n, $gate ? '' : $heavy_ok ? 'mem' : 'heavy', \@held));
         }
         my $left = $deadline - time;
-        if ($left <= 0) { status(sprintf 'SLOT %.1f', time - $t_wait0); status('BUSY'); fail(undef, 73) }
+        # never SLOT here: the client reads SLOT as an admission (it drops a pending move); BUSY carries the wait
+        if ($left <= 0) { status(sprintf 'BUSY %.1f', time - $t_wait0); fail(undef, 73) }
         my $nap = $left < 5 ? $left : 5;
         $nap = $every if $every < $nap;
         pump($nap);    # EOF or Ctrl-C while we wait = the user gave up
+        moved_out() if $move_asked;
         fail("laptop went away while waiting", 130) if !$stdin_open || $intr;
     }
+}
+# The client's MOVE during the slot wait (2026-11-25: the runner arbitrates a move against its slot): read
+# before a slot was taken, it ends the wait now as `moved` ("MOVED <s>": the wait here, route.log
+# mvwait_s); read after (any later pump), it changes nothing - SLOT went out first, the client stays.
+sub moved_out {
+    $moved = 1;    # the only place: a later disconnect or interrupt in the setup is abandoned-setup, not moved
+    leave_waiters();
+    status(sprintf 'MOVED %.1f', time - $t_wait0);
+    fail(undef, 73);
 }
 
 # --------------------------------------------------------------------------------- mirror
@@ -1071,6 +1188,24 @@ sub end_node_probe {    # KILL the probe's whole group (descendants too) and rea
     kill 'KILL', $pid;
     waitpid($pid, 0);
     undef $NODE_PROBE;
+}
+
+# runs.log cpu_s (2026-11-25; measured only, nothing acts on it yet) = the CPU seconds (user + system) of the
+# command's reaped descendants: POSIX times() right before and after its supervise, in the process that
+# supervises it (this runner, or the keeper of a detached run) - prepare steps are outside it; no subprocess.
+# A LOWER bound: what is never reaped here (orphans re-parented away, setsid children, Docker containers) is
+# not counted. Unreadable = `-`. (peak_mb: deferred to Phase 2 - live ps sampling removed.)
+# (declared only: main() runs before any file-level assignment down here)
+my $cpu_s;
+sub child_cpu {
+    my $clk = eval { POSIX::sysconf(POSIX::_SC_CLK_TCK()) };
+    my @t = POSIX::times();
+    $clk && $clk > 0 && @t == 5 && defined $t[4] ? ($t[3] + $t[4]) / $clk : undef;
+}
+sub cpu_end {
+    my ($c0) = @_;
+    my $c1 = child_cpu();
+    $cpu_s = $c1 - $c0 if defined $c0 && defined $c1 && $c1 >= $c0;
 }
 
 sub run_cmd {    # internal tool; its stdout goes to $out (default: our stderr, never the command's stdout)
@@ -2012,9 +2147,11 @@ sub detach {
         open STDERR, '>&', $sp{err};      # our own notes ("rrun-runner: ...") go out with its stderr
         ($stdin_open, $last_hb, $touched) = (0, time, time);
         write_slot_files() if $who;      # the slot's pid is ours now
+        my $c0 = child_cpu();
         my ($pid, $o_r, $e_r) = spawn($argv, $env, $cwd, 'RELAY');
         my $rc = supervise($pid, relay => [[$o_r, $sp{out}], [$e_r, $sp{err}]],
                            grace => num_or($h{exit_grace}, 10), timeout => num_or($h{timeout_s}, 0));
+        cpu_end($c0);
         open STDERR, '>', '/dev/null';    # the spool is final: nothing after the result
         close $_ for values %sp;
         write_rc($rc);
@@ -2203,6 +2340,8 @@ sub finish {
 # runner's own wait for a slot (the same slot wait wait_s adds; a mirror-lock wait is in prepare_s).
 # Then (2026-11-21) "spred_s=<s|->": the client's setup estimate before its overrun correction (header
 # spred_s, rd_pool.setup_base) - rd_pool's probe compares a cold prepare_s with it (ev.sover).
+# Then (2026-11-25) "cpu_s=<s|->": the command's measured CPU (a lower bound; see child_cpu above), `-` when
+# not measured.
 # Truthful labels (2026-11-11; every reader - rd_pool's PROBE, rd-doctor, rd-steward, the reporter -
 # accepts them): before GO, a client that left is `abandoned-setup` (it gave up or was killed during
 # the prepare or the slot wait), or `moved` when it said MOVE first (a deliberate re-plan elsewhere);
@@ -2226,7 +2365,7 @@ sub run_outcome {
     return $moved ? 'moved' : 'busy' if $rc == 73;
     return "refused rc=$rc" if $rc == 65 || $rc == 69;
     return 'warm' if $h{warm} && defined $t_ready && ($rc == 130 || $lost);    # rd_warm stops at READY
-    return $moved ? 'moved' : 'abandoned-setup' if $rc == 130 || $lost || $intr;
+    return 'abandoned-setup' if $rc == 130 || $lost || $intr;    # (moved: only ever with 73, moved_out)
     "error rc=$rc";
 }
 sub exit_reason {
@@ -2235,7 +2374,7 @@ sub exit_reason {
     return $unavail ? 'refused' : $moved ? 'moved' : 'busy' if $rc == 73;
     return 'refused' if $rc == 65 || $rc == 69;
     return 'warm' if $h{warm} && defined $t_ready && ($rc == 130 || $lost);
-    return $moved ? 'moved' : 'abandoned-setup' if $rc == 130 || $lost || $intr;
+    return 'abandoned-setup' if $rc == 130 || $lost || $intr;    # (moved: only ever with 73, moved_out)
     'fail';    # deps-failed, runner error
 }
 sub log_fields {
@@ -2244,10 +2383,10 @@ sub log_fields {
     (my $owner = $owner_id // '-') =~ tr/ \t/__/;
     my $setup = $setup_kind // (defined $t_ready ? 'warm' : '-');
     my $lock_s = defined $h{lock_s} ? sprintf('%.1f', $h{lock_s}) : '-';
-    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s lock_s=%s slot_s=%.1f spred_s=%s",
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s node=%s lock_s=%s slot_s=%.1f spred_s=%s cpu_s=%s",
         $run_id // '-', $owner, $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait,
         exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-', $node_major // '-',
-        $lock_s, $slot_wait, $h{spred_s} // '-';
+        $lock_s, $slot_wait, $h{spred_s} // '-', defined $cpu_s ? sprintf('%.1f', $cpu_s) : '-';
 }
 
 # Version guarantee (layer 2): $ROOT/pool_version holds the highest pool_version any client that ran

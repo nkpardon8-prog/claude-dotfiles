@@ -38,7 +38,17 @@ speed, and plain slot-minutes); plus utilization and backlog p50 / p90 over the 
 
 Headline first (owner): 1. jobs finished per hour across the pool (started runs.log commands that
 ended in the window / its hours), 2. time per job, submit to finish (route.log wall seconds of every
-rrun on both clients, cache hits included): average and median, 3. the idle-while-waiting minutes.
+rrun on both clients, cache hits included): average and median, 3. the idle-while-waiting minutes,
+4. waiting minutes per submitted job.
+
+Waiting (2026-11-25, the pool-routing Phase 1 proof): per rrun submitted in the window (route.log), the
+slot waits of the attempts that got a slot (route.log slot_s) plus the waits of attempts that MOVED off a
+worker (its runs.log rows with outcome `moved`: their slot_s, else wait_s - both windows have them, so a
+before / after compares without route.log's newer mvwait_s, printed beside as a cross-check). Free but
+waited: jobs placed on a worker the placement saw as free (route.log qpred_s 0) that then waited > 30 s /
+> 120 s for the slot, and their minutes. --client-sha SHA (repeatable, prefix) keeps only route.log rrun
+entries and moved rows whose client= is that code revision (pick each window's own revision: the clients
+on the landed code), for every route.log number in this report.
 
 Time per job (owner, 2026-11-21), comparable before / after: rrun jobs (route.log joined to runs.log)
 grouped by repo + normalized command (norm_cmd: file / path arguments, `--shard` values and the words
@@ -160,7 +170,8 @@ def parse_runs(text, worker):
                      "setup": kv.get("setup", "-"), "slot": num(kv.get("slot_s"), 0.0),
                      "lock": num(kv.get("lock_s"), 0.0), "pred": num(kv.get("pred_s")),
                      "spred": num(kv.get("spred_s")), "started": bool(STARTED.match(out)),
-                     "run": kv.get("run"), "owner": kv.get("owner")})
+                     "run": kv.get("run"), "owner": kv.get("owner"), "rev": kv.get("client"),
+                     "wait": num(kv.get("wait_s")), "has_slot": "slot_s" in kv})
     return rows
 
 
@@ -188,8 +199,30 @@ def parse_route(text, client):
         end = dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp()   # the client's local zone
         out.append({"client": client, "end": end, "host": m.group(2), "rc": int(r.group(1)), "wall": float(r.group(2)),
                     "pred": num(kv.get("pred_s")), "slot": num(kv.get("slot_s"), 0.0), "lock": num(kv.get("lock_s"), 0.0),
-                    "start": num(kv.get("start_s"))})
+                    "start": num(kv.get("start_s")), "qpred": num(kv.get("qpred_s")),
+                    "mvwait": num(kv.get("mvwait_s"), 0.0), "rev": kv.get("client")})
     return out
+
+
+def of_rev(rev, shas):
+    """Is this client= sha one of the selected code revisions (prefix match either way; no filter = yes)?"""
+    return not shas or bool(rev) and rev != "-" and any(rev.startswith(x) or x.startswith(rev) for x in shas)
+
+
+def waiting(route, runs, lo, hi, shas=None):
+    """Waiting minutes per submitted job (see the module doc): route.log slot_s + the moved attempts' waits
+    from runs.log (outcome `moved`: slot_s, else wait_s), and the free-but-waited jobs."""
+    moved = [r for r in runs if lo <= r["end"] <= hi and r["out"] == "moved" and of_rev(r["rev"], shas)]
+    slot = sum(e["slot"] for e in route)
+    mv = sum(r["slot"] if r["has_slot"] else (r["wait"] or 0.0) for r in moved)
+    free = [e for e in route if e["qpred"] == 0]
+    fw = [e for e in free if e["slot"] > 30]
+    n = len(route)
+    return {"jobs": n, "slot_min": slot / 60.0, "moved_n": len(moved), "moved_wait_min": mv / 60.0,
+            "route_mvwait_min": sum(e["mvwait"] for e in route) / 60.0,
+            "wait_min_per_job": (slot + mv) / 60.0 / n if n else None,
+            "free_placed": len(free), "free_waited_30": len(fw), "free_waited_120": sum(1 for e in fw if e["slot"] > 120),
+            "free_waited_min": sum(e["slot"] for e in fw) / 60.0}
 
 
 def join(route, runs):
@@ -548,6 +581,8 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--save", help="also write this run's JSON here (a BEFORE for --compare)")
     ap.add_argument("--compare", help="a saved BEFORE JSON: per-group change and the median change")
+    ap.add_argument("--client-sha", action="append", default=[],
+                    help="only route.log rrun entries / moved rows of this client code revision (repeatable, prefix)")
     a = ap.parse_args()
     now = dt.datetime.now().timestamp()
     hi = dt.datetime.strptime(a.until, "%Y-%m-%d %H:%M").timestamp() if a.until else now
@@ -572,7 +607,7 @@ def main():
     out_cache = {k: (None if v is None else now - v) for k, v in cache_only.items()}
     runs = [r for name, _ in workers if texts.get("runs." + name) for r in parse_runs(texts["runs." + name], name)]
     route = [e for name, _ in clients if texts.get("route." + name) for e in parse_route(texts["route." + name], name)]
-    route = [e for e in route if lo <= e["end"] <= hi]
+    route = [e for e in route if lo <= e["end"] <= hi and of_rev(e["rev"], a.client_sha)]
     join(route, runs)
     win = [r for r in runs if lo <= r["end"] <= hi]
     started = [r for r in win if r["started"]]
@@ -601,6 +636,8 @@ def main():
                        "time_mean_s": sum(walls) / len(walls) if walls else None, "time_median_s": med(walls),
                        "rrun_n": len(walls)}
     out["wasted"] = timeline(runs, fleet, lo, hi)
+    out["waiting"] = waiting(route, runs, lo, hi, a.client_sha)
+    out["client_sha"] = a.client_sha
     out["groups"] = groups(route)
     for key, md, strict in (("replay", False, False), ("replay_strict", False, True), ("replay_strict_mini_db", True, True)):
         spikes, res = replay(runs, fleet, lo, hi, a.spike_s, md, strict)
@@ -634,7 +671,15 @@ def main():
     print("3. IDLE-WHILE-WAITING: %d min, %s weighted slot-min idle%s" % (
         wa["idle_while_waiting_min"], fs(wa["idle_weighted_slot_min"]),
         "   (before: %s min, %s)" % (pw.get("idle_while_waiting_min"), fs(pw.get("idle_weighted_slot_min"))) if prev else ""))
+    wt, pwt = out["waiting"], (prev or {}).get("waiting") or {}
+    print("4. WAITING PER JOB: %s min (%d jobs; slot waits %s min + waits before a move %s min)%s" % (
+        fs(wt["wait_min_per_job"]), wt["jobs"], fs(wt["slot_min"]), fs(wt["moved_wait_min"]),
+        "   (before: %s min)" % fs(pwt.get("wait_min_per_job")) if prev else ""))
     print("\nDETAIL")
+    print("waiting%s: %d moved attempts (route.log mvwait_s: %s min); placed as free (qpred_s 0) %d, of them waited "
+          "> 30 s %d, > 120 s %d, %s min in all" % (
+              " (client %s)" % ",".join(a.client_sha) if a.client_sha else "", wt["moved_n"], fs(wt["route_mvwait_min"]),
+              wt["free_placed"], wt["free_waited_30"], wt["free_waited_120"], fs(wt["free_waited_min"])))
     print("route.log rrun entries: %(rrun)d (joined to runs.log: %(joined)d) by host %(by_host)s" % out["route"])
     print("\n| class | jobs | per worker | queue p50/p90 s | submit->finish p50/p95 s (n) | cold (clone) | cold per worker | cold setup p50 s | cold setup / est p50 (n) | cold run / pred p50 |")
     print("|---|---|---|---|---|---|---|---|---|---|")

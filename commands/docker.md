@@ -318,11 +318,16 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
   client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused|abandoned-setup|moved|warm
   setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version> node=<node major the job ran, - if unknown>
-  lock_s=<s> slot_s=<s> spred_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
+  lock_s=<s> slot_s=<s> spred_s=<s> cpu_s=<s>`; `stalled` is reserved. The two waits inside `wait_s`, apart (2026-11-13):
   `lock_s` = the client's wait for a worktree lane on its Mac (`-` from an older client), `slot_s` = the
   worker's own slot wait. `spred_s` (2026-11-21) = the client's setup estimate for that worker before
   its overrun correction, sent only when it expected a cold setup (`-` otherwise and from an older
-  client); the probe compares a cold `prepare_s` with it.
+  client); the probe compares a cold `prepare_s` with it. `cpu_s` (2026-11-25, measured only - nothing
+  acts on it yet): the command's CPU seconds (user + system of its reaped processes, POSIX times() around
+  its own supervise in the runner or the detached run's keeper; no subprocess; the prepare is not in it),
+  a LOWER bound: orphans, `setsid` children and Docker containers are not counted; `-` when not measured.
+  A peak-memory field (`peak_mb`) is deferred to Phase 2 (a live `ps` sampler was removed after three
+  review rounds; Phase 2 will use a non-blocking source such as /proc VmHWM or child rusage).
   **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
   `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
   elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`
@@ -411,18 +416,46 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   min; ...); gives up after 30 min (exit 72)`. There is no queue: the first to poll a freed lane takes it,
   and a writer can wait behind a stream of runs until its wait ends (exit 72). On a worker: always `rr_slots_base` (2)
   runs, and up to `rr_slots` (6) while the mini has room (free memory % >= `rr_spare_min_free_pct` 25
-  and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run **queues on
+  and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). **Spare slots grow one at a
+  time (2026-11-25):** load1 lags a burst by about a minute, so runs arriving together all saw room
+  (nickmbp ran 8 jobs at load 31.8 on 18 threads). A spare slot is taken under the worker-wide flock
+  `~/rr/slots/.spare_lock`; `~/rr/slots/.spare_last` holds the busy count (held slot locks) after the
+  last spare GROWTH, its mtime when. Within `rr_spare_gap_s` (60; 0 = off) of it a spare slot may only
+  be refilled up to that count (a refill never re-stamps, so steady turnover never moves the gap);
+  growing past it waits for the gap to end. After the gap the stamp's refill credit has expired too:
+  the next spare admission is a growth and stamps afresh (otherwise a stamp at the full count would
+  turn the gap off for good). A missing, unreadable, non-regular (a FIFO never blocks: read non-blocking)
+  or future-dated stamp = no gap. Base slots never take the lock, so once a spare slot is taken the runner
+  counts again and gives it back when a base admission meanwhile made the refill a growth (a growth stamps
+  that real count). The probe reports `spare_age_s` / `spare_busy`, read with the slot occupancy under a
+  shared, never-waited-for hold of that lock (busy = a spare admission right now = `0` / `0`, base slots
+  only), and placement applies the same rule (below). The runner never waits on that lock unbounded either:
+  it retries it for up to 2 s (never past the queue deadline), else no spare slot that pass. Every slots/ and
+  wait/ file the runner reads, and every file the probe reads, is read non-blocking, never through a symlink,
+  regular files only, bounded (a planted FIFO is just unreadable). A further run **queues on
   the worker the scheduler picked** (the earliest predicted finish, below) and says so: `rrun: queued on
   hp: about 2 min (2 ahead); 4 of 4 slots busy; held longest by <repo> (<owner>) for 120s; waits here up
   to 30 min, moving once if another worker becomes clearly faster`, then a short `rrun: still queued on
   hp: about 1 min (next in line); waited 1 min` every `rr_status_every_s` (60 s). **No bounce
   (2026-11-13):** the job waits there for all of `rr_wait_min` (30) → exit 73; before, a runner answered
   busy after 120 s and the job hopped to another worker (68 bounces a day, 15,025 s, one DB test 367 s
-  between hp and the laptop). While it waits, rrun re-plans every `rr_move_poll_s` (15 s); when another
-  worker's predicted finish beats the finish here (the queue from its own place in line, then setup +
-  run) by `rr_move_gain_ratio` (25 %) of it + `rr_move_min_gain_s` (30 s), it moves there ONCE (`rrun:
-  moving to w2: it finishes in about 4 min, this queue on hp in about 9 min (2 ahead); a job moves at
-  most once`; runs.log `moved`) - `rr_move_max` (1), never ping-pong. A worker that refuses (share off,
+  between hp and the laptop). While it waits, rrun re-plans `rr_move_first_s` (3 s) after the runner's
+  first WAIT, then every `rr_move_poll_s` (15 s) (2026-11-25: a job that lost the race to a slot the
+  probe showed free - concurrent clients read the same snapshot - waited 15 s before any re-plan;
+  2026-11-24 had 409 min of such waits); when another worker's predicted finish beats the finish here
+  (the queue from its own place in line, then setup + run; with no queue estimate here: the typical
+  hold x `rr_queue_overrun_x` per run up to and including this one, never 0) by `rr_move_gain_ratio`
+  (25 %) of it + `rr_move_min_gain_s` (30 s), it moves ONCE to the earliest-finishing worker that clears
+  that bar (`rrun: moving to w2: it finishes in about 4 min, this queue on hp in about 9 min (2 ahead); a
+  job moves at most once`; runs.log `moved`) - `rr_move_max` (1), never ping-pong. **The runner
+  arbitrates a move against its slot:** the client writes `MOVE` and keeps the link open; read during
+  the slot wait, the runner ends the run at once (`MOVED <s>`, exit 73, runs.log `moved`); if it had
+  already taken its slot, it ignores the MOVE, `SLOT` reaches the client first and the attempt goes on
+  (no move, never abandoned after SLOT - the give-up hand-off to this machine follows the same rule).
+  `SLOT <s>` goes out only on a real admission; a wait that runs out says `BUSY <s>` alone (its wait still
+  counts as `slot_s`, and a move or hand-off already asked for stands). runs.log `moved` is written only
+  when the runner answered `MOVED`: a MOVE read after the slot, then a dropped link, is `abandoned-setup`.
+  The moved attempt's wait goes to route.log `mvwait_s`. A worker that refuses (share off,
   no Docker) is skipped, never waited for. A run waiting for a **worktree lane** says so the same way, naming the runs that hold
   them (command, worker, how long, owner, and when its cap ends it), and waits at most the job's own cap
   (`rr_wt_wait_min` overrides) → exit **72**. The lock file is never deleted.
@@ -517,7 +550,9 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   spent in earlier attempts that did not start - a slot wait it moved away from, a lost link - so
   `push_s` is the push alone; before, the next attempt's push_s absorbed it: 120-367 s "pushes"),
   `pred_s` (the placement's predicted command seconds), `qpred_s` (2026-11-23: the placement's predicted
-  slot wait, summed over attempts and shards like `slot_s` - compare the two), `miss_x` (only when the run took over
+  slot wait, summed over attempts and shards like `slot_s` - compare the two), `mvwait_s` (2026-11-25: the
+  slot wait of attempts that moved away - a move or the give-up hand-off - from the runner's `MOVED`),
+  `miss_x` (only when the run took over
   `rr_miss_x` x that) and `client` (the dotfiles commit). lock / slot / retry are inside `start_s`. `RRUN_TIMING=1` also prints the stages
   on stderr.
   `rdocker status` has an `rrun` row (last run, runs in flight) and an `rrun job` row per run in flight.
@@ -759,11 +794,19 @@ fleet.json) is used once it answers.
   - **queue**: 0 when the worker has more open slots of the job's kind (a heavy job: a heavy slot) than
     runs already waiting there (the probe counts the runner's `wait/` queue), else when one frees up
     after those waiters got theirs. **Open slots** are what the runner really hands out now: the
-    probe's `slots_cap` (fleet slots scaled by the share level, under `~/rr/slots.cap`), of which only
+    probe's `slots_cap` (fleet slots scaled by the share level, under `~/rr/slots.cap`: one number; a
+    file that is too long or not just a number - or not a regular file - reads as 0 in the runner and the
+    probe alike, fail closed; a symlink is ignored), of which only
     `rr_slots_base` (2) while the worker has no spare room (the runner's own `spare_room`: free memory
     under `rr_spare_min_free_pct` 25 % or load per CPU over `rr_spare_max_load` 1.5, or no reading).
     Only holders of open slots count (probe `held`: slot index + age; the runner tries slots 0 .. open-1),
-    so free base slots with the spare ones held is a free worker. Shards and the `--where` `free`
+    so free base slots with the spare ones held is a free worker. Inside the **spare growth gap**
+    (probe `spare_age_s` < `rr_spare_gap_s` 60; `spare_busy` = the stamped count) the open count is that
+    count (never below the base), counted as the runner does: free base slots by index, then spare slots
+    while the held count stays within it - so placement never shows a growth slot the runner would
+    refuse, nor hides a refill it would grant; any holder's end frees one, and the gap's end (then one
+    per gap up to the cap) is an earliest growth time in the queue estimate. An older probe without the
+    fields, a gap that is over, or `rr_spare_gap_s` 0: no gap. Shards and the `--where` `free`
     column use the same count (free open slots less the runs waiting). hp's fleet slots are 6 (3 heavy)
     since 2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower than at <= 3, and 5 -> 8 slots added
     ~15 % throughput for ~30 % more per-job time; its rd-tune `slots.cap` stays 8 (the lower one wins).

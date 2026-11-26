@@ -47,6 +47,44 @@ class Parse(unittest.TestCase):
         self.assertEqual((a[0]["run"], a[0]["owner"]), ("r1", "session:a"))
 
 
+def route_line(end, wall=60.0, slot=0.0, qpred=None, mvwait=None, client="abc1234", host="hp"):
+    extra = "slot_s=%s lock_s=0 pred_s=10 client=%s" % (slot, client)
+    if qpred is not None:
+        extra += " qpred_s=%s" % qpred
+    if mvwait is not None:
+        extra += " mvwait_s=%s" % mvwait
+    return "%s %s rrun rc=0 %ss | npx tsc\t%s\n" % (dt.datetime.fromtimestamp(end).strftime("%Y-%m-%d %H:%M:%S"),
+                                                   host, wall, extra)
+
+
+class Waiting(unittest.TestCase):
+    def test_waiting_per_job_counts_moved_attempts_from_runs_log(self):
+        """2026-11-25: waiting per submitted job = route.log slot_s + the waits of attempts that moved off a
+        worker, from its runs.log `moved` rows (slot_s, else wait_s: there in both windows of a before /
+        after); free but waited = placed with qpred_s 0, then > 30 s / > 120 s; --client-sha keeps one
+        code revision's rows."""
+        route = m.parse_route(route_line(T0, slot=0, qpred=0) + route_line(T0 + 60, slot=45, qpred=0)
+                              + route_line(T0 + 120, slot=200, qpred=0, mvwait=30)
+                              + route_line(T0 + 180, slot=50, qpred=40) + route_line(T0 + 240, slot=999, client="old9999"),
+                              "this-mac")
+        runs = rows(line(T0 + 100, out="moved", prep="-", cmd="-", slot=30.0).replace("lock_s=0", "lock_s=0 client=abc1234")
+                    + line(T0 + 110, out="moved", prep="-", cmd="-").replace(" slot_s=0.0", "").replace(
+                        "lock_s=0", "wait_s=90.0 client=abc1234")
+                    + line(T0 + 120, out="moved", prep="-", cmd="-", slot=500.0).replace("lock_s=0", "lock_s=0 client=old9999"))
+        self.assertEqual([e["rev"] for e in route][-1], "old9999")
+        keep = [e for e in route if m.of_rev(e["rev"], ["abc12"])]
+        w = m.waiting(keep, runs, T0 - 10, T0 + 300, ["abc12"])
+        self.assertEqual((w["jobs"], w["moved_n"], w["free_placed"], w["free_waited_30"], w["free_waited_120"]), (4, 2, 3, 2, 1))
+        self.assertAlmostEqual(w["slot_min"], (45 + 200 + 50) / 60.0)
+        self.assertAlmostEqual(w["moved_wait_min"], (30 + 90) / 60.0)          # slot_s, else wait_s
+        self.assertAlmostEqual(w["wait_min_per_job"], (295 + 120) / 60.0 / 4)
+        self.assertAlmostEqual(w["route_mvwait_min"], 0.5)
+        self.assertAlmostEqual(w["free_waited_min"], 245 / 60.0)
+        allw = m.waiting(route, runs, T0 - 10, T0 + 300)                       # no filter: every revision
+        self.assertEqual((allw["jobs"], allw["moved_n"]), (5, 3))
+        self.assertFalse(m.of_rev("-", ["abc"]))
+
+
 class Online(unittest.TestCase):
     def test_refusals_are_never_capacity(self):
         refusing = rows(line(T0 - 600, out="busy", prep="-", cmd="-") + line(T0 - 60, out="refused rc=69"), "x")

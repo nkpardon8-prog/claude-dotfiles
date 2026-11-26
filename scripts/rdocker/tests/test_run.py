@@ -541,7 +541,7 @@ class RunTest(RunBase):
         self.assertIn("ControlMaster=no", att[0])
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log")).splitlines()
         self.assertRegex(runs[-1], r"outcome=rc=6 .*\trun=[0-9a-f-]{36} owner=\S+ cls=normal "
-                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=\S+ lock_s=[\d.]+ slot_s=[\d.]+ spred_s=\S+$")
+                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=\S+ lock_s=[\d.]+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
 
     def test_runner_header_carries_a_uuid4_run_id_and_the_180s_tolerance(self):
         class H:
@@ -1042,7 +1042,7 @@ class WorktreeLanes(RunBase):
         self.assertGreaterEqual(max(locks), 1.0)                            # the 4th's lane wait
         self.assertEqual(len(__import__("re").findall(r" slot_s=[\d.]+", route)), 4, route)
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log"))
-        self.assertEqual(len(__import__("re").findall(r" node=\S+ lock_s=[\d.]+ slot_s=[\d.]+ spred_s=\S+\n", runs)), 4, runs)
+        self.assertEqual(len(__import__("re").findall(r" node=\S+ lock_s=[\d.]+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+\n", runs)), 4, runs)
 
     def holder(self, mode="one", wait=30, tag="h", fleet="/nonexistent"):
         out, release = os.path.join(self.d, "out-" + tag), os.path.join(self.d, "rel-" + tag)
@@ -1250,7 +1250,7 @@ class WorktreeLanes(RunBase):
         self.assertGreaterEqual(float(re.search(r" slot_s=([\d.]+)", route).group(1)), 1.0, route)
         self.assertLess(float(re.search(r"\tlock_s=([\d.]+)", route).group(1)), 1.0, route)
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log"))
-        m = re.search(r" wait_s=([\d.]+) .* lock_s=([\d.]+) slot_s=([\d.]+) spred_s=\S+\n", runs)
+        m = re.search(r" wait_s=([\d.]+) .* lock_s=([\d.]+) slot_s=([\d.]+) spred_s=\S+ cpu_s=\S+\n", runs)
         self.assertGreaterEqual(float(m.group(3)), 1.0, runs)
         self.assertLess(float(m.group(2)), 1.0, runs)
         self.assertGreaterEqual(float(m.group(1)), float(m.group(3)))      # wait_s keeps its meaning (both)

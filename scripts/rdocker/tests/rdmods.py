@@ -95,6 +95,8 @@ def child_env(home, *bins, **extra):
     e.update(HOME=home, RDOCKER_HOME=home, PATH=safe_path(*bins))
     # rr_runner.pl / the pool PROBE read the owner's share switch (/Users/Shared/rdocker/share on a
     # Mac) and manage a real /opt/homebrew/bin/colima: a test sees neither unless it asks for them.
+    # RR_TEST=1: the runner and the PROBE honour their /proc fake (RR_PROC) only with it.
+    e.update(RR_TEST="1")
     e.update(RR_SHARE_FILE=os.path.join(TEST_HOME, "no-share-file"),
              RR_COLIMA=os.path.join(TEST_HOME, "no-colima"))
     # The share level's memory guard and RAM cap read this Mac's live memory pressure, free memory and

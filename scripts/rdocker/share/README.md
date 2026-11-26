@@ -228,6 +228,13 @@ successor (same repo + argv, same owner session or any) arriving within 10 min: 
 the in-flight identical run" feature could save. **Worker contention** - per worker, the same command's
 run time by the mean slots busy during it (<= 3 / 4-6 / 7+) and the median slowdown over the groups.
 
+**Waiting per job** (2026-11-25, headline 4; the pool-routing Phase 1 before / after): per rrun submitted,
+its slot waits (route.log `slot_s`) plus the waits of attempts that moved off a worker (that worker's
+runs.log `moved` rows: `slot_s`, else `wait_s` - in both windows, so the comparison never needs route.log's
+newer `mvwait_s`, shown beside as a cross-check), and the "free but waited" jobs (placed with
+`qpred_s` 0, then waited > 30 s / > 120 s, and their minutes). `--client-sha SHA` (repeatable, prefix)
+keeps only route.log entries and moved rows from that client code revision: give each window its own.
+
 **Log cache.** Every fetched log is merged into `~/.local/state/rdocker/logcache/<runs.W|route.C>.log`
 (append-only, deduped by record, never loses a line), and the report reads that copy. A machine that does
 not answer is read from the cache alone and shown as `CACHE ONLY` with the age of its newest line. The
@@ -239,4 +246,5 @@ cache; `--cache ''` turns it off. The cache dir has the `--logs` layout, so `--l
 python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-measure.py --since "2026-11-21 22:30" --until "2026-11-22 08:30"
 python3 .../rd-measure.py --hours 10 --keep /tmp/logs     # the last 10 h, logs saved; --logs DIR re-reads them, --json
 python3 .../rd-measure.py --since ... --until ... --fleet old-fleet.json --save before.json   # pin the fleet of an old window
+python3 .../rd-measure.py --since ... --until ... --client-sha 1a2b3c4 --compare before.json  # one code revision, vs before
 ```

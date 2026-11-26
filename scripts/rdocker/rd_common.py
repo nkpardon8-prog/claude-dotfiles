@@ -126,6 +126,7 @@ DEFAULTS = {
     "rr_slots_base": 2,                # ...this many always; the rest only while the mini has room:
     "rr_spare_min_free_pct": 25,       #    free memory % (kern.memorystatus_level) at least this
     "rr_spare_max_load": 1.5,          #    and 1-min load per CPU at most this
+    "rr_spare_gap_s": 60,              #    and one more spare slot per this many s at most (0 = off; refills free)
     "rr_reconnect_wait_min": 10,       # mini unreachable before the command started: wait this long
                                        # for it to come back before running on the laptop instead
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
@@ -150,7 +151,8 @@ DEFAULTS = {
     # placement (rd_pool.rank, rd_run.Mover): a job queues on the worker with the earliest predicted
     # finish for all of rr_wait_min, and moves at most rr_move_max times to one that became clearly faster
     "rr_move_max": 1,                  # moves per job while it waits for a slot (0 = never)
-    "rr_move_poll_s": 15,              # a waiting job re-plans this often
+    "rr_move_poll_s": 15,              # a waiting job re-plans this often...
+    "rr_move_first_s": 3,              # ...first this long after its first WAIT (a lost race moves at once)
     "rr_move_gain_ratio": 0.25,        # another worker must finish this share sooner than here...
     "rr_move_min_gain_s": 30,          # ...plus this many seconds
     "rr_slow_gain_ratio": 0.25,        # a worker over its fleet.json max_cost_s goes first only when its

@@ -1136,7 +1136,8 @@ class Session:
         self.outdated = None                 # that version, when it is newer than ours: never GO
         self.ahead = 0                       # the runner's last WAIT: runs waiting ahead of this one
         self.move_to = None                  # Mover: leave the slot wait for this Host (before the slot only)
-        self.got_slot = False                # the runner's SLOT status without BUSY: it holds a slot now
+        self.move_sent = False               # MOVE written (a move or the give-up hand-off): the runner decides
+        self.got_slot = False                # the runner said SLOT (only on admission): it holds a slot now
         self.may_move = False                # a Mover watches this wait (said on the queue line)
 
     host_name = None     # the worker's name, for messages
@@ -1272,13 +1273,16 @@ class Session:
                 self.wake.set()
             self.waits += 1
             self.wait_note(rest)
-        elif word == "SLOT":             # the runner's own slot wait (taken, or given up: BUSY follows)
-            self.got_slot = True             # (a BUSY after it ends the session anyway: no move then)
-            try:
-                add_stage("slot_s", float(rest.strip()))
-                # this attempt's predicted wait, only beside its measured one (route.log qpred_s: summed
-                # over attempts and shards exactly as slot_s is, so the two compare - queue calibration)
-                add_stage("qpred_s", self.qpred_s or 0.0)
+        elif word == "SLOT":             # the runner took a slot after this wait (only ever on admission)
+            with self.go_lock:
+                self.got_slot = True
+                # the runner took its slot before it read our MOVE: it ignores the MOVE and goes on, so
+                # this attempt does too (the runner arbitrates a move against its slot; never abandoned)
+                self.move_to, self.gave_up = None, False
+            self.slot_wait(rest)
+        elif word == "MOVED":            # the runner ended its slot wait on our MOVE (no slot taken)
+            try:                             # the wait on the worker it left: route.log mvwait_s (once per
+                add_stage("mvwait_s", float(rest.strip()))   # attempt, like slot_s for one that got a slot)
             except ValueError:
                 pass
         elif word == "UNAVAIL":
@@ -1302,11 +1306,22 @@ class Session:
             self.norun = True
         elif word == "GONE":
             self.gone = rest.strip() or "its result is lost"
-        elif word == "BUSY":
+        elif word == "BUSY":             # "BUSY <s>": the slot wait ran out (no slot; a pending move stands)
+            self.slot_wait(rest)
             note("%sno slot on %s within %s" % (self.tag, self.where(), fmt_wait(wait_min(self.cfg) * 60)))
         elif word == "KEPT":
             note("the run failed; its containers stay on the Mac mini for inspection: %s "
                  "(docker ps / docker logs reach them; the janitor reaps them after 3 h idle)" % rest)
+
+    def slot_wait(self, rest):
+        """The runner's slot wait (SLOT, or BUSY when it ran out): route.log slot_s, and beside it this
+        attempt's predicted wait (qpred_s: summed over attempts and shards exactly as slot_s is, so the two
+        compare - queue calibration). A BUSY with no number (the mirror stayed in use) adds nothing."""
+        try:
+            add_stage("slot_s", float(rest.strip()))
+            add_stage("qpred_s", self.qpred_s or 0.0)
+        except ValueError:
+            pass
 
     def on_signal(self, signum, _frame):
         self.first_sig = self.first_sig or signum
@@ -1341,17 +1356,15 @@ class Session:
             return True
 
     def give_up_left(self):
-        """Seconds until we stop waiting for a slot (None = never); 0 marks gave_up (no GO after). A
-        move request (Mover) ends the wait now."""
-        if self.move_to is not None:
-            with self.go_lock:
-                if not (self.ready or self.go_sent):
-                    self.gave_up = True
-                    return 0
-        if self.give_up_s is None or self.wait_since is None:
-            return None
+        """Seconds until we leave this slot wait (None = never); 0 = leave now: a move request (Mover) or
+        the give-up hand-off (marks gave_up). Never once the runner said SLOT: it holds a slot then and
+        the attempt goes on (a pending move is dropped by that SLOT)."""
         with self.go_lock:
-            if self.ready or self.go_sent:
+            if self.ready or self.go_sent or self.got_slot:
+                return None
+            if self.move_to is not None:
+                return 0
+            if self.give_up_s is None or self.wait_since is None:
                 return None
             left = self.give_up_s - (time.monotonic() - self.wait_since)
             if left <= 0:
@@ -1362,7 +1375,8 @@ class Session:
     def writer(self):
         """Owns ssh's stdin: the frames, then a heartbeat every HEARTBEAT_S, "GO\n" once the
         runner is READY, "INT\n" after the first Ctrl-C, close (= the runner kills the command
-        group, or gives up before starting it) after the second."""
+        group, or gives up before starting it) after the second; "MOVE\n" once when this slot wait
+        is left (give_up_left 0), the link kept open for the runner's answer (MOVED or SLOT)."""
         w = self.proc.stdin
         sent_int = 0
         try:
@@ -1382,11 +1396,13 @@ class Session:
                 if self.outdated is not None and not self.go_sent:
                     break                    # closing stdin before GO: the runner starts nothing
                 left = self.give_up_left()
-                if left == 0:
-                    w.write(b"MOVE\n")      # re-planned (another worker / this machine): "moved", not abandoned
-                    w.flush()
-                    break                    # closing stdin: the runner gives up its slot wait
-                if self.ints > sent_int:
+                if left == 0 and not self.move_sent:
+                    # re-planned (another worker / this machine): "moved", not abandoned. The link stays
+                    # open: the runner ends its slot wait (MOVED, runs.log `moved`), or it has taken its
+                    # slot already, ignores the MOVE and goes on (SLOT) - and so does this attempt
+                    self.move_sent = True
+                    w.write(b"MOVE\n")
+                elif self.ints > sent_int:
                     w.write(b"INT\n")
                     sent_int = self.ints
                 elif self.claim_go():
@@ -1394,7 +1410,7 @@ class Session:
                 else:
                     w.write(b".")
                 w.flush()
-                self.wake.wait(HEARTBEAT_S if left is None else min(HEARTBEAT_S, left))
+                self.wake.wait(HEARTBEAT_S if not left else min(HEARTBEAT_S, left))
         except (BrokenPipeError, OSError, ValueError):
             pass
         finally:
@@ -2716,22 +2732,28 @@ def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0,
 # ---------------------------------------------------------------------------- move (one, bounded)
 
 MOVE_MAX = 1             # rr_move_max: moves per job while it waits for a slot (never ping-pong)
-MOVE_POLL_S = 15.0       # rr_move_poll_s: how often a waiting job re-plans (one probe round each time)
+MOVE_POLL_S = 15.0       # rr_move_poll_s: how often a waiting job re-plans (one probe round each time)...
+MOVE_FIRST_S = 3.0       # rr_move_first_s: ...first this long after the attempt's first WAIT (2026-11-25: a job
+#                          that lost the race to a "free" slot - concurrent clients probe the same snapshot -
+#                          waited 15 s before any re-plan; 409 min of such waits on 2026-11-24)
+MOVE_TICK_S = 0.5        # how often the Mover looks for that first WAIT
 MOVE_GAIN_RATIO = 0.25   # rr_move_gain_ratio: another worker must finish this much sooner (of the finish here)...
 MOVE_MIN_GAIN_S = 30.0   # rr_move_min_gain_s: ...plus this, so a rough estimate never moves a job for nothing
 
 
 class Mover:
-    """Watches one attempt's slot wait (after the runner's first WAIT, before READY). Every
-    rr_move_poll_s it re-plans; when another worker's predicted finish (its eta: queue + setup + run,
-    a slow worker on its pessimistic run) beats the finish here - the queue from this job's own place
-    in line (the runner's `ahead`), then setup + run - by MOVE_GAIN_RATIO of it + MOVE_MIN_GAIN_S, it
-    asks the session to leave (MOVE: runs.log `moved`) and host_loop starts there. host_loop allows
-    rr_move_max (1) per job, so a job moves at most once."""
+    """Watches one attempt's slot wait (after the runner's first WAIT, before READY). It re-plans
+    rr_move_first_s after that first WAIT, then every rr_move_poll_s; when another worker's predicted
+    finish (its eta: queue + setup + run, a slow worker on its pessimistic run) beats the finish here -
+    the queue from this job's own place in line (the runner's `ahead`), then setup + run - by
+    MOVE_GAIN_RATIO of it + MOVE_MIN_GAIN_S, it asks the session to leave for the earliest such worker
+    (MOVE: runs.log `moved`; the runner refuses it once it holds a slot) and host_loop starts there.
+    host_loop allows rr_move_max (1) per job, so a job moves at most once."""
 
     def __init__(self, ctx, h, lane):
         self.ctx, self.h, self.lane = ctx, h, lane
         self.poll = float(ctx.cfg.get("rr_move_poll_s", MOVE_POLL_S))
+        self.first = float(ctx.cfg.get("rr_move_first_s", MOVE_FIRST_S))
         self.ratio = float(ctx.cfg.get("rr_move_gain_ratio", MOVE_GAIN_RATIO))
         self.gain = float(ctx.cfg.get("rr_move_min_gain_s", MOVE_MIN_GAIN_S))
         self.stopped = threading.Event()
@@ -2751,7 +2773,12 @@ class Mover:
             h = self.h                                   # not answering now: what the first plan said, less the wait
             waited = time.monotonic() - (s.wait_since or time.monotonic())
             return max(0.0, (h.queue_s or 0.0) - waited) + (h.setup_s or 0.0) + (h.rank_s or h.run_s or 0.0)
-        q = 0.0 if h.state == "free" else rd_pool.queue_wait(h, self.ctx.job, ahead=s.ahead) or 0.0
+        q = 0.0 if h.state == "free" else rd_pool.queue_wait(h, self.ctx.job, ahead=s.ahead)
+        if q is None:
+            # no estimate (no slot of its kind seen now): never "no wait" - a typical hold per run up to
+            # and including this one (a real estimate, even a zero one, is used as it is)
+            x = rd_pool._num((h.cfg or {}).get("rr_queue_overrun_x"), rd_pool.QUEUE_OVERRUN_X)
+            q = rd_pool.holder_typ(h) * x * (s.ahead + 1)
         return q + h.setup_s + (h.rank_s or h.run_s or 0.0)
 
     def candidate(self, s):
@@ -2762,26 +2789,31 @@ class Mover:
         except Exception:            # a fleet that changed under us: stay
             return None, None, None
         here = self.here_finish(p, s)
-        for c in p.hosts:            # in finish order: the first other worker with an eta is the best one
+        best = None                  # the earliest finish that clears the gain rule (rank() is not purely
+        for c in p.hosts:            # by finish: this Mac's own worker goes first while free, so look at all)
             if c.name == self.h.name or c.eta is None or c.state not in ("free", "busy"):
                 continue
-            if c.eta <= here * (1.0 - self.ratio) - self.gain:
-                return c, here, p
-            if rd_pool.is_own(c):    # this Mac's own worker ranks first while free, not by finish: look on
-                continue
-            break
-        return None, here, p
+            if c.eta <= here * (1.0 - self.ratio) - self.gain and (best is None or c.eta < best.eta):
+                best = c
+        return best, here, p
 
     def watch(self):
-        while not self.stopped.wait(self.poll):
+        due = None                       # the next re-plan (monotonic): rr_move_first_s after the first WAIT
+        tick = min(MOVE_TICK_S, self.poll)
+        while not self.stopped.wait(tick if due is None else max(0.0, due - time.monotonic())):
             s = self.lane.session
             if s is None:
                 continue
             s.may_move = True
-            if s.wait_since is None or s.got_slot or s.ready or s.go_sent or s.done.is_set():
-                if s.got_slot or s.ready or s.go_sent or s.done.is_set():
-                    return               # it got its slot (or ended): nothing to move
+            if s.got_slot or s.ready or s.go_sent or s.done.is_set():
+                return                   # it got its slot (or ended): nothing to move
+            if s.wait_since is None:
                 continue
+            if due is None:
+                due = s.wait_since + self.first
+            if time.monotonic() < due:
+                continue
+            due = time.monotonic() + self.poll
             c, here, p = self.candidate(s)
             if c is None or self.stopped.is_set():
                 continue
@@ -3084,6 +3116,7 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
               "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
               "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
+              "spare_gap_s": cfg.get("rr_spare_gap_s", rd_pool.SPARE_GAP_S),
               "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True,
               "owner": owner_info(), "timeout_s": int(job_cap_s(cfg, job["cls"], extra.get("pred_s"))),
               "exit_grace": cfg.get("rr_exit_grace_s", 10),

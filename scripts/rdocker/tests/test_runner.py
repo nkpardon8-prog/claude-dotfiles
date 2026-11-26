@@ -31,6 +31,7 @@ WT = "0123456789ab"
 FAKE = r"""#!/bin/sh
 printf '%%s\n' "$(basename "$0") $*" >> '%(log)s'
 case "$(basename "$0") $1" in "npm ci"|"npx prisma") [ -n "$FAKE_NPM_FAIL" ] && { echo "npm ERR! boom" >&2; exit 3; } ;; esac
+case "$(basename "$0") $1" in "npm ci") [ -n "$FAKE_BURN_CPU" ] && /usr/bin/perl -e '$t = (times)[0]; 1 while (times)[0] - $t < 1.5' ;; esac
 case "$(basename "$0") $1" in
   "npm ci")
     if [ -n "$FAKE_EUSAGE" ]; then
@@ -60,6 +61,10 @@ case "$(basename "$0") $1" in "npm test"|"npm run"|"npm -s"|"npm --prefix")
   echo "cpu-env=${VITEST_MAX_WORKERS-}/${VITEST_MAX_THREADS-}/${VITEST_MAX_FORKS-}" ;; esac
 exit 0
 """
+
+
+# a command that burns ~1 s of CPU (runs.log cpu_s)
+DEMAND = "$t = (times)[0]; 1 while (times)[0] - $t < 1"
 
 
 def tar_of(members):
@@ -153,7 +158,7 @@ class RunnerTest(unittest.TestCase):
         """Feed header + tar like the laptop; when `go`, answer "<nonce> READY" with "GO\\n" (the
         exactly-once handshake). `action(p)` runs after the frames are written."""
         h = self.header(argv, tar_len=len(tar), **kw)
-        self.nonce = h["nonce"]
+        nonce = self.nonce = h["nonce"]      # (a local too: runs started at once from threads each keep theirs)
         js = json.dumps(h).encode()
         p = subprocess.Popen(["/usr/bin/perl", RUNNER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env=self.env(**(env_extra or {})))
@@ -163,7 +168,7 @@ class RunnerTest(unittest.TestCase):
         lock = threading.Lock()
 
         def read_err():
-            tag = (self.nonce + " READY\n").encode()
+            tag = (nonce + " READY\n").encode()
             while True:
                 b = os.read(p.stderr.fileno(), 65536)
                 if not b:
@@ -455,10 +460,9 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 73)
         self.assertGreaterEqual(time.time() - t0, 1.0)
         lines = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
-        self.assertEqual(len(lines), 3, r.err)
+        self.assertEqual(len(lines), 2, r.err)                     # never SLOT: no slot was taken
         self.assertRegex(lines[0], r" WAIT holder=other-repo age=4[2-4] busy=1 slots=1 ahead=0$")
-        self.assertRegex(lines[1], r" SLOT 1\.\d$")                    # its slot wait (route.log slot_s)
-        self.assertEqual(lines[2], self.nonce + " BUSY")
+        self.assertRegex(lines[1], r" BUSY 1\.\d$")                    # its slot wait (route.log slot_s)
         self.assertEqual(self.calls(), [])                          # nothing ran
         self.assertEqual(self.run_runner(["true"]).rc, 0)           # lock released => runs
 
@@ -502,6 +506,174 @@ class RunnerTest(unittest.TestCase):
                                 spare_min_free_pct=50, spare_max_load=1.0, env_extra=kw)
             self.assertEqual(r.rc, 0, r.err)
 
+    def spare_env(self):
+        """A fake Linux /proc with plenty of room (free 50 %, load 0.1 on 2 CPUs): spare_room says yes."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc, exist_ok=True)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal:       16000000 kB\nMemAvailable:   8000000 kB\n")
+        wfile(os.path.join(proc, "loadavg"), "0.10 0.10 0.10 1/100 1\n")
+        wfile(os.path.join(proc, "cpuinfo"), "processor\t: 0\n\nprocessor\t: 1\n")
+        os.makedirs(os.path.join(self.root, "slots"), exist_ok=True)
+        return dict(RR_OS="linux", RR_PROC=proc)
+
+    def spare_stamp(self, busy, age):
+        f = os.path.join(self.root, "slots", ".spare_last")
+        wfile(f, "%s\n" % busy)
+        t = time.time() - age
+        os.utime(f, (t, t))
+        return f
+
+    def test_spare_growth_gap_refill_yes_growth_no(self):
+        """2026-11-25 spare slots grow one at a time: inside spare_gap_s of the last growth (slots/.spare_last:
+        the busy count then, its mtime) a spare slot is only a REFILL up to that count - let in, the stamp
+        untouched (steady turnover never moves the gap); a GROWTH past it waits. After the gap the next spare
+        admission grows and stamps (now, its busy count); gap 0 = off; an unreadable stamp = no gap."""
+        kw = self.spare_env()
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)                    # base slot 0 held: busy 1, a spare slot = busy 2
+            run = lambda **h: self.run_runner(["true"], wait_min=0.02, slots=3, slots_base=1, env_extra=kw, **h)
+            f = self.spare_stamp(1, 5)                        # grew to 1 five s ago: busy 2 would be growth
+            self.assertEqual(run().rc, 73)
+            self.assertEqual(run(spare_gap_s=4).rc, 0)        # the gap (4 s) is over: it grows...
+            with open(f) as fh:
+                self.assertEqual(fh.read(), "2\n")            # ...and stamps busy 2, now
+            self.assertLess(time.time() - os.stat(f).st_mtime, 5)
+            f = self.spare_stamp(2, 10)                       # refill: busy 2 <= the stamped 2
+            m0 = os.stat(f).st_mtime
+            self.assertEqual(run().rc, 0)
+            self.assertEqual(os.stat(f).st_mtime, m0)         # a refill never re-stamps
+            with open(f) as fh:
+                self.assertEqual(fh.read(), "2\n")
+            f = self.spare_stamp(1, 0)
+            self.assertEqual(run(spare_gap_s=0).rc, 0)        # 0 = off: today's behaviour, no stamp written
+            with open(f) as fh:
+                self.assertEqual(fh.read(), "1\n")
+            wfile(f, "garbage\n")                             # unreadable stamp = no gap (fail safe)
+            self.assertEqual(run().rc, 0)
+            with open(f) as fh:
+                self.assertEqual(fh.read(), "2\n")
+            os.unlink(f)
+            os.symlink(os.path.join(self.d, "elsewhere"), f)  # a planted symlink: no gap, replaced, never followed
+            self.assertEqual(run().rc, 0)
+            self.assertFalse(os.path.islink(f))
+            self.assertFalse(os.path.exists(os.path.join(self.d, "elsewhere")))
+            os.unlink(f)
+            os.mkfifo(f)                                      # a planted FIFO: never blocks, = no gap
+            t0 = time.time()
+            self.assertEqual(run().rc, 0)
+            self.assertLess(time.time() - t0, 10)
+
+    def test_a_held_spare_lock_never_outlasts_the_queue_deadline(self):
+        """Round-2 fix: slots/.spare_lock is never waited for unbounded (tested code can hold it): a runner
+        that needs a spare slot retries it briefly, then waits like any queued run and ends BUSY (73) at its
+        deadline. A FIFO .who / wait file on the way never hangs it either."""
+        kw = self.spare_env()
+        slots = os.path.join(self.root, "slots")
+        os.mkfifo(os.path.join(slots, "0.who"))
+        os.makedirs(os.path.join(self.root, "wait"), exist_ok=True)
+        os.mkfifo(os.path.join(self.root, "wait", "1"))                      # pid 1: alive, never ours
+        with open(os.path.join(slots, "0"), "a") as lk, open(os.path.join(slots, ".spare_lock"), "a") as sl:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            fcntl.flock(sl, fcntl.LOCK_EX)
+            t0 = time.time()
+            r = self.run_runner(["true"], wait_min=0.03, slots=3, slots_base=1, env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 10)
+        self.assertRegex(r.err, re.escape(self.nonce) + r" BUSY \d+\.\d$")
+        self.assertEqual(self.calls(), [])
+
+    def test_spare_recheck_counts_again_once_the_spare_slot_is_ours(self):
+        """Round-1 fix: a base admission (never under the spare lock) can land between spare_gate's count and
+        the spare flock. spare_recheck recounts with the slot ours: a refill now over the stamped count gives
+        it back (0); a growth stamps the real count. (The subs run alone, cut from rr_runner.pl.)"""
+        with open(RUNNER) as f:
+            src = f.read()
+        subs = [re.search(r"^sub slot_held .*$", src, re.M).group(0),
+                re.search(r"^sub spare_recheck \{.*?^\}", src, re.M | re.S).group(0)]
+        d = os.path.join(self.d, "slots-rc")
+        os.makedirs(d)
+        held = []
+        for i in (0, 1):                                   # base slot 0 + a base admission that landed (1)
+            fh = open(os.path.join(d, str(i)), "a")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            held.append(fh)
+        self.addCleanup(lambda: [h.close() for h in held])
+        pl = ("use strict; use warnings; use Fcntl qw(:flock O_RDONLY O_RDWR O_CREAT O_NOFOLLOW O_NONBLOCK);\n"
+              + "\n".join(subs) + "\n"
+              + 'my $d = shift; my $me; sysopen($me, "$d/2", O_RDWR | O_CREAT) && flock($me, LOCK_EX) or die;\n'
+              + "for my $sg ({mark => 2}, {mark => 3}, {grow => 2}, {}) {\n"
+              + '    my $ok = spare_recheck($d, 3, $sg); print "$ok:", $sg->{grow} // "-", "\\n" }\n')
+        p = subprocess.run(["/usr/bin/perl", "-e", pl, d], capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.split(), ["0:-", "1:-", "1:3", "1:-"])
+
+    def test_spare_growth_two_runners_at_once_one_spare_slot(self):
+        """The burst case: two runs arrive at once with the base slot held and no stamp - one grows into a
+        spare slot (and stamps), the other's growth waits for the gap (here: until its wait runs out)."""
+        kw = self.spare_env()
+        out = {}
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+
+            def go(k):
+                out[k] = self.run_runner(["sleep", "3"], wait_min=0.04, slots=3, slots_base=1, env_extra=kw).rc
+            ts = [threading.Thread(target=go, args=(k,)) for k in (1, 2)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        self.assertEqual(sorted(out.values()), [0, 73], out)
+        with open(os.path.join(self.root, "slots", ".spare_last")) as fh:
+            self.assertEqual(fh.read(), "2\n")
+
+    def test_move_in_the_slot_wait_ends_it_and_after_the_slot_is_ignored(self):
+        """2026-11-25: the runner arbitrates a MOVE against its slot. Read during the slot wait (the link
+        still open), it ends the run at once: "MOVED <s>" (the wait here, route.log mvwait_s), exit 73,
+        runs.log `moved`. Read once a slot is taken it changes nothing: SLOT went out first, the client
+        stays, GO follows and the command runs."""
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+
+            def move(p):
+                end = time.time() + 10
+                while time.time() < end and b" WAIT " not in b"".join(self.err_so_far):
+                    time.sleep(0.05)
+                time.sleep(1.2)
+                p.stdin.write(b"MOVE\n")                    # stdin stays open: the runner decides
+                p.stdin.flush()
+            t0 = time.time()
+            r = self.run_runner(["true"], slots=1, wait_min=1, action=move)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 15)              # not the whole wait_min
+        m = re.search(re.escape(self.nonce) + r" MOVED (\d+\.\d)$", r.err, re.M)
+        self.assertTrue(m, r.err)
+        self.assertGreaterEqual(float(m.group(1)), 1.0)
+        self.assertNotIn(self.nonce + " SLOT", r.err)
+        self.assertIn("outcome=moved ", self.runs_log()[-1])
+        self.assertIn("exit_reason=moved ", self.runs_log()[-1])
+        self.assertEqual(self.calls(), [])
+
+        def late_move(p):
+            p.stdin.write(b"MOVE\n")                        # the slot was free: taken before this is read
+            p.stdin.flush()
+        r = self.run_runner(["sh", "-c", "echo ran"], slots=1, action=late_move)
+        self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
+        self.assertNotIn(" MOVED ", r.err)
+        self.assertIn("outcome=rc=0 ", self.runs_log()[-1])
+
+        def move_then_leave(p):                             # round-1 fix: MOVE after SLOT, then the link drops
+            end = time.time() + 10
+            while time.time() < end and b" SLOT " not in b"".join(self.err_so_far):
+                time.sleep(0.05)
+            p.stdin.write(b"MOVE\n")
+            p.stdin.flush()
+            p.stdin.close()
+        r = self.run_runner(["true"], slots=1, go=False, action=move_then_leave)
+        self.assertNotIn(" MOVED ", r.err)
+        self.assertIn("outcome=abandoned-setup ", self.runs_log()[-1])          # never a `moved` without MOVED
+        self.assertNotIn("exit_reason=moved", self.runs_log()[-1])
+
     def test_slots_cap_file_lowers_the_slot_count(self):
         """~/rr/slots.cap (rd-tune) caps `slots`; 0 drains the worker (wait, then 73)."""
         os.makedirs(os.path.join(self.root, "slots"))
@@ -516,6 +688,13 @@ class RunnerTest(unittest.TestCase):
         os.unlink(os.path.join(self.root, "slots.cap"))
         os.symlink(os.path.join(self.d, "nowhere"), os.path.join(self.root, "slots.cap"))
         self.assertEqual(self.run_runner(["true"]).rc, 0)                     # a planted link: ignored
+        os.unlink(os.path.join(self.root, "slots.cap"))
+        for bad in ("garbage\n", "1" * 65 + "\n", "2 extra\n"):             # round-3: fail closed, never "no cap"
+            wfile(os.path.join(self.root, "slots.cap"), bad)
+            self.assertEqual(self.run_runner(["true"], wait_min=0.02).rc, 73, bad)
+        os.unlink(os.path.join(self.root, "slots.cap"))
+        os.mkfifo(os.path.join(self.root, "slots.cap"))                     # a FIFO: never hangs, admits nothing
+        self.assertEqual(self.run_runner(["true"], wait_min=0.02).rc, 73)
 
     def test_heavy_jobs_hold_a_heavy_slot_too(self):
         os.makedirs(os.path.join(self.root, "slots"))
@@ -991,6 +1170,35 @@ class RunnerTest(unittest.TestCase):
     def runs_log(self):
         with open(os.path.join(self.root, "log", "runs.log")) as f:
             return f.read().splitlines()
+
+    def test_runs_log_measures_the_commands_cpu(self):
+        """2026-11-25 runs.log tail `cpu_s=`: the command's reaped CPU (times() around its own supervise: the
+        prepare's 1.5 s npm ci is not in it); one that never ran has none. (peak_mb: deferred to Phase 2.)"""
+        r = self.run_runner(["/usr/bin/perl", "-e", DEMAND], env={"FAKE_BURN_CPU": "1"})
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertIn("npm ci --no-audit --no-fund", " ".join(self.calls()))      # the prepare burned its 1.5 s
+        m = re.search(r" spred_s=\S+ cpu_s=([\d.]+)$", self.runs_log()[-1])
+        self.assertTrue(m, self.runs_log()[-1])
+        self.assertGreaterEqual(float(m.group(1)), 0.5)
+        self.assertLess(float(m.group(1)), 2.2)                                     # prepare excluded
+        os.makedirs(os.path.join(self.root, "slots"), exist_ok=True)
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            self.assertEqual(self.run_runner(["true"], wait_min=0.01).rc, 73)
+        self.assertRegex(self.runs_log()[-1], r"outcome=busy .* cpu_s=-$")
+
+    def test_rr_proc_counts_only_under_the_test_harness(self):
+        """Round-2/3: RR_PROC (a fake /proc) is honoured only with RR_TEST=1, so a worker's inherited
+        environment never redirects the readings (here: the node heap sized from MemTotal)."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 8000000 kB\nMemAvailable: 4000000 kB\n")
+        show = ["/bin/sh", "-c", 'printf "%s" "$NODE_OPTIONS"']
+        kw = dict(RR_OS="linux", RR_PROC=proc)
+        self.assertEqual(self.run_runner(show, env_extra=kw).out, "--max-old-space-size=5468")
+        r = self.run_runner(show, env_extra=dict(kw, RR_TEST=""))
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertNotEqual(r.out, "--max-old-space-size=5468")             # the fake was not read
 
     def test_a_helper_fork_hit_by_the_runners_signal_never_writes_a_second_row(self):
         """2026-11-13: 15 run ids on hp had two identical runs.log rows (all abandoned-setup in a store
@@ -1713,7 +1921,7 @@ class DetachedRuns(RunnerTest):
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
         self.assertEqual(own, [self.nonce + " ATTACHED", self.nonce + " EXIT 5"])
         line = self.runs_log()[-1]
-        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$" % rid)
+        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+ node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$" % rid)
         with open(os.path.join(self.root, "slots", "0")) as lk:
             fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)                      # slot released
         # the same run again after its end (another reattach): the rest from those offsets, then EXIT
@@ -1743,6 +1951,15 @@ class DetachedRuns(RunnerTest):
         self.until(lambda: os.path.exists(self.sp(rid, "end")), 20, "the keeper's end")
         self.until(lambda: "outcome=lost rc=" in (self.runs_log() or [""])[-1], 10, "the run log")
         self.assertIn("exit_reason=lost setup=", self.runs_log()[-1])
+
+    def test_keeper_measures_the_commands_cpu(self):
+        """A detached run's keeper supervises the command, so it takes the cpu_s reading."""
+        p, rid, st, ts = self.start(["/usr/bin/perl", "-e", DEMAND])
+        self.assertEqual(p.wait(60), 0, st["err"])
+        self.until(lambda: "outcome=rc=0" in (self.runs_log() or [""])[-1], 15, "the run log")
+        m = re.search(r" cpu_s=([\d.]+)$", self.runs_log()[-1])
+        self.assertTrue(m, self.runs_log()[-1])
+        self.assertGreaterEqual(float(m.group(1)), 0.5)
 
     def test_kill_line_cancels_at_once_as_interrupted(self):
         ready = os.path.join(self.d, "ready")
@@ -1867,7 +2084,7 @@ class DetachedRuns(RunnerTest):
         line = self.runs_log()[-1]
         self.assertRegex(line, r"^\S+ repo=\S+ wt=\S+ sha=\S+ outcome=rc=0 prepare_s=\S+ cmd_s=\S+ "
                                r"argv=/bin/sh -c exit 0\trun=%s owner=session:abc-1 cls=heavy "
-                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=- node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$" % rid)
+                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=- node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$" % rid)
         self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
         # rd_pool's probe (perl, as on a worker): the command's evidence without the v2 fields
         import rd_pool
@@ -1897,14 +2114,14 @@ class DetachedRuns(RunnerTest):
         node missing / unparseable, or the run never took a slot."""
         r = self.run_runner(["/bin/sh", "-c", "node -v"])
         self.assertEqual((r.rc, r.out), (0, "v20.0.0\n"), r.err)
-        self.assertRegex(self.runs_log()[-1], r"\trun=.* pv=- node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$")
+        self.assertRegex(self.runs_log()[-1], r"\trun=.* pv=- node=20 lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
         wfile(os.path.join(self.bin, "node"), "#!/bin/sh\necho not-a-version\n")
         r = self.run_runner(["/bin/sh", "-c", "exit 0"])
         self.assertEqual(r.rc, 0, r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
         r = self.run_runner(["/bin/sh", "-c", "exit 0"], cls="BAD")         # refused before any slot
         self.assertEqual(r.rc, 65, r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=refused .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=refused .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
 
     def hung_node(self):
         """A fake node that hangs with descendants: its own pid and two children's go to files."""
@@ -1938,7 +2155,7 @@ class DetachedRuns(RunnerTest):
         r = self.run_runner(["/bin/sh", "-c", "echo ran"], env_extra={"RR_NODE_V_S": "1"})
         self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
         self.assertLess(time.monotonic() - t0, 30)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
         self.assert_all_gone(pids)
 
     def test_a_signal_during_the_node_probe_leaves_nothing_behind(self):
@@ -1958,7 +2175,7 @@ class DetachedRuns(RunnerTest):
             self.skipTest("a node on the system PATH")
         r = self.run_runner(["/bin/sh", "-c", "echo ran"])
         self.assertEqual((r.rc, r.out), (0, "ran\n"), r.err)
-        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+$")
+        self.assertRegex(self.runs_log()[-1], r"exit_reason=pass .* node=- lock_s=\S+ slot_s=[\d.]+ spred_s=\S+ cpu_s=\S+$")
 
     def test_norun_only_from_the_runners_signed_record_else_gone(self):
         # no record of the run at all (never here, or its spool was swept): it may have run -> GONE

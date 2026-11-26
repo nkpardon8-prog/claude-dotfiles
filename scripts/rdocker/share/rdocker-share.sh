@@ -133,6 +133,40 @@ sub sysctl_n {
     my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`;
     defined $v ? $v : "";
 }
+# A small file under ~/rr (tested code can write there), read safely: never through a symlink, never a FIFO
+# or a device (opened non-blocking, must be a regular file), at most $max bytes. -> (its text, its mtime), or
+# ("", undef) when it is missing or unsafe. Every read of a slots/ or wait/ file goes through it (a planted
+# FIFO must never hang a probe or a runner, least of all while it holds slots/.spare_lock).
+sub small_read {
+    my ($f, $max) = @_;
+    my ($fh, $v) = (undef, "");
+    sysopen($fh, $f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $fh or return ("", undef);
+    while (length $v < $max) { sysread($fh, $v, $max - length $v, length $v) or last }
+    my $m = (stat $fh)[9];
+    close $fh;
+    ($v, $m);
+}
+# The live cap of rd-tune / rd-doctor on concurrent runs (<rr>/slots.cap: one number, written atomically). -> undef
+# = no cap (no file; a planted symlink is ignored, never followed), else that number. A file that is not a
+# short regular file holding just one number (too long, garbage, a FIFO) = 0: fail closed, nothing admitted.
+sub slots_cap_read {
+    my ($f) = @_;
+    return undef if -l $f || !-e $f;
+    my ($t) = small_read($f, 65);
+    length $t <= 64 && $t =~ /^\s*(\d+)\s*$/ ? $1 + 0 : 0;
+}
+# Spare slots grow one at a time (take_slot; rd_pool PROBE spare_age_s / spare_busy): <slots>/.spare_last
+# holds the busy count after the last spare GROWTH, its mtime is when. -> (age s, count), or () when it is
+# missing, unreadable, a symlink, not a small regular file (a FIFO never blocks: opened non-blocking, like
+# share_read), not a count or dated in the future (= no gap: the old behaviour).
+sub spare_stamp {
+    my ($f) = @_;
+    my ($line, $m) = small_read($f, 16);
+    return () unless defined $m && $line =~ /^(\d{1,4})\s*$/;
+    my $c = $1 + 0;
+    my $age = time - $m;
+    $age >= 0 ? ($age, $c) : ();
+}
 # <<< share-spec
 my ($mode, $f, $slots, $status, $arg) = @ARGV;
 my $os = $ENV{RR_OS} || $^O;
