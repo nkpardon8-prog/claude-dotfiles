@@ -51,8 +51,16 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 git rev-parse --abbrev-ref HEAD
-git diff main...HEAD --name-only 2>/dev/null || find . -name "*.tsx" -o -name "*.ts" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.rs" | grep -v node_modules | grep -v .git | head -200
-git diff main...HEAD 2>/dev/null || true
+# SCOPE_FILES is the one file list every phase below uses: the requested scope, else the branch diff,
+# else the full repo.
+SRC=( -name "*.tsx" -o -name "*.ts" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.rs" )
+if [ -n "$ARGUMENTS" ]; then
+  SCOPE_FILES=( $(find $ARGUMENTS -type f \( "${SRC[@]}" \) -not -path "*/node_modules/*" -not -path "*/.git/*") )
+else
+  SCOPE_FILES=( $(git diff main...HEAD --name-only --diff-filter=d 2>/dev/null) )
+  [ "${#SCOPE_FILES[@]}" -gt 0 ] || SCOPE_FILES=( $(find . -type f \( "${SRC[@]}" \) -not -path "*/node_modules/*" -not -path "*/.git/*") )
+fi
+printf '%s\n' "${SCOPE_FILES[@]}"
 ```
 
 Use TodoWrite to track candidate comments.
@@ -62,8 +70,7 @@ Use TodoWrite to track candidate comments.
 ### 2.1 History comments
 
 ```bash
-CHANGED=( $(git diff main...HEAD --name-only 2>/dev/null) )
-[ "${#CHANGED[@]}" -gt 0 ] && grep -nEi "(20[0-9]{2}-[0-9]{2}-[0-9]{2}|round [0-9]+|phase [0-9A-Z]+|\bR[0-9]+\b|review fix|see line [0-9]+|was changed|previously|used to)" -- "${CHANGED[@]}"
+[ "${#SCOPE_FILES[@]}" -gt 0 ] && grep -nEi "(20[0-9]{2}-[0-9]{2}-[0-9]{2}|round [0-9]+|phase [0-9A-Z]+|\bR[0-9]+\b|review fix|see line [0-9]+|was changed|previously|used to)" -- "${SCOPE_FILES[@]}"
 ```
 
 Matches are candidates only; read each one before reporting it.
