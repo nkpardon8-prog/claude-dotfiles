@@ -626,17 +626,19 @@ End with one line: Verdict: ship  or  Verdict: needs-fixes
 The verify **succeeded** only if codex exited 0, `codex-verify.txt` has a `Verdict:` line, and it has an `F<n> |` row for every draft finding. Then count off the file, never from memory:
 ```bash
 V="$RUN_DIR/codex-verify.txt"; T='^TAG \| [A-Z0-9_-]+ \| '
+VN="$RUN_DIR/codex-verify.norm"   # one space each side of every |, so spacing never changes a count
+sed -E 's/^[[:space:]]+//; s/[[:space:]]*\|[[:space:]]*/ | /g' "$V" > "$VN"
 C=' \| (DESIGN|IMPL|PROOF) \| '
-blocking=$(grep -cE '^[FN][0-9]+ \| (CONFIRMED|UNCERTAIN) \| BLOCKING' "$V"); tagged=$(grep -cE "$T(new|repeat)$C" "$V")
-new=$(grep -cE "${T}new$C" "$V"); repeat=$(grep -cE "${T}repeat$C" "$V")
-areas=$(grep -E "${T}new$C" "$V" | awk -F' [|] ' '{print $5}' | sort -u | paste -sd, -)
+blocking=$(grep -cE '^[FN][0-9]+ \| (CONFIRMED|UNCERTAIN) \| BLOCKING' "$VN"); tagged=$(grep -cE "$T(new|repeat)$C" "$VN")
+new=$(grep -cE "${T}new$C" "$VN"); repeat=$(grep -cE "${T}repeat$C" "$VN")
+areas=$(grep -E "${T}new$C" "$VN" | awk -F' [|] ' '{print $5}' | sort -u | paste -sd, -)
 ```
 Header tokens: `Verify: ok tagged=<tagged> blocking=<blocking> | Ledger: new=<new> repeat=<repeat> | Areas-new: <areas, or ->`; on failure only `Verify: failed`. Apply 6c to the `F`/`N` rows, rebuild Step 7 from the draft (recount `Codex-passes`/`Claude-lenses` off this run dir's sidecars), add a final `## Verify tags` section with the TAG rows verbatim, overwrite `report-final.md`, and print the 7f trailer.
 
 ### 6f. Cleanup verification temp files
 
 ```bash
-rm -f "$RUN_DIR/codex-verify-prompt.txt"
+rm -f "$RUN_DIR/codex-verify-prompt.txt" "$RUN_DIR/codex-verify.norm"
 [ -f "$RUN_DIR/ledger.txt" ] || rm -f "$RUN_DIR/codex-verify.txt"   # ledger mode keeps it: it is the tag evidence
 ```
 

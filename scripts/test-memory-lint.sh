@@ -82,8 +82,22 @@ no_canary "big" "$OUT2"
 U="$T/unreadable"; mkdir -p "$U"; printf -- '- [n](n.md)\n' > "$U/MEMORY.md"; chmod 000 "$U/MEMORY.md"
 set +e; OUT3="$(python3 "$LINT" --dir "$U" --dir "$B")"; rc=$?; set -e
 check "unreadable: exit 0" "0" "$rc"
-check "unreadable: incomplete" "  incomplete: PermissionError reading MEMORY.md" "$(printf '%s\n' "$OUT3" | sed -n 2p)"
+check "unreadable: incomplete" "  incomplete: PermissionError" "$(printf '%s\n' "$OUT3" | sed -n 2p)"
 check "unreadable: next dir scanned" "1" "$(printf '%s\n' "$OUT3" | grep -c "^== $B$")"
+
+# Hostile destinations: a NUL byte and a 260-char name component. Each is a missing link on its
+# own line, nothing is echoed, and the next dir is still scanned.
+H="$T/hostile"; mkdir -p "$H"
+LONGNAME="$CANARY$(printf 'y%.0s' $(seq 1 234)).md"
+printf -- '- [nul](%s%%00.md)\n- [long](%s)\n- [ok](ok.md)\n' "$CANARY" "$LONGNAME" > "$H/MEMORY.md"
+printf 'x\n' > "$H/ok.md"
+set +e; OUT4="$(python3 "$LINT" --dir "$H" --dir "$B")"; rc=$?; set -e
+check "hostile: exit 0" "0" "$rc"
+check "hostile: two missing links by line" "missing-link: 2
+  MEMORY.md line 1
+  MEMORY.md line 2" "$(printf '%s\n' "$OUT4" | sed -n 2,4p)"
+check "hostile: next dir scanned" "1" "$(printf '%s\n' "$OUT4" | grep -c "^== $B$")"
+no_canary "hostile" "$OUT4"
 
 # Report-only: exit 0 even on a missing dir.
 set +e; python3 "$LINT" --dir "$T/nope" >/dev/null; rc=$?; set -e

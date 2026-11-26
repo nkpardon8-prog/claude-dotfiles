@@ -66,6 +66,16 @@ def local_links(text: str) -> list[tuple[int, str]]:
     return links
 
 
+def resolve_file(d: Path, dest: str) -> Path | None:
+    """The resolved path when dest names an existing file, else None. Never raises: a NUL byte,
+    an over-long name or a permission error just means the link does not resolve."""
+    try:
+        target = (d / dest).resolve()
+        return target if target.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
 def strip_value(raw: str) -> str:
     return re.sub(r"\s+#.*$", "", raw).strip().strip("'\"")
 
@@ -107,10 +117,11 @@ def lint_dir(d: Path, now: float) -> dict[str, list[str]]:
         raw = index.read_bytes()
         text = raw.decode("utf-8", errors="replace")
         for n, dest in local_links(text):
-            target = (d / dest).resolve()
-            linked.add(target)
-            if not target.is_file():
+            target = resolve_file(d, dest)
+            if target is None:
                 found["missing-link"].append(f"{INDEX} line {n}")
+            else:
+                linked.add(target)
         if len(raw) > MAX_INDEX_BYTES:
             found["index-size"].append(f"{INDEX} is {len(raw)} bytes (max {MAX_INDEX_BYTES})")
         for n, line in enumerate(text.splitlines(), 1):
@@ -121,7 +132,7 @@ def lint_dir(d: Path, now: float) -> dict[str, list[str]]:
     archive = d / ARCHIVE
     if archive.is_file():
         text = archive.read_text(encoding="utf-8", errors="replace")
-        linked.update((d / dest).resolve() for _, dest in local_links(text))
+        linked.update(t for t in (resolve_file(d, dest) for _, dest in local_links(text)) if t)
 
     for note in sorted(p for p in d.iterdir() if is_note(p)):
         if note.resolve() not in linked:
@@ -148,9 +159,9 @@ def main() -> int:
             continue
         try:
             results = lint_dir(d, now)
-        except OSError as exc:
-            where = Path(exc.filename).name if getattr(exc, "filename", None) else "?"
-            print(f"  incomplete: {type(exc).__name__} reading {where}")
+        except (OSError, ValueError) as exc:
+            # Exception text and filenames can carry private index content: print the class only.
+            print(f"  incomplete: {type(exc).__name__}")
             continue
         for check, items in results.items():
             print(f"{check}: {len(items)}")

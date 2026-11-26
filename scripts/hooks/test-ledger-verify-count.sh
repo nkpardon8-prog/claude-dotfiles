@@ -3,7 +3,7 @@
 # verbatim from commands/codex-review.md, on synthetic verify output. An unresolved high-risk
 # finding (UNCERTAIN | BLOCKING) must count as blocking, or bank-review would bank the round clean.
 set -euo pipefail
-DOC="$(cd "$(dirname "$0")/../.." && pwd)/commands/codex-review.md"
+DOC="${DOC:-$(cd "$(dirname "$0")/../.." && pwd)/commands/codex-review.md}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 BLOCK="$(awk '/^V="\$RUN_DIR\/codex-verify.txt"/{on=1} on{print} on&&/^areas=/{exit}' "$DOC")"
 [ -n "$BLOCK" ] || { echo "FAIL could not extract the count block"; exit 1; }
@@ -24,6 +24,11 @@ N1 | CONFIRMED | NONBLOCKING | MINOR LOGIC a.ts:3 naming | -
 TAG | CLAIM-TOTAL | repeat | IMPL | server/src/claims | wrong total
 Verdict: needs-fixes"
 run "final-sweep uncertain blocking" "1 0" "N1 | UNCERTAIN | BLOCKING | CRITICAL SECURITY phi.ts:9 logs name | trace: req -> logger.info(patient) -> stdout
+Verdict: needs-fixes"
+run "spacing around pipes" "2 2" "F1 | UNCERTAIN  | BLOCKING | - | trace: od write retried without key -> duplicate procedure
+  F2|CONFIRMED|BLOCKING|-|ran npm test -> fails
+TAG  |  OD-WRITE-REPLAY | new |IMPL| server/src/od | replay
+TAG | CLAIM-X | repeat | PROOF | server/src/claims | weak test
 Verdict: needs-fixes"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
