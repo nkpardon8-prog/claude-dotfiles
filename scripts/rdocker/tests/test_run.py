@@ -560,6 +560,23 @@ class RunTest(RunBase):
         self.assertIn("ControlMaster=no", rd_run.ssh_opts(mux=False))
         self.assertNotIn("ControlMaster=auto", rd_run.ssh_opts(mux=False))
 
+    def test_a_pool_heavy_job_carries_its_heavy_cap_fields(self):
+        """A pool job sends cls / need_gb / heavy_slots / mem_gb (the runner's RAM-sized heavy cap and its
+        mem_gb fallback); --host / a one-worker fleet (pool False) keeps the plain slot logic (known gap)."""
+        class H:
+            cfg = dict(rd_common.DEFAULTS, host="x")
+            entry = {"name": "hp", "heavy_slots": 6, "mem_gb": 32}
+        wt = {"slug": "s", "wt12": "w", "sha": "0" * 40, "relcwd": ""}
+        heavy = {"cls": "heavy", "need_gb": 8}
+        h = json.loads(rd_run.runner_frames(H, wt, ["true"], {}, [], b"", [], [], heavy, True)[0][3])
+        self.assertEqual((h["cls"], h["need_gb"], h["heavy_slots"], h["mem_gb"]), ("heavy", 8, 6, 32))
+        h = json.loads(rd_run.runner_frames(H, wt, ["true"], {}, [], b"", [], [], heavy, False)[0][3])
+        self.assertNotIn("heavy_slots", h)                              # base behaviour (deferred gap)
+        H.entry = dict(H.entry, mem_gb=1e20)                            # never on the wire in exponent form
+        h = json.loads(rd_run.runner_frames(H, wt, ["true"], {}, [], b"", [], [], heavy, True)[0][3])
+        self.assertNotIn("mem_gb", h)
+        self.assertEqual(h["heavy_slots"], 6)
+
     def test_shallow_clone_push_refused_says_why(self):
         shallow = os.path.join(self.d, "shallow")
         self.git("clone", "-q", "--depth", "1", "file://" + self.wt, shallow)

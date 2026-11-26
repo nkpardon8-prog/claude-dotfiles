@@ -698,14 +698,67 @@ class RunnerTest(unittest.TestCase):
 
     def test_heavy_jobs_hold_a_heavy_slot_too(self):
         os.makedirs(os.path.join(self.root, "slots"))
+        big = dict(RR_OS="linux", RR_TEST="1", RR_PROC=self.meminfo(64 << 20))   # a 64 GB worker: RAM never bites
         with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
-            r = self.run_runner(["true"], slots=2, heavy_slots=1, cls="heavy", wait_min=0.02)
+            r = self.run_runner(["true"], slots=2, heavy_slots=1, cls="heavy", wait_min=0.02, env_extra=big)
             self.assertEqual(r.rc, 73, r.err)
-            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=1, cls="normal").rc, 0)
-            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=2, cls="heavy").rc, 0)
-        self.assertEqual(self.run_runner(["true"], heavy_slots=1, cls="heavy").rc, 0)
+            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=1, cls="normal", env_extra=big).rc, 0)
+            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=2, cls="heavy", env_extra=big).rc, 0)
+        self.assertEqual(self.run_runner(["true"], heavy_slots=1, cls="heavy", env_extra=big).rc, 0)
         self.assertEqual(self.run_runner(["true"], heavy_slots="x").rc, 65)
+
+    def meminfo(self, total_kb):
+        """A fake /proc (RR_PROC, with RR_OS=linux RR_TEST=1) of a worker with total_kb of RAM, half free."""
+        proc = os.path.join(self.d, "proc-%d" % total_kb)
+        os.makedirs(proc, exist_ok=True)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: %d kB\nMemAvailable: %d kB\n" % (total_kb, total_kb // 2))
+        wfile(os.path.join(proc, "loadavg"), "0.10 0.10 0.10 1/100 1\n")
+        wfile(os.path.join(proc, "cpuinfo"), "processor : 0\nprocessor : 1\n")
+        return proc
+
+    def test_heavy_slots_are_a_ceiling_the_live_ram_lowers(self):
+        """2026-11-25 (hp froze at 3 heavy x 8 GB = all of its 24 GB): the runner hands out at most
+        floor((total GB - 4) / 8) heavy slots, fleet heavy_slots being only the ceiling - hp's 6 gives 2 heavy
+        jobs at 24 GB and 3 once it has 32 GB, with no fleet edit; a worker whose RAM holds none refuses at once."""
+        os.makedirs(os.path.join(self.root, "slots"))
+        hv = dict(slots=6, heavy_slots=6, cls="heavy", wait_min=0.02)
+        held = []
+        for i in (0, 1):
+            fh = open(os.path.join(self.root, "slots", "heavy-%d" % i), "a")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            held.append(fh)
+        self.addCleanup(lambda: [h.close() for h in held])
+        linux = dict(RR_OS="linux", RR_TEST="1")
+        r = self.run_runner(["true"], env_extra=dict(linux, RR_PROC=self.meminfo(24411000)), **hv)   # 24 GB: 2, both held
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertIn("%s BUSY" % self.nonce, r.err)                         # waited for one, never refused
+        self.assertEqual(self.run_runner(["true"], env_extra=dict(linux, RR_PROC=self.meminfo(32 << 20)), **hv).rc, 0)  # 32 GB: 3
+        r = self.run_runner(["true"], env_extra=dict(linux, RR_PROC=self.meminfo(32 << 20)), need_gb=12, **hv)
+        self.assertEqual(r.rc, 73, r.err)                                    # a 12 GB job: (32 - 4) / 12 = 2, held
+        t0 = time.time()
+        r = self.run_runner(["true"], env_extra=dict(linux, RR_PROC=self.meminfo(8 << 20)), **dict(hv, wait_min=5))
+        self.assertEqual(r.rc, 73, r.err)                                    # 8 GB: no heavy slot at all ...
+        self.assertIn("%s UNAVAIL ram-total" % self.nonce, r.err)           # ... refused, never a 5 min wait
+        self.assertIn("8192 MB of RAM", r.err)
+        self.assertLess(time.time() - t0, 10)
+        # fleet heavy_slots 0: refused at once too, and says so
+        t0 = time.time()
+        r = self.run_runner(["true"], env_extra=dict(linux, RR_PROC=self.meminfo(64 << 20)), **dict(hv, heavy_slots=0, wait_min=5))
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertIn("%s UNAVAIL heavy-slots" % self.nonce, r.err)
+        self.assertIn("fleet heavy_slots is 0", r.err)
+        self.assertLess(time.time() - t0, 10)
+        # an unreadable total never restores the ceiling 6: the fleet mem_gb decides, else at most 1
+        blind = dict(linux, RR_PROC=os.path.join(self.d, "no-proc"))
+        r = self.run_runner(["true"], env_extra=blind, mem_gb=24, **hv)
+        self.assertEqual(r.rc, 73, r.err)                                    # mem_gb 24: 2, both held
+        self.assertIn("%s BUSY" % self.nonce, r.err)
+        self.assertEqual(self.run_runner(["true"], env_extra=blind, mem_gb=32, **hv).rc, 0)       # mem_gb 32: 3
+        r = self.run_runner(["true"], env_extra=blind, **hv)
+        self.assertEqual(r.rc, 73, r.err)                                    # nothing known: 1 (held)
+        self.assertIn("%s BUSY" % self.nonce, r.err)
+        self.assertEqual(self.run_runner(["true"], mem_gb="x", **hv).rc, 65)
 
     def test_need_gb_is_rechecked_before_the_slot(self):
         """The client's probe can race another client: the runner re-checks free memory."""
@@ -1610,9 +1663,12 @@ class RunnerTest(unittest.TestCase):
         with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
             hv = dict(slots=4, heavy_slots=2, cls="heavy", wait_min=0.02)
-            self.assertEqual(self.run_runner(["true"], env_extra=self.share("high", self.AIR), **hv).rc, 0)   # 12 GB: 2
-            r = self.run_runner(["true"], env_extra=self.share("medium", self.AIR), **hv)
+            # nickmbp (64 GB: its RAM holds 7 heavy jobs, so the fleet's 2): the share level's RAM cap lowers it
+            self.assertEqual(self.run_runner(["true"], env_extra=self.share("ram=12"), **hv).rc, 0)   # 12 GB: 2
+            r = self.run_runner(["true"], env_extra=self.share("ram=8"), **hv)
             self.assertEqual(r.rc, 73, r.err)                                # 8 GB: 1 heavy (held)
+            r = self.run_runner(["true"], env_extra=self.share("high", self.AIR), **hv)
+            self.assertEqual(r.rc, 73, r.err)                                # the Air (16 GB): its RAM holds 1 (held)
         t0 = time.time()
         r = self.run_runner(["true"], env_extra=self.share("cpu=100 ram=4", self.AIR), slots=4, heavy_slots=1,
                             cls="heavy", wait_min=5)

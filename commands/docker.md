@@ -728,8 +728,9 @@ fleet.json) is used once it answers.
 
 - **Memory per job (2026-11-21).** A job plans light 1 / normal 2 / db 2 / build 3 / heavy 6 GB; a db job that
   also type-checks (any `run-guard-tier.mjs`, or tsc / typecheck in the same command) plans **8 GB**, and a
-  worker whose fleet `mem_gb` minus 1 is under a job's need never takes it (`--where`: "needs about 8 GB; it
-  has 8.5 GB"). A guard tier placed as a 2 GB db job swapped the 8.5 GB laptop to load 37 for 90 minutes.
+  worker whose total RAM minus 1 GB is under a job's need never takes it (`--where`: "needs about 8 GB; it
+  has 8.5 GB"). The total is the probe's live reading (`mem_total_mb`, 2026-11-25), so a RAM upgrade counts at
+  once; fleet `mem_gb` is only the fallback for a worker that did not answer and for an unprobed plan. A guard tier placed as a 2 GB db job swapped the 8.5 GB laptop to load 37 for 90 minutes.
   Since 2026-11-24 a guard tier (`run-guard-tier.mjs`) is a **heavy** job, not db: dentall verified its
   needs-install members use no database, Docker or outside network, so a worker without Docker may take it.
   It still plans 8 GB; chained with a DB command it stays db.
@@ -743,7 +744,23 @@ fleet.json) is used once it answers.
   idle while hp queued for many minutes. Now a cold worker is a candidate like any other and competes
   on its finish estimate, which carries its cold setup (see **setup** under Placement). No field = no limit. A heavy job never goes to a worker with `heavy_slots: 0` (it could
   never get a slot there) - read from fleet.json too, so it holds for a worker that did not answer the
-  probe and for an unprobed plan (one worker, `--host`). A worker that fails one is **not a candidate at all** for that
+  probe and for an unprobed plan (one worker, `--host`) - nor to one whose probe `heavy_cap` is 0 (its RAM or
+  share level allows none, below).
+- **Heavy slots size themselves from RAM (2026-11-25).** Fleet `heavy_slots` is only a **ceiling**: a worker
+  hands out at most floor((total RAM GB - 4) / 8) heavy slots (4 GB kept for the OS and ordinary jobs, 8 GB
+  per heavy job, or the job's `need_gb` when larger; the total rounded up to whole GB, since Linux reads a
+  24 GB box as ~23.3), never below 0, read live on every pass of the slot wait. 24 GB -> 2, 32 -> 3, 40 -> 4,
+  64 -> 7 (then the ceiling). A total that cannot be read never restores the bare ceiling: the same rule
+  runs on fleet `mem_gb` (sent with the job and the probe request), and with that unknown too at most 1. So
+  a RAM upgrade needs no fleet edit: hp is set to the ceiling 6 and its RAM
+  decides (hp froze on 2026-11-25 with 3 heavy x 8 GB = all of its 24 GB). The rule has one home,
+  `ram_heavy_cap` in `rr_runner.pl`'s share-spec block: the runner's `share_caps` applies it first (the share
+  level can only lower it further), and the pool probe, which splices that block, reports the result as
+  `heavy_cap` (plus `heavy_ram_cap`, the RAM step alone, so `--where` says which one bit); the probe request
+  carries the job's `need_gb`, so both count a larger job the same way. A heavy job sent where no heavy slot
+  can exist is refused at once with 73 and the reason: `UNAVAIL heavy-slots` (fleet 0), `UNAVAIL ram-total`
+  ("this worker has N MB of RAM") or `UNAVAIL ram-cap` (the share level). Known gap (pre-existing, deferred):
+  `--host` and a one-worker fleet send no heavy fields, so there the runner applies no heavy cap at all. A worker that fails one is **not a candidate at all** for that
   job: not ranked, not the wait host, no shard, no hedge. `rrun --where` lists it as `never <why>`.
   **SIGILL is measured too (2026-11-13), no field:** the probe reads each worker's x86-64 level (1-4)
   from its CPU flags (`/proc/cpuinfo`, macOS `sysctl machdep.cpu`; v2 = cx16 pni ssse3 sse4_1 sse4_2
@@ -807,8 +824,8 @@ fleet.json) is used once it answers.
     refuse, nor hides a refill it would grant; any holder's end frees one, and the gap's end (then one
     per gap up to the cap) is an earliest growth time in the queue estimate. An older probe without the
     fields, a gap that is over, or `rr_spare_gap_s` 0: no gap. Shards and the `--where` `free`
-    column use the same count (free open slots less the runs waiting). hp's fleet slots are 6 (3 heavy)
-    since 2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower than at <= 3, and 5 -> 8 slots added
+    column use the same count (free open slots less the runs waiting). hp's fleet slots are 6 (heavy: the
+    ceiling 6 since 2026-11-25, so its RAM decides - 2 at 24 GB, 3 at 32 GB) since 2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower than at <= 3, and 5 -> 8 slots added
     ~15 % throughput for ~30 % more per-job time; its rd-tune `slots.cap` stays 8 (the lower one wins).
     Each holder holds
     its slot for its command's median **hold** there (prepare + command; probe `jobs[].hmed`, else the
@@ -896,7 +913,8 @@ user with its own sshd (key-only, Tailscale-only); nothing touches the owner's a
   (exit 73 + `UNAVAIL share=off`, also when switched off while a job waits for a slot), so rrun moves to
   the next worker. Presets: `low` = 25 % of the cores + a RAM cap of 25 % of the memory, `medium` = 75 % +
   50 %, `high` = all + 75 %; custom = the given CPU % and GB. The CPU % scales the slots and heavy slots
-  (floor, min 1) and the cores the jobs share (fair CPU share above); the RAM cap allows one job per 2 GB
+  (floor, min 1; heavy after the RAM rule above lowered the fleet ceiling) and the cores the jobs share (fair
+  CPU share above); the RAM cap allows one job per 2 GB
   and one heavy job per 6 GB (0 = no heavy job there: heavy-ineligible like fleet `heavy_slots: 0`, and the
   runner refuses one at once with 73 + `UNAVAIL ram-cap`), caps one job's node heap at 3/4 of it, and a new job
   waits (`gate=mem`) while the `rd` user's processes already use it up; the probe's `mem_room_mb` lets the

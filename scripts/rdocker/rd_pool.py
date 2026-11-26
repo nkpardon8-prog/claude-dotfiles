@@ -551,7 +551,7 @@ def share_spec_pl():
     return re.sub(r"(?m)^\s*#.*\n", "", m.group(0)) if m else None
 
 
-# Read-only snapshot of a worker, one JSON line. stdin: {"slots", "heavy_slots", "slug",
+# Read-only snapshot of a worker, one JSON line. stdin: {"slots", "heavy_slots", "mem_gb", "need_gb", "slug",
 # "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC (with RR_TEST=1) / RR_SYS / RR_SYSCTL_* / RR_USED_MB: same
 # overrides as the runner (tests).
 PROBE = r'''
@@ -606,10 +606,14 @@ my $shs = share_spec(share_read($shf));
 my $share = $shs->{level};
 $o{share} = $share;
 my $tot_mb;
-if ($o{os} eq "linux") { my ($t) = slurp((test_env("RR_PROC") // "/proc") . "/meminfo") =~ /^MemTotal:\s*(\d+)/m; $tot_mb = int($t / 1024) if $t }
-else { my ($t) = sysctl_n("hw.memsize") =~ /^(\d+)/; $tot_mb = int($t / 1048576) if $t }
+# unrounded MB from the raw KB / bytes (the runner's mem_total_mb: ram_heavy_cap rounds)
+if ($o{os} eq "linux") { my ($t) = slurp((test_env("RR_PROC") // "/proc") . "/meminfo") =~ /^MemTotal:\s*(\d+)/m; $tot_mb = $t / 1024 if $t }
+else { my ($t) = sysctl_n("hw.memsize") =~ /^(\d+)/; $tot_mb = $t / 1048576 if $t }
+$o{mem_total_mb} = $tot_mb if $tot_mb;    # the live total RAM: eligibility judges need_gb on it (fleet mem_gb = fallback)
 my $hs = ($q->{heavy_slots} // "") =~ /^(\d+)$/ ? $1 : undef;
-my $caps = share_caps($shs, ($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1, $hs, $o{ncpu}, $tot_mb);
+# the job need_gb and the fleet mem_gb (rd_pool.heavy_fields): the heavy cap the runner will apply to this job
+my ($qneed, $qmem) = map { ($q->{$_} // "") =~ /^(\d+(?:\.\d+)?)$/ ? $1 : undef } qw(need_gb mem_gb);
+my $caps = share_caps($shs, ($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1, $hs, $o{ncpu}, $tot_mb, $qneed, $qmem);
 if ($share ne "off") {
     $o{share_cpu} = $shs->{cpu} + 0;
     $o{ram_cap_mb} = $caps->{ram_mb} if defined $caps->{ram_mb};
@@ -666,8 +670,11 @@ if (!-l "$R/wait" && opendir(my $wd, "$R/wait")) {
     for (readdir $wd) { next unless /^(\d+)$/; $nw++ if kill(0, $1) || $!{EPERM} }
 }
 $o{waiting} = $nw;
+# heavy_cap: the heavy slots the runner hands out (share_caps: fleet heavy_slots lowered to what the live RAM
+# holds, ram_heavy_cap, then the share level); heavy_ram_cap: the RAM step alone (eligibility says which one bit)
 if (defined $hs) {
     my $hc = $caps->{heavy};
+    $o{heavy_ram_cap} = ram_heavy_cap($hs, $tot_mb, $qneed, $qmem);
     $o{heavy_cap} = $hc; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $hc - 1 }
 # Mac worker, share off, no slot held at all: stop its Colima in the background (rr_runner.pl's
 # colima_stop_if_off does the same at job end). Never on Linux, never without colima installed.
@@ -1339,11 +1346,41 @@ def default_cost(cfg, cls):
     return float(_num(table.get(cls), JOB_COST_S.get(cls, 60)))
 
 
+def heavy_fields(h):
+    """-> the fleet fields the runner's / probe's heavy cap reads (rr_runner.pl ram_heavy_cap): heavy_slots
+    (the ceiling) and mem_gb (the RAM to assume when the live total cannot be read). Empty off the fleet."""
+    if h.entry is None:
+        return {}
+    hs, mg = _f(h.entry, "heavy_slots"), _f(h.entry, "mem_gb")
+    out = {"heavy_slots": hs} if isinstance(hs, int) and not isinstance(hs, bool) and hs >= 0 else {}
+    if isinstance(mg, (int, float)) and not isinstance(mg, bool) and 1 <= mg <= 65536:   # whole GB, so the wire
+        # never carries exponent notation: the runner and probe parse ^\d+(\.\d+)?$ alike
+        out["mem_gb"] = int(mg)
+    return out
+
+
+def mem_total_gb(host):
+    """-> the worker's total RAM in GB: the probe's live reading (mem_total_mb, rounded to 0.1 GB) when it
+    answered, so a RAM upgrade counts at once; else fleet.json mem_gb (an unprobed plan, a down worker); else
+    None (no limit). Unrounded: the comparison uses it as read, only messages round (gb_txt)."""
+    live = _num((host.probe or {}).get("mem_total_mb"))
+    return (live / 1024.0 if live else _num(_f(host.entry, "mem_gb"))) or None
+
+
+def gb_txt(gb):
+    """A GB amount for a message: one decimal, no ".0"."""
+    g = round(gb, 1)
+    return "%d" % g if g == int(g) else "%s" % g
+
+
 def eligibility(host, job, cost_s=None, probed=False):
     """-> None when the worker may take this job, else why not. Hard rules from its fleet entry (a
     missing field = no limit):
       classes     the job classes it takes (light / normal / heavy / db / build)
-      heavy_slots 0 (probe heavy_cap 0, also after the share switch halves it): no heavy job ever gets a slot
+      mem_gb      the job's need_gb must fit under its total RAM less 1 GB (the probe's live mem_total_mb when
+                  it answered, else this fleet value)
+      heavy_slots 0, or probe heavy_cap 0 (heavy_slots is a ceiling: the runner lowers it to what the live RAM
+                  holds, ram_heavy_cap, then the share switch scales it): no heavy job ever gets a slot
       cold_ok     false = never a job whose packages it lacks (probe warm_deps = 0): a manual
                   warm-only override. Missing / true = a cold worker competes on its eta, which
                   carries the cold setup (setup_s; 2026-11-21: no measured cold budget any more)
@@ -1356,14 +1393,16 @@ def eligibility(host, job, cost_s=None, probed=False):
     classes = _f(host.entry, "classes")
     if isinstance(classes, list) and job["cls"] not in classes:
         return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
-    mem_gb = _num(_f(host.entry, "mem_gb"))
+    mem_gb = mem_total_gb(host)
     if mem_gb and job["need_gb"] > mem_gb - 1:     # leave its OS ~1 GB: it would swap, not run
-        return "needs about %s GB; it has %s GB" % (job["need_gb"], _f(host.entry, "mem_gb"))
+        return "needs about %s GB; it has %s GB" % (job["need_gb"], gb_txt(mem_gb))
     if job["cls"] == "heavy" and (_f(host.entry, "heavy_slots") == 0 or
                                   (host.probe is not None and _num(host.probe.get("heavy_cap")) == 0)):
-        if _f(host.entry, "heavy_slots") != 0:     # the fleet has some: the share level's RAM cap allows none
-            return "has no heavy-job slot now (its share level's RAM cap is under 6 GB)"
-        return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so
+        if _f(host.entry, "heavy_slots") == 0:
+            return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so
+        if _num(host.probe.get("heavy_ram_cap")) == 0:   # the fleet has some: its live RAM holds none
+            return "has no heavy-job slot (its %s GB of RAM holds none: rr_runner.pl ram_heavy_cap)" % gb_txt(mem_gb)
+        return "has no heavy-job slot now (its share level's RAM cap is under 6 GB)"
     if not probed:
         return None
     if host.probe is not None and not host.probe.get("warm_deps") and _f(host.entry, "cold_ok") is False:
@@ -1797,9 +1836,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
         since = _f(h.entry, "history_since")
         if isinstance(since, int) and since > 0:
             r["since"] = since                      # rows before a hardware / config change: ignored
-        hs = _f(h.entry, "heavy_slots") if h.entry is not None else None
-        if isinstance(hs, int) and hs >= 0:
-            r["heavy_slots"] = hs
+        r.update(heavy_fields(h), need_gb=job["need_gb"])
         if h is home:
             r["rcache"] = rcache
         return r

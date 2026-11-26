@@ -11,7 +11,8 @@
 #        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load, spare_gap_s,
 #        cls, need_gb, heavy_slots, outputs[], owner{id, name, client}, timeout_s, exit_grace,
 #        wait_every}
-#   cls=heavy + heavy_slots: a heavy job also holds one of $ROOT/slots/heavy-<i> (flock);
+#   cls=heavy + heavy_slots: a heavy job also holds one of $ROOT/slots/heavy-<i> (flock); heavy_slots is the
+#   fleet ceiling, lowered to what the live RAM holds (ram_heavy_cap) and then by the share level;
 #   need_gb: a slot is only taken while at least that much memory is available (re-checked here,
 #   the client's probe can race another client); outputs: repo-relative build output paths,
 #   deleted from the mirror before the command runs (git clean keeps ignored files) so a stale
@@ -386,6 +387,7 @@ sub read_header {
     fail("bad cls", 65) if defined $h{cls} && $h{cls} !~ /^[a-z]+$/;
     fail("bad need_gb", 65) if defined $h{need_gb} && $h{need_gb} !~ /^\d+(\.\d+)?$/;
     fail("bad heavy_slots", 65) if defined $h{heavy_slots} && $h{heavy_slots} !~ /^\d+$/;
+    fail("bad mem_gb", 65) if defined $h{mem_gb} && $h{mem_gb} !~ /^\d+(\.\d+)?$/;
     # runs.log v2 extras (2026-11-11): the client's predicted command seconds, its code sha and pool version
     delete $h{pred_s} if defined $h{pred_s} && $h{pred_s} !~ /^\d{1,7}(\.\d+)?$/;
     delete $h{client} if defined $h{client} && $h{client} !~ /^[0-9a-f]{7,40}$/;
@@ -537,15 +539,40 @@ sub share_spec {
     }
     %v ? { level => "custom", cpu => $v{cpu} // 100, ram => $v{ram} } : $off;
 }
-# share_caps(spec, slots, heavy_slots or undef, logical cpus, RAM MB) -> what the level allows:
-#   slots, heavy   the fleet counts x cpu % (floor, at least 1; 0 stays 0), then at most one job per 2 GB of
-#                  the RAM cap and one heavy job per 6 GB (rd_pool NEED_GB; 0 = no heavy job here)
+# The heavy jobs this machine RAM holds (2026-11-25; the one home of the rule: the runner slot wait and
+# the pool probe heavy_cap both get it through share_caps). fleet.json heavy_slots is only a ceiling: each
+# heavy job reserves heavy_job_gb (or the job need_gb when larger) on top of heavy_reserve_gb for the OS and
+# the ordinary jobs, from the LIVE total RAM, so a RAM upgrade needs no fleet edit: 24 GB -> 2, 32 -> 3,
+# 40 -> 4, 64 -> 7 (then the ceiling). The total (MB, unrounded: from the raw KB / bytes) is rounded up to
+# whole GB (Linux MemTotal leaves out the kernel own memory: a 24 GB box reads ~23.3). ram_heavy_cap(fleet
+# heavy_slots or undef, total RAM MB or undef, need_gb or undef, fleet mem_gb or undef) -> the cap, never below
+# 0; no heavy_slots stays undef. An unreadable total never restores the bare ceiling: the same rule on the
+# fleet mem_gb, and with that unknown too at most 1.
+sub heavy_reserve_gb () { 4 }
+sub heavy_job_gb () { 8 }
+sub ram_heavy_cap {
+    my ($heavy, $tot, $need, $fleet_gb) = @_;
+    return $heavy unless defined $heavy;
+    $tot = $fleet_gb * 1024 if !$tot && $fleet_gb;
+    return $heavy < 1 ? $heavy : 1 unless $tot;
+    my $per = defined $need && $need > heavy_job_gb ? $need : heavy_job_gb;
+    my $g = $tot / 1024;
+    my $n = int((int($g) + ($g > int($g) ? 1 : 0) - heavy_reserve_gb) / $per);
+    $n = 0 if $n < 0;
+    $n < $heavy ? $n : $heavy;
+}
+# share_caps(spec, slots, heavy_slots or undef, logical cpus, RAM MB, need_gb or undef, fleet mem_gb or undef)
+# -> what the level allows:
+#   slots, heavy   the fleet counts (heavy: first lowered to what the RAM holds, ram_heavy_cap) x cpu % (floor,
+#                  at least 1; 0 stays 0), then at most one job per 2 GB of the RAM cap and one heavy job per
+#                  6 GB (rd_pool NEED_GB; 0 = no heavy job here)
 #   cores          logical cpus x cpu % (floor, at least 1): what the jobs together may keep busy (fair_share)
 #   ram_mb         the RAM cap: ram= GB, or the preset share of the machine; undef = none
 #   vm_cpu, vm_mem a Colima VM: 12 CPU / 24 GB x cpu % (some = 6 / 12, max = 12 / 24, as before), never more
 #                  than the cores, the RAM cap or half the machine
 sub share_caps {
-    my ($sp, $slots, $heavy, $ncpu, $tot) = @_;
+    my ($sp, $slots, $heavy0, $ncpu, $tot, $need, $fleet_gb) = @_;
+    my $heavy = ram_heavy_cap($heavy0, $tot, $need, $fleet_gb);
     my $pct = $sp->{cpu};
     my $scale = sub { defined $_[0] && $_[0] > 0 ? (int($_[0] * $pct / 100) || 1) : $_[0] };
     my $ram = defined $sp->{ram} ? $sp->{ram} * 1024
@@ -681,9 +708,9 @@ sub mem_avail_mb {
 sub mem_total_mb {
     if ($OS eq 'linux') {
         my ($kb) = slurp((test_env('RR_PROC') // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
-        return defined $kb ? int($kb / 1024) : undef;
+        return defined $kb ? $kb / 1024 : undef;
     }
-    return sysctl_n('hw.memsize') =~ /^(\d+)/ ? int($1 / 1048576) : undef;
+    return sysctl_n('hw.memsize') =~ /^(\d+)/ ? $1 / 1048576 : undef;    # unrounded MB (ram_heavy_cap rounds)
 }
 
 sub node_heap {
@@ -876,7 +903,7 @@ sub share_file { $ENV{RR_SHARE_FILE} || ($OS eq 'darwin' ? '/Users/Shared/rdocke
 sub share_now { share_spec(share_read(share_file())) }
 sub share_level { share_now()->{level} }
 sub header_slots { $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1 }
-sub caps_of { share_caps($_[0], header_slots(), $h{heavy_slots}, logical_cpus(), mem_total_mb()) }
+sub caps_of { share_caps($_[0], header_slots(), $h{heavy_slots}, logical_cpus(), mem_total_mb(), $h{need_gb}, $h{mem_gb}) }
 sub share_off {
     status('UNAVAIL share=off');
     fail("this worker's owner has turned sharing off; not taking new jobs", 73);
@@ -1000,11 +1027,20 @@ sub share_gate {
     my $fleet_heavy = $h{heavy_slots};
     $caps = caps_of($sp);
     $h{heavy_slots} = $caps->{heavy} if defined $h{heavy_slots};
-    # a heavy job (~6 GB) where the RAM cap leaves no heavy slot at all: refused now, never a wait for a
-    # slot that cannot exist (the probe reports heavy_cap 0, so a probed plan never sends one here)
-    if (($h{cls} // '') eq 'heavy' && ($fleet_heavy // 0) > 0 && defined $h{heavy_slots} && $h{heavy_slots} == 0) {
-        status('UNAVAIL ram-cap');
-        fail("this Mac's share level caps the jobs' memory under 6 GB: no heavy job here", 73);
+    # a heavy job where no heavy slot can exist - fleet heavy_slots 0, the machine's RAM (ram_heavy_cap) or the
+    # share level's RAM cap: refused now, never a wait to the deadline (the probe reports heavy_cap 0, so a
+    # probed plan never sends one here)
+    if (($h{cls} // '') eq 'heavy' && defined $h{heavy_slots} && $h{heavy_slots} == 0) {
+        my $tot = mem_total_mb();
+        my $per = ($h{need_gb} // 0) > heavy_job_gb ? $h{need_gb} : heavy_job_gb;
+        my ($tag, $why) = $fleet_heavy == 0 ? ('heavy-slots', "this worker's fleet heavy_slots is 0")
+            : ram_heavy_cap($fleet_heavy, $tot, $h{need_gb}, $h{mem_gb}) == 0
+            ? ('ram-total', sprintf("this worker has %s of RAM: a heavy job needs %s GB on top of %d GB kept back",
+                $tot ? sprintf("%d MB", $tot) : defined $h{mem_gb} ? "$h{mem_gb} GB (fleet mem_gb)" : "an unknown amount",
+                $per, heavy_reserve_gb))
+            : ('ram-cap', "this Mac's share level caps the jobs' memory under 6 GB");
+        status("UNAVAIL $tag");
+        fail("$why: no heavy job here", 73);
     }
     my $n = $caps->{slots};
     my $cap = slots_cap();
@@ -1068,7 +1104,7 @@ sub spare_done {
 
 sub take_slot {
     my $dir = mk("$ROOT/slots");
-    my $heavy0 = $h{heavy_slots};    # the fleet's count: each pass scales it afresh
+    my $heavy0 = $h{heavy_slots};    # the fleet's ceiling: each pass caps it by RAM and scales it afresh
     share_gate();
     $t_wait0 = time;
     my $deadline = time + 60 * ($h{wait_min} // 30);

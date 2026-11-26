@@ -193,9 +193,7 @@ def probe(h, repo, cfg):
     """rd_pool's PROBE for one host and repo; sets h.probe / h.rtt / h.why."""
     req = {"slug": repo["slug"], "deps": [list(d) for d in rd_pool.deps_shas(repo["top"], repo["deps"])],
            "slots": h.cfg.get("rr_slots", 1)}
-    hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
-    if isinstance(hs, int) and hs >= 0:
-        req["heavy_slots"] = hs
+    req.update(rd_pool.heavy_fields(h))
     for a in ("probe", "rtt", "why"):
         h.__dict__.pop(a, None)
     rd_pool.probe_all([h], lambda _h: req, _cfg_num(cfg, "rr_probe_timeout_s", rd_pool.PROBE_TIMEOUT_S))

@@ -3135,9 +3135,7 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
         header["pg_lane"] = True
     if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
         header.update(cls=job["cls"], need_gb=job["need_gb"])
-        hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
-        if isinstance(hs, int) and hs >= 0:
-            header["heavy_slots"] = hs
+        header.update(rd_pool.heavy_fields(h))    # heavy_slots + mem_gb (rr_runner.pl ram_heavy_cap)
     header.update(extra)
     with open(rd_common.RUNNER_SRC, "rb") as f:
         script = f.read()
@@ -3254,6 +3252,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             why = {"share=off": "its owner turned sharing off",
                    "memory": "its owner's own apps need the memory now",
                    "ram-cap": "its share level's RAM cap leaves no room for a heavy job",
+                   "ram-total": "its RAM holds no heavy job",
+                   "heavy-slots": "its fleet heavy_slots is 0",
                    "docker": "its Docker engine did not start"}.get(sess.unavail, sess.unavail)
             res = ("busy", "%s is not taking jobs (%s)" % (h.name, why))
         elif rc == 73:                     # no slot within the job's whole wait (rr_wait_min)

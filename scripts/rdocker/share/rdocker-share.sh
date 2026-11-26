@@ -72,15 +72,40 @@ sub share_spec {
     }
     %v ? { level => "custom", cpu => $v{cpu} // 100, ram => $v{ram} } : $off;
 }
-# share_caps(spec, slots, heavy_slots or undef, logical cpus, RAM MB) -> what the level allows:
-#   slots, heavy   the fleet counts x cpu % (floor, at least 1; 0 stays 0), then at most one job per 2 GB of
-#                  the RAM cap and one heavy job per 6 GB (rd_pool NEED_GB; 0 = no heavy job here)
+# The heavy jobs this machine RAM holds (2026-11-25; the one home of the rule: the runner slot wait and
+# the pool probe heavy_cap both get it through share_caps). fleet.json heavy_slots is only a ceiling: each
+# heavy job reserves heavy_job_gb (or the job need_gb when larger) on top of heavy_reserve_gb for the OS and
+# the ordinary jobs, from the LIVE total RAM, so a RAM upgrade needs no fleet edit: 24 GB -> 2, 32 -> 3,
+# 40 -> 4, 64 -> 7 (then the ceiling). The total (MB, unrounded: from the raw KB / bytes) is rounded up to
+# whole GB (Linux MemTotal leaves out the kernel own memory: a 24 GB box reads ~23.3). ram_heavy_cap(fleet
+# heavy_slots or undef, total RAM MB or undef, need_gb or undef, fleet mem_gb or undef) -> the cap, never below
+# 0; no heavy_slots stays undef. An unreadable total never restores the bare ceiling: the same rule on the
+# fleet mem_gb, and with that unknown too at most 1.
+sub heavy_reserve_gb () { 4 }
+sub heavy_job_gb () { 8 }
+sub ram_heavy_cap {
+    my ($heavy, $tot, $need, $fleet_gb) = @_;
+    return $heavy unless defined $heavy;
+    $tot = $fleet_gb * 1024 if !$tot && $fleet_gb;
+    return $heavy < 1 ? $heavy : 1 unless $tot;
+    my $per = defined $need && $need > heavy_job_gb ? $need : heavy_job_gb;
+    my $g = $tot / 1024;
+    my $n = int((int($g) + ($g > int($g) ? 1 : 0) - heavy_reserve_gb) / $per);
+    $n = 0 if $n < 0;
+    $n < $heavy ? $n : $heavy;
+}
+# share_caps(spec, slots, heavy_slots or undef, logical cpus, RAM MB, need_gb or undef, fleet mem_gb or undef)
+# -> what the level allows:
+#   slots, heavy   the fleet counts (heavy: first lowered to what the RAM holds, ram_heavy_cap) x cpu % (floor,
+#                  at least 1; 0 stays 0), then at most one job per 2 GB of the RAM cap and one heavy job per
+#                  6 GB (rd_pool NEED_GB; 0 = no heavy job here)
 #   cores          logical cpus x cpu % (floor, at least 1): what the jobs together may keep busy (fair_share)
 #   ram_mb         the RAM cap: ram= GB, or the preset share of the machine; undef = none
 #   vm_cpu, vm_mem a Colima VM: 12 CPU / 24 GB x cpu % (some = 6 / 12, max = 12 / 24, as before), never more
 #                  than the cores, the RAM cap or half the machine
 sub share_caps {
-    my ($sp, $slots, $heavy, $ncpu, $tot) = @_;
+    my ($sp, $slots, $heavy0, $ncpu, $tot, $need, $fleet_gb) = @_;
+    my $heavy = ram_heavy_cap($heavy0, $tot, $need, $fleet_gb);
     my $pct = $sp->{cpu};
     my $scale = sub { defined $_[0] && $_[0] > 0 ? (int($_[0] * $pct / 100) || 1) : $_[0] };
     my $ram = defined $sp->{ram} ? $sp->{ram} * 1024

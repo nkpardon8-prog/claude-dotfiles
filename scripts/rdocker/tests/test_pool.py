@@ -100,6 +100,29 @@ class Classify(unittest.TestCase):
         self.assertIsNone(rd_pool.eligibility(small, plain))
         self.assertIsNone(rd_pool.eligibility(small, rd_pool.classify(["npx", "tsc", "--noEmit"])))
 
+    def test_eligibility_judges_memory_on_the_probes_live_total_over_fleet_mem_gb(self):
+        """2026-11-25: a probed worker's live total RAM (probe mem_total_mb) decides "needs about N GB", so a
+        RAM upgrade counts before anyone edits fleet.json; fleet mem_gb is the fallback for an unprobed plan."""
+        guard = rd_pool.classify(["sh", "-c", "node scripts/run-guard-tier.mjs needs-install"])    # 8 GB
+        up = rd_pool.Host("laptop", {"host": "laptop"}, {"mem_gb": 8.5, "heavy_slots": 1})
+        up.probe = {"mem_total_mb": 16384, "heavy_cap": 1}                     # upgraded: the probe sees 16 GB
+        self.assertIsNone(rd_pool.eligibility(up, guard))
+        down = rd_pool.Host("hp", {"host": "hp"}, {"mem_gb": 32, "heavy_slots": 6})
+        down.probe = {"mem_total_mb": 7800, "heavy_cap": 0, "heavy_ram_cap": 0}  # the fleet says more than it has
+        self.assertEqual(rd_pool.eligibility(down, guard), "needs about 8 GB; it has 7.6 GB")
+        self.assertAlmostEqual(rd_pool.mem_total_gb(down), 7800 / 1024.0)     # unrounded: only messages round
+        edge = rd_pool.Host("e", {"host": "e"}, {"mem_gb": 32})
+        edge.probe = {"mem_total_mb": 9 * 1024 - 20}                         # 8.98 GB: under 8 + 1, though "9.0"
+        self.assertEqual(rd_pool.eligibility(edge, guard), "needs about 8 GB; it has 9 GB")
+        down.probe = None                                                      # unprobed: the fleet value
+        self.assertIsNone(rd_pool.eligibility(down, guard))
+        self.assertEqual(rd_pool.mem_total_gb(down), 32)
+        # its RAM holds no heavy job (ram_heavy_cap 0) though the fleet allows some: said so, not the share level
+        tiny = rd_pool.Host("t", {"host": "t"}, {"mem_gb": 8, "heavy_slots": 1})
+        tiny.probe = {"mem_total_mb": 11264, "heavy_cap": 0, "heavy_ram_cap": 0}
+        self.assertEqual(rd_pool.eligibility(tiny, rd_pool.classify(["npx", "tsc", "--noEmit"])),
+                         "has no heavy-job slot (its 11 GB of RAM holds none: rr_runner.pl ram_heavy_cap)")
+
     def test_check_ui_names_are_check_scripts(self):
         """rr_route_patterns (the hook / npm shim): `check:ui-*` is a check; a bare `:ui` segment
         (`check:ui`, `check:ui:fast`) is an interactive UI run and stays here."""
@@ -720,12 +743,14 @@ class ProbeSnippet(unittest.TestCase):
         shas = rd_pool.deps_shas(repo, ["server", "nolock"])
         self.assertEqual([s[0] for s in shas], ["server"])
         req = {"slots": 4, "heavy_slots": 2, "slug": "app.1234abcd", "deps": shas}
+        # a 32 GB worker: its RAM holds 3 heavy jobs, so the fleet's 2 is the cap
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 33554432 kB\nMemAvailable: 8388608 kB\n")
         o = self.run_probe(req)
-        self.assertEqual((float(o["load1"]), int(o["ncpu"]), o["mem_free_pct"], o["mem_avail_mb"]),
-                         (3.5, 2, 25, 1953))
+        self.assertEqual((float(o["load1"]), int(o["ncpu"]), o["mem_free_pct"], o["mem_avail_mb"], o["mem_total_mb"]),
+                         (3.5, 2, 25, 8192, 32768))
         self.assertEqual(o["temp"], 63.5)
-        self.assertEqual((int(o["slots_cap"]), o["slots_busy"], int(o["heavy_cap"]), o["heavy_busy"]),
-                         (4, 1, 2, 1))
+        self.assertEqual((int(o["slots_cap"]), o["slots_busy"], int(o["heavy_cap"]), o["heavy_busy"], o["heavy_ram_cap"]),
+                         (4, 1, 2, 1, 2))
         self.assertEqual((o["warm_git"], o["warm_deps"]), (0, 0))
         self.assertNotIn("speed", o)
         # rd-tune's cap, a benchmarked speed, the bare repo and a store entry with this lockfile
@@ -749,9 +774,10 @@ class ProbeSnippet(unittest.TestCase):
 
 class HpCap(unittest.TestCase):
     """hp's measured cap (2026-11-24: at 7-8 concurrent jobs every job ran 1.89x slower; 5 -> 8 slots added
-    ~15 % throughput for +30 % per-job latency): fleet.json's 6 slots / 3 heavy ride in every request header
+    ~15 % throughput for +30 % per-job latency): fleet.json's 6 slots / 6 heavy ride in every request header
     (host_for: pool, --host and warm plans alike), win over hp's rd-tune slots.cap (8), and the placement's
-    queue estimate counts 6."""
+    queue estimate counts 6. Its heavy_slots 6 is only a ceiling (2026-11-25): hp's live RAM decides (24 GB
+    -> 2, 32 GB -> 3), so its RAM upgrade needs no fleet edit."""
     setUp, run_probe = ProbeSnippet.setUp, ProbeSnippet.run_probe     # same fake ~/rr + /proc
 
     def hp(self):
@@ -760,13 +786,25 @@ class HpCap(unittest.TestCase):
 
     def test_the_fleet_cap_reaches_the_worker_and_beats_its_slots_cap(self):
         hp = self.hp()
-        self.assertEqual((hp["max_slots"], hp["heavy_slots"]), (6, 3))
+        self.assertEqual((hp["max_slots"], hp["heavy_slots"]), (6, 6))
         h = rd_pool.host_for(dict(rd_common.DEFAULTS), hp)
         self.assertEqual(h.cfg["rr_slots"], 6)
         test_run.wfile(os.path.join(self.root, "slots.cap"), "8\n")       # hp's rd-tune MAX_SLOTS
-        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 25165824 kB\nMemAvailable: 16777216 kB\n")
-        o = self.run_probe({"slots": h.cfg["rr_slots"], "heavy_slots": hp["heavy_slots"]})
-        self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (6, 3))
+        # 24 GB today (as Linux reads it: a little under), 32 GB after the upgrade, 48 GB some day
+        for kb, heavy in ((24411000, 2), (25165824, 2), (32800000, 3), (33554432, 3), (50331648, 5)):
+            test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: %d kB\nMemAvailable: 16777216 kB\n" % kb)
+            o = self.run_probe({"slots": h.cfg["rr_slots"], "heavy_slots": hp["heavy_slots"]})
+            self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (6, heavy), kb)
+        # the job's need_gb rides in the request: the probe's cap is the runner's (32 GB, a 12 GB job: 2)
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 33554432 kB\nMemAvailable: 16777216 kB\n")
+        o = self.run_probe({"slots": 6, "heavy_slots": 6, "need_gb": 12})
+        self.assertEqual((int(o["heavy_cap"]), o["heavy_ram_cap"]), (2, 2))
+        # no readable total: the fleet mem_gb, else at most 1 - never the bare ceiling 6
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "")
+        self.assertEqual(int(self.run_probe({"slots": 6, "heavy_slots": 6, "mem_gb": 24})["heavy_cap"]), 2)
+        self.assertEqual(int(self.run_probe({"slots": 6, "heavy_slots": 6})["heavy_cap"]), 1)
+        # the planner sends both (rd_pool.heavy_fields)
+        self.assertEqual(rd_pool.heavy_fields(h), {"heavy_slots": 6, "mem_gb": 32})
 
     def test_placement_and_queue_estimate_use_six_slots(self):
         hp = self.hp()
@@ -780,7 +818,8 @@ class HpCap(unittest.TestCase):
         machines = [hp, worker("b", 0.3)]
         p, m = pu.plan(machines, {"rd-hp": hp_probe(5), "b": probe(slots_busy=2)})
         reqs = {c.args[0].name: c.args[1] for c in m.call_args_list}
-        self.assertEqual((reqs["hp"]["slots"], reqs["hp"]["heavy_slots"]), (6, 3))   # the header the runner caps on
+        self.assertEqual((reqs["hp"]["slots"], reqs["hp"]["heavy_slots"]), (6, 6))   # the header the runner caps on
+        self.assertEqual((reqs["hp"]["mem_gb"], reqs["hp"]["need_gb"]), (32, 2))     # its RAM fallback, the job's need
         h = next(x for x in p.hosts if x.name == "hp")
         self.assertEqual((h.state, h.queue_s), ("free", 0.0))                         # 5 of 6 held: one open
         p, _ = pu.plan(machines, {"rd-hp": hp_probe(6), "b": probe(slots_busy=2)})
@@ -795,13 +834,14 @@ class ProbeShareSwitch(unittest.TestCase):
 
     def test_levels_scale_slots_and_missing_file_is_max(self):
         req = {"slots": 8, "heavy_slots": 6, "slug": "", "deps": []}
+        # a 64 GB worker (nickmbp's size): its RAM holds 7 heavy jobs, the fleet's 6 is the cap; the old words
+        # give the old counts
+        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 67108864 kB\nMemAvailable: 33554432 kB\n")
         o = self.run_probe(req)
         self.assertEqual((o["share"], int(o["slots_cap"]), int(o["heavy_cap"])), ("max", 8, 6))
         self.assertNotIn("ram_cap_mb", o)                                            # no switch: no cap
         share = os.path.join(self.d, "share-file")
         self.env["RR_SHARE_FILE"] = share
-        # a 64 GB worker (nickmbp's size): the old words give the old counts
-        test_run.wfile(os.path.join(self.d, "proc", "meminfo"), "MemTotal: 67108864 kB\nMemAvailable: 33554432 kB\n")
         for text, want in (("some\n", ("medium", 6, 4)), ("max", ("high", 8, 6)), ("off\n", ("off", 8, 6)),
                            ("bogus", ("off", 8, 6)), ("low", ("low", 2, 1)), ("cpu=75 ram=8", ("custom", 4, 1))):
             test_run.wfile(share, text)

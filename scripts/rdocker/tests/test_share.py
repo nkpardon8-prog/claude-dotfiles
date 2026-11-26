@@ -118,6 +118,38 @@ class Block(unittest.TestCase):
         self.assertEqual(self.caps("some", 1, 1, 18, 64)[:2], (1, 1))       # floor, at least 1
         self.assertEqual(self.caps("some", 3, 0, 18, 64)[:2], (2, 0))       # 0 heavy stays 0
 
+    def ram_cap(self, heavy, tot_mb, need=None, fleet_gb=None):
+        return self.pl('print encode_json([ram_heavy_cap(%s, %s, %s, %s)]);' % tuple(
+            "undef" if v is None else v for v in (heavy, tot_mb, need, fleet_gb)))[0]
+
+    def test_heavy_cap_follows_the_live_ram(self):
+        """2026-11-25: fleet heavy_slots is a ceiling; the RAM decides floor((GB - 4) / 8), 0 at least, so hp's
+        upgrade (24 -> 32 GB) needs no fleet edit. A Linux MemTotal a little under the size counts as the size."""
+        for gb, want in ((24, 2), (32, 3), (40, 4), (48, 5), (64, 7), (12, 1), (11, 0), (8, 0), (2, 0)):
+            self.assertEqual(self.ram_cap(99, gb * 1024), want, gb)
+        self.assertEqual(self.ram_cap(99, 23840), 2)                         # hp as Linux reads 24 GB
+        self.assertEqual(self.ram_cap(99, 32030), 3)                         # ... and 32 GB
+        self.assertEqual(self.ram_cap(6, 64 * 1024), 6)                      # the fleet ceiling
+        self.assertEqual(self.ram_cap(0, 64 * 1024), 0)                      # heavy_slots 0 stays 0
+        self.assertEqual(self.ram_cap(6, 32 * 1024, 12), 2)                  # a job needing 12 GB: (32-4)/12
+        self.assertEqual(self.ram_cap(6, 32 * 1024, 6), 3)                   # a smaller need never lowers 8 GB
+        self.assertIsNone(self.ram_cap(None, 32 * 1024))                     # no heavy_slots: none
+        self.assertEqual(self.ram_cap(6, 11 * 1024 + 4 / 1024.0), 1)      # 11 GiB + 4 KiB: 12 GB
+        self.assertEqual(self.ram_cap(6, 11 * 1024), 0)                      # exactly 11 GiB: 11 GB
+        # an unreadable total never restores the bare ceiling: the fleet mem_gb, else at most 1
+        self.assertEqual(self.ram_cap(6, None, None, 24), 2)
+        self.assertEqual(self.ram_cap(6, 0, 12, 32), 2)
+        self.assertEqual(self.ram_cap(6, None, None, 8.5), 0)
+        self.assertEqual(self.ram_cap(6, None), 1)
+        self.assertEqual(self.ram_cap(0, None), 0)
+        self.assertEqual(self.ram_cap(6, 64 * 1024, None, 8), 6)            # a live reading wins over mem_gb
+        # share_caps applies it first; the share level can only lower it further
+        self.assertEqual(self.caps(None, 6, 6, 8, 24)[1], 2)                 # hp today, no switch
+        self.assertEqual(self.caps(None, 6, 6, 8, 32)[1], 3)                 # hp after the upgrade
+        self.assertEqual(self.caps("medium", 6, 6, 8, 32)[1], 2)             # 3 x 75 % = 2; RAM cap 16 GB: 2
+        self.assertEqual(self.caps("cpu=100 ram=12", 6, 6, 8, 64)[1], 2)     # RAM 7 -> 6; ram=12: 2
+        self.assertEqual(self.caps("cpu=100 ram=40", 6, 6, 8, 32)[1], 3)     # a big ram= never raises it
+
     def test_cap_math_on_the_air(self):
         # airm4: fleet 4 slots / 1 heavy, 10 cores, 16 GB
         for text, want in (("low", (1, 0, 2, 4096, 2, 4)),           # no heavy job under 6 GB
