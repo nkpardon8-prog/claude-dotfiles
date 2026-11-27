@@ -318,5 +318,12 @@
   "skipAutoPermissionPrompt": true,
   "awaySummaryEnabled": false,
   "_mission_write_note": "The mission-write.sh allow entry MUST stay an absolute literal path (permission allow patterns do not expand $HOME or ~). On a fresh machine, rewrite /Users/omidzahrai to the installing user's home: sed -i '' 's|/Users/omidzahrai|/Users/<you>|' ~/.claude/settings.json",
-  "skillListingBudgetFraction": 0.01
+  "skillListingBudgetFraction": 0.01,
+  "_sync_required": {
+    "_note": "Keys that must match on every Mac (cost-relevant). scripts/settings-drift-check.py compares ~/.claude/settings.json against this block at each main-window SessionStart (via rules-in-force.py) and prints only on drift. _forbidden: keys that must be absent or not false.",
+    "subagentPromptCacheTtl": "1h",
+    "skillListingBudgetFraction": 0.01,
+    "awaySummaryEnabled": false,
+    "_forbidden": ["autoCompactEnabled"]
+  }
 }
