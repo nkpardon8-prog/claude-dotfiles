@@ -144,6 +144,7 @@ kc() {   # kc <name> [claude|other]: fixture at $T/k/<name>; prints the clone pa
   git -C "$d/clone" fetch -q && git -C "$d/clone" checkout -q --detach HEAD
   (cd "$d/clone" && pwd -P)   # git reports the resolved path (/private/var on macOS)
 }
+unlocked() { python3 -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1],"a"), fcntl.LOCK_EX|fcntl.LOCK_NB)' "$1/.git/claude-keep-current.lock"; }
 head_is_origin() { [ "$(git -C "$1" rev-parse HEAD)" = "$(git -C "$1" rev-parse origin/dev)" ]; }
 
 c=$(kc ff); o=$(run session-start k1 "$c")
@@ -152,7 +153,7 @@ hasnt "14 no stale note after update"     "$o" "is stale"
 has   "14 window told its loaded copy is older" "$o" "was just updated"
 hasnt "14 no main-folder warning"         "$o" "Main folder"
 [ -z "$(git -C "$c" symbolic-ref -q HEAD)" ] && ok "14 left detached" || bad "14 left detached" ""
-[ ! -e "$c/.git/claude-keep-current.lock" ] && ok "14 lock released" || bad "14 lock released" ""
+unlocked "$c" && ok "14 lock released" || bad "14 lock released" ""
 
 c=$(kc ffother other); o=$(run session-start k1b "$c")
 head_is_origin "$c" && ok "14 non-rules commit fast-forwarded" || bad "14 non-rules commit fast-forwarded" "$o"
@@ -180,12 +181,32 @@ h=$(git -C "$w" rev-parse HEAD); o=$(run session-start k4 "$w")
 [ "$(git -C "$w" rev-parse HEAD)" = "$h" ] && ok "14 linked worktree: not touched" || bad "14 linked worktree: not touched" "$o"
 hasnt "14 linked worktree: no main-folder line" "$o" "Main folder"
 
-c=$(kc locked); mkdir "$c/.git/claude-keep-current.lock"; h=$(git -C "$c" rev-parse HEAD); o=$(run session-start k5 "$c")
+c=$(kc locked); h=$(git -C "$c" rev-parse HEAD)
+python3 -c 'import fcntl,sys,time; f=open(sys.argv[1],"a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2],"w").close(); time.sleep(60)' \
+  "$c/.git/claude-keep-current.lock" "$T/k/held" & holder=$!
+for _ in $(seq 1 50); do [ -e "$T/k/held" ] && break; sleep 0.1; done
+o=$(run session-start k5 "$c")
 [ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && ok "14 lock held: skipped" || bad "14 lock held: skipped" "$o"
 hasnt "14 lock held: silent" "$o" "Main folder"
-[ -d "$c/.git/claude-keep-current.lock" ] && ok "14 lock held: other window's lock kept" || bad "14 lock held: other window's lock kept" ""
-touch -t 202001010000 "$c/.git/claude-keep-current.lock"; o=$(run session-start k5b "$c")
-head_is_origin "$c" && ok "14 stale lock taken over" || bad "14 stale lock taken over" "$o"
+kill "$holder"; wait "$holder" 2>/dev/null
+o=$(run session-start k5b "$c")
+head_is_origin "$c" && ok "14 holder gone: lock free again, updated" || bad "14 holder gone: lock free again, updated" "$o"
+
+c=$(kc staged); printf 'staged edit\n' >> "$c/other.txt"; git -C "$c" add other.txt; h=$(git -C "$c" rev-parse HEAD); o=$(run session-start k2s "$c")
+[ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && ! git -C "$c" diff --cached --quiet \
+  && ok "14 staged-only change: not touched" || bad "14 staged-only change: not touched" "$o"
+has   "14 staged-only change: one line" "$o" "has local changes"
+
+c=$(kc assumed); printf 'hidden edit\n' >> "$c/other.txt"; git -C "$c" update-index --assume-unchanged other.txt; h=$(git -C "$c" rev-parse HEAD)
+o=$(run session-start k2a "$c")
+[ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && grep -q 'hidden edit' "$c/other.txt" && ok "14 assume-unchanged edit: not touched" || bad "14 assume-unchanged edit: not touched" "$o"
+
+c=$(kc ignored other); h=$(git -C "$c" rev-parse HEAD); s="$T/k/ignored/seed"
+printf 'secret.env\n' > "$c/.git/info/exclude"; printf 'my local secret\n' > "$c/secret.env"
+printf 'tracked now\n' > "$s/secret.env" && git -C "$s" add secret.env && git -C "$s" commit -qm v3 && git -C "$s" push -q "$T/k/ignored/origin.git" dev && git -C "$c" fetch -q
+o=$(run session-start k2i "$c")
+[ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && grep -q 'my local secret' "$c/secret.env" && ok "14 ignored file in the way: not overwritten" || bad "14 ignored file in the way: not overwritten" "$o"
+has   "14 ignored file in the way: one line" "$o" "untracked files in the way"
 
 c=$(kc merging); h=$(git -C "$c" rev-parse HEAD); git -C "$c" rev-parse HEAD > "$c/.git/MERGE_HEAD"; o=$(run session-start k5c "$c")
 [ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && ok "14 merge in progress: not touched" || bad "14 merge in progress: not touched" "$o"
@@ -196,7 +217,7 @@ git -C "$T/k/untracked/seed" rm -q other.txt && printf 'n\n' > "$T/k/untracked/s
 printf 'my untracked file\n' > "$c/blocker.txt"; o=$(run session-start k6 "$c")
 [ "$(git -C "$c" rev-parse HEAD)" = "$h" ] && grep -q 'my untracked' "$c/blocker.txt" && ok "14 untracked in the way: not changed" || bad "14 untracked in the way: not changed" "$o"
 has   "14 untracked in the way: one line" "$o" "Main folder $c could not update to origin/dev: untracked files in the way (git status). Not changed."
-[ ! -e "$c/.git/claude-keep-current.lock" ] && ok "14 failed checkout releases lock" || bad "14 failed checkout releases lock" ""
+unlocked "$c" && ok "14 failed checkout releases lock" || bad "14 failed checkout releases lock" ""
 
 c=$(kc sub); h=$(git -C "$c" rev-parse HEAD)
 o=$(run subagent k7 "$c" ',"agent_type":"general-purpose"')

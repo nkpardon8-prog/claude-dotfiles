@@ -223,86 +223,88 @@ class Repo:
 
 
 KC_LOCK = "claude-keep-current.lock"
-KC_LOCK_STALE = 120        # seconds before another window may take over an abandoned lock
-KC_CHECKOUT_MAX = 30       # the checkout helper kills git after this
+KC_RESERVE = 5.0           # seconds the hook keeps for its own rules check; less left = no update attempt
 IN_PROGRESS = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG")
 
 
-def take_lock(path: Path) -> bool:
-    """Non-blocking: mkdir is atomic. A lock older than KC_LOCK_STALE was abandoned and is taken over."""
-    try:
-        path.mkdir()
-        return True
-    except FileExistsError:
-        try:
-            if time.time() - path.stat().st_mtime < KC_LOCK_STALE:
-                return False
-            path.rmdir()
-            path.mkdir()
-            return True
-        except OSError:
-            return False
-    except OSError:
-        return False
+def kc_blocker(top: str, head: str) -> str:
+    """Why the main folder must not be moved right now, or "". Run by the hook, and again by the
+    helper right before checkout (another process may have changed things in between)."""
+    if git(["rev-parse", "-q", "--verify", "HEAD"], top, limit=2.0)[1].strip() != head:
+        return "has local commits"
+    rc, st = git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top, limit=4.0)
+    if rc != 0:
+        return "error"
+    if st.strip():
+        return "has local changes"
+    rc, ls = git(["ls-files", "-v"], top, limit=4.0)   # assume-unchanged files hide edits from status
+    if rc != 0:
+        return "error"
+    if any(line[:1].islower() for line in ls.splitlines()):
+        return "has local changes"
+    return ""
 
 
 def keep_current(repo: Repo) -> tuple[str, bool]:
-    """Main folder only: fast-forward a clean, behind main worktree to the base branch, so windows that
-    start there load current rules and project hooks. Returns (one line for the user or "", updated).
-    Acts only when HEAD is detached or on the base branch, has no tracked changes, no merge/rebase is in
-    progress, and HEAD is an ancestor of the base (no local-only commits). Linked worktrees (agents'
-    task branches) are never touched. The checkout runs in a detached helper with its own time limit,
-    so the hook's own timeout can never kill git mid-checkout; if it is still running when this hook
-    must finish, the hook goes on and the checkout completes on its own."""
-    if os.environ.get("RIF_NO_KEEP_CURRENT") == "1":
+    """Main folder only: move a clean, behind main worktree to the base branch, so windows that start
+    there load current rules and project hooks. Returns (one line for the user or "", updated).
+    Acts only when HEAD is detached or on the base branch, nothing tracked is changed (submodules and
+    assume-unchanged files included), no merge/rebase/bisect is in progress, and HEAD is an ancestor of
+    the base (no local-only commits). Linked worktrees (agents' task branches) are never touched.
+    One window at a time: a non-blocking flock on <git-common-dir>/claude-keep-current.lock, held by
+    the helper until the checkout ends and released by the OS if it dies (never stale). The checkout
+    runs in that detached helper and is never killed (a killed checkout can leave a half-written tree);
+    the hook only waits inside its own budget, and if git is still running it goes on without it."""
+    if os.environ.get("RIF_NO_KEEP_CURRENT") == "1" or remaining() < KC_RESERVE:
         return "", False
-    rc, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo.top)
-    if rc != 0 or not common.strip():
+    rc, dirs = git(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], repo.top)
+    parts = dirs.split("\n")
+    if rc != 0 or len(parts) < 2 or not parts[1].strip():
         return "", False
-    common_dir = Path(os.path.realpath(common.strip()))
-    if common_dir.parent != Path(os.path.realpath(repo.top)):
-        return "", False                                   # a linked worktree, or an unusual layout
+    git_dir, common_dir = (Path(os.path.realpath(d.strip())) for d in parts[:2])
+    if git_dir != common_dir:
+        return "", False                                   # a linked worktree
     rc, n = git(["rev-list", "--count", f"HEAD..{repo.base}"], repo.top, limit=2.0)
     behind = int(n.strip()) if rc == 0 and n.strip().isdigit() else 0
     if behind <= 0:
         return "", False
-    lock = common_dir / KC_LOCK
-    if not take_lock(lock):
+    try:
+        lock = open(common_dir / KC_LOCK, "w")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
         return "", False                                   # another window is on it
-    handed_off = False
     try:
         if any((common_dir / f).exists() for f in IN_PROGRESS):
             log(f"keep-current: {repo.top} has a merge/rebase/bisect in progress; not updated")
             return "", False
         rc, br = git(["symbolic-ref", "-q", "--short", "HEAD"], repo.top, limit=2.0)
+        if rc not in (0, 1):                               # only 1 means "detached"
+            return "", False
         branch = br.strip() if rc == 0 else ""
-        reason = ""
-        if branch and branch != repo.branch:
-            reason = f"is on branch {branch}"
-        else:
-            rc, st = git(["status", "--porcelain", "--untracked-files=no"], repo.top, limit=4.0)
-            if rc != 0:
-                log(f"keep-current: git status failed in {repo.top}")
-                return "", False
-            if st.strip():
-                reason = "has local changes"
-            elif git(["merge-base", "--is-ancestor", "HEAD", repo.base], repo.top, limit=2.0)[0] != 0:
-                reason = "has local commits"
+        head = git(["rev-parse", "-q", "--verify", "HEAD"], repo.top, limit=2.0)[1].strip()
+        target = git(["rev-parse", "-q", "--verify", f"{repo.base}^{{commit}}"], repo.top, limit=2.0)[1].strip()
+        if not head or not target:
+            return "", False
+        reason = f"is on branch {branch}" if branch and branch != repo.branch else kc_blocker(repo.top, head)
+        if not reason and git(["merge-base", "--is-ancestor", head, target], repo.top, limit=2.0)[0] != 0:
+            reason = "has local commits"
+        if reason == "error":
+            log(f"keep-current: could not read the state of {repo.top}; not updated")
+            return "", False
         if reason:
             return (f"Main folder {repo.top} is {behind} commits behind {repo.base} and {reason}; it was "
                     f"not updated. Work in a worktree off {repo.base}."), False
-        wait = min(KC_CHECKOUT_MAX, remaining() - 3.0)
+        wait = remaining() - 3.0
         if wait < 0.5:
             log(f"keep-current: no time left to update {repo.top}")
             return "", False
-        try:
-            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "bg-checkout", repo.top, repo.base,
-                                  str(lock)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        try:   # the helper inherits the locked file, so the lock lasts exactly as long as the checkout
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "bg-checkout", repo.top, head, target],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True, start_new_session=True, pass_fds=(lock.fileno(),))
         except Exception as e:
             log(f"keep-current: helper failed to start: {e}")
             return "", False
-        handed_off = True                                  # the helper now owns the lock
         try:
             out, _ = p.communicate(timeout=wait)
         except subprocess.TimeoutExpired:
@@ -313,44 +315,37 @@ def keep_current(repo: Repo) -> tuple[str, bool]:
         except ValueError:
             res = {}
         if res.get("rc") == 0:
-            log(f"keep-current: {repo.top} updated {behind} commits to {repo.base}")
+            log(f"keep-current: {repo.top} moved {behind} commits to {repo.base} {target[:10]}")
             return "", True
         err = str(res.get("err") or "")
-        log(f"keep-current: checkout failed in {repo.top}: {err.strip()[:300]}")
-        if "untracked working tree files would be" in err:
+        log(f"keep-current: not updated {repo.top}: {err.strip()[:300]}")
+        if "would be overwritten by checkout" in err or "would be removed by checkout" in err:
             return (f"Main folder {repo.top} could not update to {repo.base}: untracked files in the way "
                     f"(git status). Not changed."), False
         return "", False
     finally:
-        if not handed_off:
-            try:
-                lock.rmdir()
-            except OSError:
-                pass
+        lock.close()                                       # the helper (if started) still holds it
 
 
-def bg_checkout(top: str, base: str, lock: str) -> None:
-    """Internal (started by keep_current): the checkout itself, capped at KC_CHECKOUT_MAX, then the lock
-    is released. Prints {"rc", "err"} for the waiting hook; if the hook already left, the print fails
-    harmlessly."""
-    res = {"rc": 1, "err": ""}
-    try:
-        p = subprocess.Popen(["git", "-C", top, "checkout", "-q", "--detach", base], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-        try:
-            _, err = p.communicate(timeout=KC_CHECKOUT_MAX)
-            res = {"rc": p.returncode, "err": err}
-        except subprocess.TimeoutExpired:
-            p.kill()
-            p.communicate()
-            res = {"rc": 1, "err": f"timed out after {KC_CHECKOUT_MAX}s"}
-            log(f"keep-current: checkout in {top} timed out")
-    finally:
-        try:
-            os.rmdir(lock)
-        except OSError:
-            pass
+def bg_checkout(top: str, head: str, target: str) -> None:
+    """Internal (started by keep_current, holding the lock): re-check that the folder is still exactly
+    as judged, then check out the pinned commit. Ignored files are never overwritten, submodules are not
+    recursed into, and git is never killed. Prints {"rc", "err"}; if the hook already left, the print
+    fails harmlessly."""
+    global _DEADLINE
+    _DEADLINE = time.monotonic() + 30
+    why = kc_blocker(top, head)
+    if why:
+        res = {"rc": 1, "err": f"changed before checkout: {why}"}
+    else:
+        import tempfile
+        with tempfile.TemporaryFile("w+") as errf:   # a file, not a pipe: nothing can hold it open
+            rc = subprocess.call(["git", "-c", "submodule.recurse=false", "-C", top, "checkout", "-q",
+                                  "--no-overwrite-ignore", "--detach", target], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=errf,
+                                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            errf.seek(0)
+            res = {"rc": rc, "err": errf.read()[-2000:]}
     try:
         print(json.dumps(res), flush=True)
     except Exception:
@@ -485,8 +480,8 @@ def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, 
     repo = Repo(cwd)
     project = None
     if repo.ok:
+        loaded = repo.local_rules()            # as close as we get to what this window read at start
         repo.fetch(FETCH_EVERY_PROMPT if background else FETCH_EVERY_START, background)
-        loaded = repo.local_rules()            # what this window read at start, before any update
         updated = False
         if update_main:
             kc_line, updated = keep_current(repo)
