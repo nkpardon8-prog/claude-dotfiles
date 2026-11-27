@@ -481,19 +481,25 @@ def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, 
     project = None
     if repo.ok:
         repo.fetch(FETCH_EVERY_PROMPT if background else FETCH_EVERY_START, background)
+        loaded = repo.local_rules()            # what this window read at start, before any update
+        updated = False
+        if update_main:
+            kc_line, updated = keep_current(repo)
         b = repo.base_rules()
         if b is not None:
             project = (version(b), repo.base, repo.base_sha())
             known = state["projects"].get(repo.top)
             if fresh_load or known is None:
-                if repo.local_rules() != b:
+                if updated and loaded != b:
+                    notes.append(in_force_note(repo, b, updated=True))
+                elif not updated and repo.local_rules() != b:
                     notes.append(in_force_note(repo, b))
             elif known != b:
                 changes.append((f"{repo.base}:CLAUDE.md", known, b))
             state["projects"][repo.top] = b
     if changes:
         notes.insert(0, changed_note(changes))
-    return notes, state, g, project
+    return notes, state, g, project, kc_line
 
 
 def worker_note(data: dict, cwd: str, sid: str) -> str:
@@ -539,15 +545,21 @@ def main() -> int:
 
     if mode in ("session-start", "prompt"):
         state = load_state(sid)
-        fresh = mode == "session-start" and str(data.get("source") or "startup") != "resume"
-        notes, state, g, project = judge(sid, cwd, data, state, fresh_load=fresh,
-                                         background=(mode == "prompt"))
+        source = str(data.get("source") or "startup")
+        fresh = mode == "session-start" and source != "resume"
+        # Keep the main folder current at a window's start; never on compact (mid-session: the files
+        # would change under an agent that is working there).
+        notes, state, g, project, kc_line = judge(sid, cwd, data, state, fresh_load=fresh,
+                                                  background=(mode == "prompt"),
+                                                  update_main=(mode == "session-start" and source != "compact"))
         tail = ""
         if mode == "session-start":
             tail = f"Rules loaded: global {version(g)}"
             if project:
                 tail += f"; project {project[0]} from {project[1]} ({project[2]})"
             tail += "."
+            if kc_line:
+                tail = f"{kc_line}\n{tail}"
             drift = settings_drift()
             if drift:
                 tail = f"{drift}\n{tail}"
