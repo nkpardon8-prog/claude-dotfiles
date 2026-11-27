@@ -360,10 +360,14 @@ def spill(name: str, text: str) -> Path:
 
 
 # Each note is (headline, body). The headline is short; the body is the rules or the diff.
-def in_force_note(repo: Repo, rules: str) -> tuple[str, str, str]:
-    head = (f"RULES IN FORCE: this checkout's CLAUDE.md is stale ({repo.behind()} commits behind {repo.base} "
-            f"{repo.base_sha()}). Follow the copy below over the one loaded from {repo.top}, and tell the "
-            f"user the checkout is stale.")
+def in_force_note(repo: Repo, rules: str, updated: bool = False) -> tuple[str, str, str]:
+    if updated:   # the checkout is current now, but this window read CLAUDE.md before the update
+        head = (f"RULES IN FORCE: the main folder {repo.top} was just updated to {repo.base} {repo.base_sha()}, "
+                f"after this window loaded its older CLAUDE.md. Follow the copy below over the one you loaded.")
+    else:
+        head = (f"RULES IN FORCE: this checkout's CLAUDE.md is stale ({repo.behind()} commits behind "
+                f"{repo.base} {repo.base_sha()}). Follow the copy below over the one loaded from {repo.top}, "
+                f"and tell the user the checkout is stale.")
     return head, f"<rules-in-force source=\"{repo.base}:CLAUDE.md\">\n{rules}\n</rules-in-force>", "in-force-CLAUDE.md"
 
 
@@ -453,11 +457,15 @@ def settings_drift() -> str:
         return ""
 
 
-def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, background: bool):
-    """Returns (notes, state). fresh_load = Claude just read the rule files from disk (startup, clear,
-    compact), so what is on disk now IS the baseline. Otherwise compare with the saved baseline; with
-    none (a window opened before this hook existed), deliver whatever may have changed since it began."""
+def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, background: bool,
+          update_main: bool = False):
+    """Returns (notes, state, global rules, project, keep-current line). fresh_load = Claude just read the
+    rule files from disk (startup, clear, compact), so what is on disk now IS the baseline. Otherwise
+    compare with the saved baseline; with none (a window opened before this hook existed), deliver
+    whatever may have changed since it began. update_main = run keep_current after the fetch and
+    BEFORE the stale check, so a main folder it fast-forwards is judged current."""
     notes: list[tuple[str, str, str]] = []
+    kc_line = ""
     changes: list[tuple[str, str, str]] = []
     g = global_rules()
     if fresh_load or state is None:
