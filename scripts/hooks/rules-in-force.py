@@ -13,6 +13,8 @@ Modes (argv[1]); each reads the hook's JSON on stdin:
                  branch's copy as "RULES IN FORCE". Always prints one "Rules loaded" line.
                  startup/clear/compact load the rule files fresh from disk, so they set the baseline.
                  resume may not: it is judged like a prompt (diff against the saved baseline).
+                 Also prepends scripts/settings-drift-check.py's report (silent unless this Mac's
+                 settings.json drifted from the template's _sync_required keys).
                  A worker's compaction (agent_id present, the PARENT's session_id) gets the subagent
                  note only: the parent's saved state is never loaded, written or collected.
   prompt         UserPromptSubmit. No network wait (fetch runs in the background, throttled).
@@ -403,6 +405,9 @@ def main() -> int:
             if project:
                 tail += f"; project {project[0]} from {project[1]} ({project[2]})"
             tail += "."
+            drift = settings_drift()
+            if drift:
+                tail = f"{drift}\n{tail}"
         out = render(notes, tail, sid)       # spills happen BEFORE the baseline is saved
         save_state(sid, state)
         refresh_codex(g)
