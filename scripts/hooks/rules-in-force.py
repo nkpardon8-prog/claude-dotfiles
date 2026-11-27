@@ -13,6 +13,10 @@ Modes (argv[1]); each reads the hook's JSON on stdin:
                  branch's copy as "RULES IN FORCE". Always prints one "Rules loaded" line.
                  startup/clear/compact load the rule files fresh from disk, so they set the baseline.
                  resume may not: it is judged like a prompt (diff against the saved baseline).
+                 Before the stale check (not on compact), keeps the MAIN folder current: a main
+                 worktree that is detached or on the base branch, clean, behind, with no local-only
+                 commits and no merge/rebase, is moved to the base (keep_current); otherwise one line
+                 says why it was not. Linked worktrees are never touched.
                  Also prepends scripts/settings-drift-check.py's report (silent unless this Mac's
                  settings.json drifted from the template's _sync_required keys).
                  A worker's compaction (agent_id present, the PARENT's session_id) gets the subagent
@@ -37,6 +41,7 @@ Each mode works inside one deadline, below its registered hook timeout.
 
 Fail-open: any error exits 0 with no output (logged), so a session start can never break.
 Env overrides (tests): RIF_STATE_DIR RIF_GLOBAL_FILE RIF_RULES_DIR RIF_LOG RIF_NO_CODEX=1 RIF_NO_FETCH=1
+RIF_NO_KEEP_CURRENT=1
 """
 from __future__ import annotations
 
@@ -522,6 +527,9 @@ def main() -> int:
     if mode == "bg-fetch" and len(sys.argv) == 5:   # internal: started detached by Repo.fetch
         _DEADLINE = time.monotonic() + FETCH_BG_MAX + 1
         git(["fetch", "-q", sys.argv[3], sys.argv[4]], sys.argv[2], limit=FETCH_BG_MAX)
+        return 0
+    if mode == "bg-checkout" and len(sys.argv) == 5:   # internal: started detached by keep_current
+        bg_checkout(sys.argv[2], sys.argv[3], sys.argv[4])
         return 0
     _DEADLINE = time.monotonic() + BUDGET.get(mode, 4.0)
     try:
