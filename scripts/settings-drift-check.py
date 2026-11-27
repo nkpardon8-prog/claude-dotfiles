@@ -25,9 +25,11 @@ FIX = ("Fix: back up ~/.claude/settings.json, set those keys, validate with jq. 
 
 
 def _show(value) -> str:
-    """A local value, short. Only the listed keys are ever shown, never anything else."""
-    text = json.dumps(value)
-    return text if len(text) <= 24 else f"<{type(value).__name__}>"
+    """A local value, only when it cannot be a secret: bool, number, null, or a string of at most 8
+    characters (e.g. "5m"). Anything else is named by type. Only the listed keys are ever shown."""
+    if value is None or isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 8):
+        return json.dumps(value)
+    return f"a different {type(value).__name__}"
 
 
 def _same(a, b) -> bool:
