@@ -217,6 +217,141 @@ class Repo:
         return n.strip() if rc == 0 and n.strip() else "some"
 
 
+KC_LOCK = "claude-keep-current.lock"
+KC_LOCK_STALE = 120        # seconds before another window may take over an abandoned lock
+KC_CHECKOUT_MAX = 30       # the checkout helper kills git after this
+IN_PROGRESS = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG")
+
+
+def take_lock(path: Path) -> bool:
+    """Non-blocking: mkdir is atomic. A lock older than KC_LOCK_STALE was abandoned and is taken over."""
+    try:
+        path.mkdir()
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - path.stat().st_mtime < KC_LOCK_STALE:
+                return False
+            path.rmdir()
+            path.mkdir()
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
+
+
+def keep_current(repo: Repo) -> tuple[str, bool]:
+    """Main folder only: fast-forward a clean, behind main worktree to the base branch, so windows that
+    start there load current rules and project hooks. Returns (one line for the user or "", updated).
+    Acts only when HEAD is detached or on the base branch, has no tracked changes, no merge/rebase is in
+    progress, and HEAD is an ancestor of the base (no local-only commits). Linked worktrees (agents'
+    task branches) are never touched. The checkout runs in a detached helper with its own time limit,
+    so the hook's own timeout can never kill git mid-checkout; if it is still running when this hook
+    must finish, the hook goes on and the checkout completes on its own."""
+    if os.environ.get("RIF_NO_KEEP_CURRENT") == "1":
+        return "", False
+    rc, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo.top)
+    if rc != 0 or not common.strip():
+        return "", False
+    common_dir = Path(os.path.realpath(common.strip()))
+    if common_dir.parent != Path(os.path.realpath(repo.top)):
+        return "", False                                   # a linked worktree, or an unusual layout
+    rc, n = git(["rev-list", "--count", f"HEAD..{repo.base}"], repo.top, limit=2.0)
+    behind = int(n.strip()) if rc == 0 and n.strip().isdigit() else 0
+    if behind <= 0:
+        return "", False
+    lock = common_dir / KC_LOCK
+    if not take_lock(lock):
+        return "", False                                   # another window is on it
+    handed_off = False
+    try:
+        if any((common_dir / f).exists() for f in IN_PROGRESS):
+            log(f"keep-current: {repo.top} has a merge/rebase/bisect in progress; not updated")
+            return "", False
+        rc, br = git(["symbolic-ref", "-q", "--short", "HEAD"], repo.top, limit=2.0)
+        branch = br.strip() if rc == 0 else ""
+        reason = ""
+        if branch and branch != repo.branch:
+            reason = f"is on branch {branch}"
+        else:
+            rc, st = git(["status", "--porcelain", "--untracked-files=no"], repo.top, limit=4.0)
+            if rc != 0:
+                log(f"keep-current: git status failed in {repo.top}")
+                return "", False
+            if st.strip():
+                reason = "has local changes"
+            elif git(["merge-base", "--is-ancestor", "HEAD", repo.base], repo.top, limit=2.0)[0] != 0:
+                reason = "has local commits"
+        if reason:
+            return (f"Main folder {repo.top} is {behind} commits behind {repo.base} and {reason}; it was "
+                    f"not updated. Work in a worktree off {repo.base}."), False
+        wait = min(KC_CHECKOUT_MAX, remaining() - 3.0)
+        if wait < 0.5:
+            log(f"keep-current: no time left to update {repo.top}")
+            return "", False
+        try:
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "bg-checkout", repo.top, repo.base,
+                                  str(lock)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        except Exception as e:
+            log(f"keep-current: helper failed to start: {e}")
+            return "", False
+        handed_off = True                                  # the helper now owns the lock
+        try:
+            out, _ = p.communicate(timeout=wait)
+        except subprocess.TimeoutExpired:
+            log(f"keep-current: checkout of {repo.base} in {repo.top} still running; left to finish")
+            return "", False
+        try:
+            res = json.loads(out or "{}")
+        except ValueError:
+            res = {}
+        if res.get("rc") == 0:
+            log(f"keep-current: {repo.top} updated {behind} commits to {repo.base}")
+            return "", True
+        err = str(res.get("err") or "")
+        log(f"keep-current: checkout failed in {repo.top}: {err.strip()[:300]}")
+        if "untracked working tree files would be" in err:
+            return (f"Main folder {repo.top} could not update to {repo.base}: untracked files in the way "
+                    f"(git status). Not changed."), False
+        return "", False
+    finally:
+        if not handed_off:
+            try:
+                lock.rmdir()
+            except OSError:
+                pass
+
+
+def bg_checkout(top: str, base: str, lock: str) -> None:
+    """Internal (started by keep_current): the checkout itself, capped at KC_CHECKOUT_MAX, then the lock
+    is released. Prints {"rc", "err"} for the waiting hook; if the hook already left, the print fails
+    harmlessly."""
+    res = {"rc": 1, "err": ""}
+    try:
+        p = subprocess.Popen(["git", "-C", top, "checkout", "-q", "--detach", base], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        try:
+            _, err = p.communicate(timeout=KC_CHECKOUT_MAX)
+            res = {"rc": p.returncode, "err": err}
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            res = {"rc": 1, "err": f"timed out after {KC_CHECKOUT_MAX}s"}
+            log(f"keep-current: checkout in {top} timed out")
+    finally:
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+    try:
+        print(json.dumps(res), flush=True)
+    except Exception:
+        pass
+
+
 def spill(name: str, text: str) -> Path:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     p = STATE_DIR / name
