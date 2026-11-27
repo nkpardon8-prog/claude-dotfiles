@@ -11,6 +11,7 @@ written rule carries it. Update this table when a rule or an enforcer changes.
 | Rule | Written in | Enforced by |
 |------|------------|-------------|
 | Rules in force come from the base branch | `CLAUDE.md` Which rules are in force | hook: `scripts/hooks/rules-in-force.py` (SessionStart, UserPromptSubmit, SubagentStart) |
+| Settings that must match across Macs (`_sync_required` in `settings.json.template`) | `settings.json.template` `_sync_required` | check: `scripts/settings-drift-check.py`, run at main-window SessionStart by `rules-in-force.py` (silent unless drift; `scripts/test-settings-drift-check.sh`) |
 | Time first on first reply | `CLAUDE.md` Working with the user | none |
 | Hyphens not em dashes, no emojis | `CLAUDE.md` Working with the user | none |
 | Blocked means stop | `CLAUDE.md` Working with the user | none |

@@ -59,7 +59,7 @@ lines "5 one warning line + rc"      "$o" 2
 fixture 'd["subagentPromptCacheTtl"] = sys.argv[2]; d.pop("awaySummaryEnabled")'
 o=$(run)
 hasnt "6 long local value never echoed (canary)" "$o" "$CANARY"
-has   "6 long value shown as type"   "$o" "subagentPromptCacheTtl is <str>"
+has   "6 long value shown as type"   "$o" "subagentPromptCacheTtl is a different str,"
 for f in 'pass' 'del d["skillListingBudgetFraction"]' 'd["autoCompactEnabled"] = False'; do
   fixture "$f"; o=$(run); hasnt "6 canary absent ($f)" "$o" "$CANARY"
 done
