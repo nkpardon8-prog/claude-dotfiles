@@ -301,6 +301,21 @@ def refresh_codex(global_text: str) -> None:
         log(f"codex refresh failed to start: {e}")
 
 
+def settings_drift() -> str:
+    """Main-window session start only: scripts/settings-drift-check.py's report ("" when this Mac's
+    settings match the keys every Mac must share). Imported in-process; any error stays silent."""
+    try:
+        import importlib.util
+        path = Path(__file__).resolve().parent.parent / "settings-drift-check.py"
+        spec = importlib.util.spec_from_file_location("settings_drift_check", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.report()
+    except Exception as e:
+        log(f"settings drift check failed: {e.__class__.__name__}: {e}")
+        return ""
+
+
 def judge(sid: str, cwd: str, data: dict, state: dict | None, fresh_load: bool, background: bool):
     """Returns (notes, state). fresh_load = Claude just read the rule files from disk (startup, clear,
     compact), so what is on disk now IS the baseline. Otherwise compare with the saved baseline; with
